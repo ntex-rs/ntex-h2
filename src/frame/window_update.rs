@@ -1,6 +1,6 @@
 use crate::frame::{self, Error, Head, Kind, StreamId};
 
-use bytes::BufMut;
+use ntex_bytes::BufMut;
 
 const SIZE_INCREMENT_MASK: u32 = 1 << 31;
 

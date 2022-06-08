@@ -1,17 +1,14 @@
-use super::{util, StreamDependency, StreamId};
-use crate::ext::Protocol;
-use crate::frame::{Error, Frame, Head, Kind};
-use crate::hpack::{self, BytesStr};
+use std::{fmt, io::Cursor};
 
 use http::header::{self, HeaderName, HeaderValue};
 use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
+use ntex_bytes::{BufMut, ByteString, Bytes, BytesMut};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use super::{util, StreamDependency, StreamId};
+use crate::ext::Protocol;
+use crate::frame::{Error, Frame, Head, Kind};
+use crate::hpack;
 
-use std::fmt;
-use std::io::Cursor;
-
-type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
 /// Header frame
 ///
 /// This could be either a request or a response.
@@ -51,22 +48,14 @@ pub struct PushPromise {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct PushPromiseFlag(u8);
 
-#[derive(Debug)]
-pub struct Continuation {
-    /// Stream ID of continuation frame
-    stream_id: StreamId,
-
-    header_block: EncodingHeaderBlock,
-}
-
 // TODO: These fields shouldn't be `pub`
 #[derive(Debug, Default, Eq, PartialEq)]
 pub struct Pseudo {
     // Request
     pub method: Option<Method>,
-    pub scheme: Option<BytesStr>,
-    pub authority: Option<BytesStr>,
-    pub path: Option<BytesStr>,
+    pub scheme: Option<ByteString>,
+    pub authority: Option<ByteString>,
+    pub path: Option<ByteString>,
     pub protocol: Option<Protocol>,
 
     // Response
@@ -260,11 +249,7 @@ impl Headers {
         self.header_block.fields
     }
 
-    pub fn encode(
-        self,
-        encoder: &mut hpack::Encoder,
-        dst: &mut EncodeBuf<'_>,
-    ) -> Option<Continuation> {
+    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
 
@@ -476,11 +461,7 @@ impl PushPromise {
         self.header_block.is_over_size
     }
 
-    pub fn encode(
-        self,
-        encoder: &mut hpack::Encoder,
-        dst: &mut EncodeBuf<'_>,
-    ) -> Option<Continuation> {
+    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
 
@@ -521,21 +502,6 @@ impl fmt::Debug for PushPromise {
     }
 }
 
-// ===== impl Continuation =====
-
-impl Continuation {
-    fn head(&self) -> Head {
-        Head::new(Kind::Continuation, END_HEADERS, self.stream_id)
-    }
-
-    pub fn encode(self, dst: &mut EncodeBuf<'_>) -> Option<Continuation> {
-        // Get the CONTINUATION frame head
-        let head = self.head();
-
-        self.header_block.encode(&head, dst, |_| {})
-    }
-}
-
 // ===== impl Pseudo =====
 
 impl Pseudo {
@@ -544,13 +510,13 @@ impl Pseudo {
 
         let mut path = parts
             .path_and_query
-            .map(|v| BytesStr::from(v.as_str()))
-            .unwrap_or(BytesStr::from_static(""));
+            .map(|v| ByteString::from(v.as_str()))
+            .unwrap_or(ByteString::from_static(""));
 
         match method {
             Method::OPTIONS | Method::CONNECT => {}
             _ if path.is_empty() => {
-                path = BytesStr::from_static("/");
+                path = ByteString::from_static("/");
             }
             _ => {}
         }
@@ -574,7 +540,7 @@ impl Pseudo {
         // If the URI includes an authority component, add it to the pseudo
         // headers
         if let Some(authority) = parts.authority {
-            pseudo.set_authority(BytesStr::from(authority.as_str()));
+            pseudo.set_authority(ByteString::from(authority.as_str()));
         }
 
         pseudo
@@ -598,9 +564,9 @@ impl Pseudo {
 
     pub fn set_scheme(&mut self, scheme: uri::Scheme) {
         let bytes_str = match scheme.as_str() {
-            "http" => BytesStr::from_static("http"),
-            "https" => BytesStr::from_static("https"),
-            s => BytesStr::from(s),
+            "http" => ByteString::from_static("http"),
+            "https" => ByteString::from_static("https"),
+            s => ByteString::from(s),
         };
         self.scheme = Some(bytes_str);
     }
@@ -610,7 +576,7 @@ impl Pseudo {
         self.protocol = Some(protocol);
     }
 
-    pub fn set_authority(&mut self, authority: BytesStr) {
+    pub fn set_authority(&mut self, authority: ByteString) {
         self.authority = Some(authority);
     }
 
@@ -624,52 +590,31 @@ impl Pseudo {
 // ===== impl EncodingHeaderBlock =====
 
 impl EncodingHeaderBlock {
-    fn encode<F>(mut self, head: &Head, dst: &mut EncodeBuf<'_>, f: F) -> Option<Continuation>
+    fn encode<F>(self, head: &Head, dst: &mut BytesMut, f: F)
     where
-        F: FnOnce(&mut EncodeBuf<'_>),
+        F: FnOnce(&mut BytesMut),
     {
-        let head_pos = dst.get_ref().len();
+        let head_pos = dst.len();
 
         // At this point, we don't know how big the h2 frame will be.
         // So, we write the head with length 0, then write the body, and
         // finally write the length once we know the size.
         head.encode(0, dst);
 
-        let payload_pos = dst.get_ref().len();
+        let payload_pos = dst.len();
 
         f(dst);
 
         // Now, encode the header payload
-        let continuation = if self.hpack.len() > dst.remaining_mut() {
-            dst.put_slice(&self.hpack.split_to(dst.remaining_mut()));
-
-            Some(Continuation {
-                stream_id: head.stream_id(),
-                header_block: self,
-            })
-        } else {
-            dst.put_slice(&self.hpack);
-
-            None
-        };
+        dst.extend_from_slice(&self.hpack);
 
         // Compute the header block length
-        let payload_len = (dst.get_ref().len() - payload_pos) as u64;
+        let payload_len = (dst.len() - payload_pos) as u64;
 
         // Write the frame length
         let payload_len_be = payload_len.to_be_bytes();
         assert!(payload_len_be[0..5].iter().all(|b| *b == 0));
-        (dst.get_mut()[head_pos..head_pos + 3]).copy_from_slice(&payload_len_be[5..]);
-
-        if continuation.is_some() {
-            // There will be continuation frames, so the `is_end_headers` flag
-            // must be unset
-            debug_assert!(dst.get_ref()[head_pos + 4] & END_HEADERS == END_HEADERS);
-
-            dst.get_mut()[head_pos + 4] -= END_HEADERS;
-        }
-
-        continuation
+        (dst[head_pos..head_pos + 3]).copy_from_slice(&payload_len_be[5..]);
     }
 }
 
@@ -835,7 +780,7 @@ impl HeaderBlock {
         let mut headers_size = self.calculate_header_list_size();
 
         macro_rules! set_pseudo {
-            ($field:ident, $val:expr) => {{
+            ($field:ident, $len:expr, $val:expr) => {{
                 if reg {
                     tracing::trace!("load_hpack; header malformed -- pseudo not at head of block");
                     malformed = true;
@@ -844,8 +789,7 @@ impl HeaderBlock {
                     malformed = true;
                 } else {
                     let __val = $val;
-                    headers_size +=
-                        decoded_header_size(stringify!($field).len() + 1, __val.as_str().len());
+                    headers_size += decoded_header_size(stringify!($field).len() + 1, $len);
                     if headers_size < max_header_list_size {
                         self.pseudo.$field = Some(__val);
                     } else if !self.is_over_size {
@@ -896,12 +840,30 @@ impl HeaderBlock {
                         }
                     }
                 }
-                Authority(v) => set_pseudo!(authority, v),
-                Method(v) => set_pseudo!(method, v),
-                Scheme(v) => set_pseudo!(scheme, v),
-                Path(v) => set_pseudo!(path, v),
-                Protocol(v) => set_pseudo!(protocol, v),
-                Status(v) => set_pseudo!(status, v),
+                Authority(v) => {
+                    let l = v.as_ref().len();
+                    set_pseudo!(authority, l, v)
+                }
+                Method(v) => {
+                    let l = v.as_ref().len();
+                    set_pseudo!(method, l, v)
+                }
+                Scheme(v) => {
+                    let l = v.as_ref().len();
+                    set_pseudo!(scheme, l, v)
+                }
+                Path(v) => {
+                    let l = v.as_ref().len();
+                    set_pseudo!(path, l, v)
+                }
+                Protocol(v) => {
+                    let l = v.as_ref().len();
+                    set_pseudo!(protocol, l, v)
+                }
+                Status(v) => {
+                    let l = v.as_str().len();
+                    set_pseudo!(status, l, v)
+                }
             }
         });
 
@@ -945,14 +907,19 @@ impl HeaderBlock {
                 self.pseudo
                     .$name
                     .as_ref()
-                    .map(|m| decoded_header_size(stringify!($name).len() + 1, m.as_str().len()))
+                    .map(|m| decoded_header_size(stringify!($name).len() + 1, m.as_ref().len()))
                     .unwrap_or(0)
             }};
         }
 
         pseudo_size!(method)
             + pseudo_size!(scheme)
-            + pseudo_size!(status)
+            + self
+                .pseudo
+                .status
+                .as_ref()
+                .map(|m| decoded_header_size("status".len() + 1, m.as_str().len()))
+                .unwrap_or(0)
             + pseudo_size!(authority)
             + pseudo_size!(path)
             + self

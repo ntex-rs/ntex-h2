@@ -1,11 +1,9 @@
-use crate::codec::{SendError, UserError};
-use crate::frame::StreamId;
-use crate::proto::{self, Initiator};
-
-use bytes::Bytes;
 use std::{error, fmt, io};
 
+use ntex_bytes::Bytes;
+
 pub use crate::frame::Reason;
+use crate::frame::StreamId;
 
 /// Represents HTTP/2 operation errors.
 ///
@@ -78,12 +76,6 @@ impl Error {
         }
     }
 
-    pub(crate) fn from_io(err: io::Error) -> Self {
-        Error {
-            kind: Kind::Io(err),
-        }
-    }
-
     /// Returns true if the error is from a `GOAWAY`.
     pub fn is_go_away(&self) -> bool {
         matches!(self.kind, Kind::GoAway(..))
@@ -105,9 +97,9 @@ impl Error {
     }
 }
 
-impl From<proto::Error> for Error {
-    fn from(src: proto::Error) -> Error {
-        use crate::proto::Error::*;
+impl From<ProtocolError> for Error {
+    fn from(src: ProtocolError) -> Error {
+        use ProtocolError::*;
 
         Error {
             kind: match src {
@@ -123,19 +115,18 @@ impl From<proto::Error> for Error {
     }
 }
 
-impl From<Reason> for Error {
-    fn from(src: Reason) -> Error {
+impl From<io::Error> for Error {
+    fn from(src: io::Error) -> Error {
         Error {
-            kind: Kind::Reason(src),
+            kind: Kind::Io(src),
         }
     }
 }
 
-impl From<SendError> for Error {
-    fn from(src: SendError) -> Error {
-        match src {
-            SendError::User(e) => e.into(),
-            SendError::Connection(e) => e.into(),
+impl From<Reason> for Error {
+    fn from(src: Reason) -> Error {
+        Error {
+            kind: Kind::Reason(src),
         }
     }
 }
@@ -186,6 +177,146 @@ impl fmt::Display for Error {
 }
 
 impl error::Error for Error {}
+
+/// Errors caused by users of the library
+#[derive(Debug)]
+pub enum UserError {
+    /// The stream ID is no longer accepting frames.
+    InactiveStreamId,
+
+    /// The stream is not currently expecting a frame of this type.
+    UnexpectedFrameType,
+
+    /// The payload size is too big
+    PayloadTooBig,
+
+    /// The application attempted to initiate too many streams to remote.
+    Rejected,
+
+    /// The released capacity is larger than claimed capacity.
+    ReleaseCapacityTooBig,
+
+    /// The stream ID space is overflowed.
+    ///
+    /// A new connection is needed.
+    OverflowedStreamId,
+
+    /// Illegal headers, such as connection-specific headers.
+    MalformedHeaders,
+
+    /// Request submitted with relative URI.
+    MissingUriSchemeAndAuthority,
+
+    /// Calls `SendResponse::poll_reset` after having called `send_response`.
+    PollResetAfterSendResponse,
+
+    /// Calls `PingPong::send_ping` before receiving a pong.
+    SendPingWhilePending,
+
+    /// Tries to update local SETTINGS while ACK has not been received.
+    SendSettingsWhilePending,
+
+    /// Tries to send push promise to peer who has disabled server push
+    PeerDisabledServerPush,
+}
+
+impl error::Error for UserError {}
+
+impl fmt::Display for UserError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        use self::UserError::*;
+
+        fmt.write_str(match *self {
+            InactiveStreamId => "inactive stream",
+            UnexpectedFrameType => "unexpected frame type",
+            PayloadTooBig => "payload too big",
+            Rejected => "rejected",
+            ReleaseCapacityTooBig => "release capacity too big",
+            OverflowedStreamId => "stream ID overflowed",
+            MalformedHeaders => "malformed headers",
+            MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
+            PollResetAfterSendResponse => "poll_reset after send_response is illegal",
+            SendPingWhilePending => "send_ping before received previous pong",
+            SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
+            PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
+        })
+    }
+}
+
+/// Either an H2 reason  or an I/O error
+#[derive(Clone, Debug)]
+pub enum ProtocolError {
+    Reset(StreamId, Reason, Initiator),
+    GoAway(Bytes, Reason, Initiator),
+    Io(io::ErrorKind, Option<String>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Initiator {
+    User,
+    Library,
+    Remote,
+}
+
+impl ProtocolError {
+    pub(crate) fn is_local(&self) -> bool {
+        match *self {
+            Self::Reset(_, _, initiator) | Self::GoAway(_, _, initiator) => initiator.is_local(),
+            Self::Io(..) => true,
+        }
+    }
+
+    pub(crate) fn user_go_away(reason: Reason) -> Self {
+        Self::GoAway(Bytes::new(), reason, Initiator::User)
+    }
+
+    pub(crate) fn library_reset(stream_id: StreamId, reason: Reason) -> Self {
+        Self::Reset(stream_id, reason, Initiator::Library)
+    }
+
+    pub(crate) fn library_go_away(reason: Reason) -> Self {
+        Self::GoAway(Bytes::new(), reason, Initiator::Library)
+    }
+
+    pub(crate) fn remote_reset(stream_id: StreamId, reason: Reason) -> Self {
+        Self::Reset(stream_id, reason, Initiator::Remote)
+    }
+
+    pub(crate) fn remote_go_away(debug_data: Bytes, reason: Reason) -> Self {
+        Self::GoAway(debug_data, reason, Initiator::Remote)
+    }
+}
+
+impl Initiator {
+    fn is_local(&self) -> bool {
+        match *self {
+            Self::User | Self::Library => true,
+            Self::Remote => false,
+        }
+    }
+}
+
+impl fmt::Display for ProtocolError {
+    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Self::Reset(_, reason, _) | Self::GoAway(_, reason, _) => reason.fmt(fmt),
+            Self::Io(_, Some(ref inner)) => inner.fmt(fmt),
+            Self::Io(kind, None) => io::Error::from(kind).fmt(fmt),
+        }
+    }
+}
+
+impl From<io::ErrorKind> for ProtocolError {
+    fn from(src: io::ErrorKind) -> Self {
+        Self::Io(src.into(), None)
+    }
+}
+
+impl From<io::Error> for ProtocolError {
+    fn from(src: io::Error) -> Self {
+        Self::Io(src.kind(), src.get_ref().map(|inner| inner.to_string()))
+    }
+}
 
 #[cfg(test)]
 mod tests {

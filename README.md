@@ -1,6 +1,6 @@
 # H2
 
-A Tokio aware, HTTP/2 client & server implementation for Rust.
+HTTP/2 client & server implementation for Rust.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/h2.svg)](https://crates.io/crates/h2)
@@ -17,18 +17,6 @@ More information about this crate can be found in the [crate documentation][dox]
 * Passes [h2spec](https://github.com/summerwind/h2spec).
 * Focus on performance and correctness.
 * Built on [Tokio](https://tokio.rs).
-
-## Non goals
-
-This crate is intended to only be an implementation of the HTTP/2
-specification. It does not handle:
-
-* Managing TCP connections
-* HTTP 1.0 upgrade
-* TLS
-* Any feature not described by the HTTP/2 specification.
-
-This crate is now used by [hyper](https://github.com/hyperium/hyper), which will provide all of these features.
 
 ## Usage
 

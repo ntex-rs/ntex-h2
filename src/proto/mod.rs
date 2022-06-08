@@ -21,7 +21,7 @@ use self::settings::Settings;
 
 use crate::frame::{self, Frame};
 
-use bytes::Buf;
+use ntex_bytes::Buf;
 
 use tokio::io::AsyncWrite;
 

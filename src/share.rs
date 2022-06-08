@@ -1,11 +1,10 @@
-use crate::codec::UserError;
+use crate::error::UserError;
 use crate::frame::Reason;
 use crate::proto::{self, WindowSize};
 
-use bytes::{Buf, Bytes};
+use ntex_bytes::{Buf, Bytes};
 use http::HeaderMap;
 
-use crate::PollExt;
 use std::fmt;
 #[cfg(feature = "stream")]
 use std::pin::Pin;

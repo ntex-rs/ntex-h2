@@ -1,7 +1,6 @@
-use crate::codec::SendError;
 use crate::frame::{Reason, StreamId};
 
-use bytes::Bytes;
+use ntex_bytes::Bytes;
 use std::fmt;
 use std::io;
 
@@ -77,11 +76,5 @@ impl From<io::ErrorKind> for Error {
 impl From<io::Error> for Error {
     fn from(src: io::Error) -> Self {
         Error::Io(src.kind(), src.get_ref().map(|inner| inner.to_string()))
-    }
-}
-
-impl From<Error> for SendError {
-    fn from(src: Error) -> Self {
-        Self::Connection(src)
     }
 }

@@ -9,4 +9,4 @@ mod test;
 
 pub use self::decoder::{Decoder, DecoderError, NeedMore};
 pub use self::encoder::Encoder;
-pub use self::header::{BytesStr, Header};
+pub use self::header::Header;

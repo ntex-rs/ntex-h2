@@ -1,5 +1,5 @@
 use crate::frame::{Error, Frame, Head, Kind, StreamId};
-use bytes::BufMut;
+use ntex_bytes::BufMut;
 
 const ACK_FLAG: u8 = 0x1;
 

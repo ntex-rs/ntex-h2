@@ -1,6 +1,6 @@
 use crate::frame::{self, Error, Head, Kind, Reason, StreamId};
 
-use bytes::BufMut;
+use ntex_bytes::BufMut;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {

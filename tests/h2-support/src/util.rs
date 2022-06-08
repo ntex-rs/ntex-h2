@@ -6,8 +6,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub fn byte_str(s: &str) -> h2::frame::BytesStr {
-    h2::frame::BytesStr::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
+pub fn byte_str(s: &str) -> ntex_bytes::ByteString {
+    ntex_bytes::ByteString::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
 }
 
 pub async fn concat(mut body: h2::RecvStream) -> Result<Bytes, h2::Error> {

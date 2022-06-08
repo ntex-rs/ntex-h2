@@ -1,5 +1,5 @@
 use super::*;
-use crate::codec::UserError;
+use crate::error::UserError;
 use crate::frame::{self, PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE};
 use crate::proto::{self, Error};
 use std::task::Context;

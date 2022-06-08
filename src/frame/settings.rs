@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::frame::{util, Error, Frame, FrameSize, Head, Kind, StreamId};
-use bytes::{BufMut, BytesMut};
+use ntex_bytes::{BufMut, BytesMut};
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct Settings {

@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::codec::UserError;
+use crate::error::UserError;
 use crate::frame::{self, Reason, StreamId};
 use crate::proto::{self, Error, Initiator, PollReset};
 

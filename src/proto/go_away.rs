@@ -1,7 +1,7 @@
 use crate::codec::Codec;
 use crate::frame::{self, Reason, StreamId};
 
-use bytes::Buf;
+use ntex_bytes::Buf;
 use std::io;
 use std::task::{Context, Poll};
 use tokio::io::AsyncWrite;

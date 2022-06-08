@@ -1,7 +1,7 @@
 use std::fmt;
 
 use super::Error;
-use bytes::Bytes;
+use ntex_bytes::Bytes;
 
 /// Strip padding from the given payload.
 ///

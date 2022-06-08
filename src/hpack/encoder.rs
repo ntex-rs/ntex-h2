@@ -1,8 +1,8 @@
 use super::table::{Index, Table};
 use super::{huffman, Header};
 
-use bytes::{BufMut, BytesMut};
 use http::header::{HeaderName, HeaderValue};
+use ntex_bytes::{BufMut, BytesMut};
 
 #[derive(Debug)]
 pub struct Encoder {

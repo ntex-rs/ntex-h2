@@ -1,6 +1,6 @@
 use super::StreamId;
 
-use bytes::BufMut;
+use ntex_bytes::BufMut;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Head {

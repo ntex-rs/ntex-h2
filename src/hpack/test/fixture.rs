@@ -1,7 +1,7 @@
 use crate::hpack::{Decoder, Encoder, Header};
 
-use bytes::BytesMut;
 use hex::FromHex;
+use ntex_bytes::BytesMut;
 use serde_json::Value;
 
 use std::fs::File;

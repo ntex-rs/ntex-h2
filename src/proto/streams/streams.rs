@@ -1,18 +1,17 @@
 use super::recv::RecvHeaderBlockError;
 use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
-use crate::codec::{Codec, SendError, UserError};
+use crate::codec::Codec;
 use crate::ext::Protocol;
 use crate::frame::{self, Frame, Reason};
 use crate::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
-use crate::{client, proto, server};
+use crate::{client, error::UserError, proto, server};
 
-use bytes::{Buf, Bytes};
+use ntex_bytes::{Buf, Bytes};
 use http::{HeaderMap, Request, Response};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
-use crate::PollExt;
 use std::sync::{Arc, Mutex};
 use std::{fmt, io};
 
@@ -211,7 +210,7 @@ where
         mut request: Request<()>,
         end_of_stream: bool,
         pending: Option<&OpaqueStreamRef>,
-    ) -> Result<StreamRef<B>, SendError> {
+    ) -> Result<StreamRef<B>, UserError> {
         use super::stream::ContentLength;
         use http::Method;
 

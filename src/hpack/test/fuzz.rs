@@ -2,7 +2,7 @@ use crate::hpack::{Decoder, Encoder, Header};
 
 use http::header::{HeaderName, HeaderValue};
 
-use bytes::BytesMut;
+use ntex_bytes::{ByteString, BytesMut};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rand::distributions::Slice;
 use rand::rngs::StdRng;
@@ -360,6 +360,6 @@ fn gen_string(g: &mut StdRng, min: usize, max: usize) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
-fn to_shared(src: String) -> crate::hpack::BytesStr {
-    crate::hpack::BytesStr::from(src.as_str())
+fn to_shared(src: String) -> ByteString {
+    ByteString::from(src)
 }

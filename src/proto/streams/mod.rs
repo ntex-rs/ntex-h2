@@ -27,7 +27,7 @@ use self::stream::Stream;
 use crate::frame::{StreamId, StreamIdOverflow};
 use crate::proto::*;
 
-use bytes::Bytes;
+use ntex_bytes::Bytes;
 use std::time::Duration;
 
 #[derive(Debug)]

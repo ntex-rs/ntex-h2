@@ -1,6 +1,6 @@
 use std::fmt;
 
-use bytes::{BufMut, Bytes};
+use ntex_bytes::{BufMut, Bytes};
 
 use crate::frame::{self, Error, Head, Kind, Reason, StreamId};
 

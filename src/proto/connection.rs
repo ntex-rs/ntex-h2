@@ -1,11 +1,10 @@
-use crate::codec::UserError;
 use crate::frame::{Reason, StreamId};
-use crate::{client, frame, server};
+use crate::{client, error::UserError, frame, server};
 
 use crate::frame::DEFAULT_INITIAL_WINDOW_SIZE;
 use crate::proto::*;
 
-use bytes::{Buf, Bytes};
+use ntex_bytes::{Buf, Bytes};
 use futures_core::Stream;
 use std::io;
 use std::marker::PhantomData;

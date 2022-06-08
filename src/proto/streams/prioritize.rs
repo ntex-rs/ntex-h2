@@ -3,10 +3,10 @@ use super::*;
 
 use crate::frame::{Reason, StreamId};
 
-use crate::codec::UserError;
-use crate::codec::UserError::*;
+use crate::error::UserError;
+use crate::error::UserError::*;
 
-use bytes::buf::{Buf, Take};
+use ntex_bytes::buf::{Buf, Take};
 use std::io;
 use std::task::{Context, Poll, Waker};
 use std::{cmp, fmt, mem};

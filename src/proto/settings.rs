@@ -1,5 +1,5 @@
-use crate::codec::UserError;
 use crate::error::Reason;
+use crate::error::UserError;
 use crate::frame;
 use crate::proto::*;
 use std::task::{Context, Poll};

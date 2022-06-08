@@ -1,6 +1,6 @@
 use crate::hpack;
 
-use bytes::Bytes;
+use ntex_bytes::Bytes;
 
 use std::fmt;
 
@@ -51,9 +51,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
-pub use self::headers::{
-    parse_u64, Continuation, Headers, Pseudo, PushPromise, PushPromiseHeaderError,
-};
+pub use self::headers::{parse_u64, Headers, Pseudo, PushPromise, PushPromiseHeaderError};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
 pub use self::reason::Reason;
@@ -62,11 +60,7 @@ pub use self::settings::Settings;
 pub use self::stream_id::{StreamId, StreamIdOverflow};
 pub use self::window_update::WindowUpdate;
 
-#[cfg(feature = "unstable")]
-pub use crate::hpack::BytesStr;
-
 // Re-export some constants
-
 pub use self::settings::{
     DEFAULT_INITIAL_WINDOW_SIZE, DEFAULT_MAX_FRAME_SIZE, DEFAULT_SETTINGS_HEADER_TABLE_SIZE,
     MAX_INITIAL_WINDOW_SIZE, MAX_MAX_FRAME_SIZE,
@@ -134,6 +128,9 @@ pub enum Error {
     /// A length value other than 8 was set on a PING message.
     BadFrameSize,
 
+    /// Frame size exceeded
+    MaxFrameSize,
+
     /// The padding length was larger than the frame-header-specified
     /// length of the payload.
     TooMuchPadding,
@@ -166,6 +163,33 @@ pub enum Error {
     /// invalid stream identifier.
     InvalidDependencyId,
 
+    /// Continuation related error
+    Continuation(ContinuationError),
+
     /// Failed to perform HPACK decoding
     Hpack(hpack::DecoderError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContinuationError {
+    /// Continuation frame is expected
+    Expected,
+
+    /// Continuation frame is unexpected
+    Unexpected,
+
+    /// Continuation frame's stream id is unexpected
+    UnknownStreamId,
+
+    /// Max left over size
+    MaxLeftoverSize,
+
+    /// Malformed frame
+    Malformed,
+}
+
+impl From<ContinuationError> for Error {
+    fn from(err: ContinuationError) -> Error {
+        Error::Continuation(err)
+    }
 }

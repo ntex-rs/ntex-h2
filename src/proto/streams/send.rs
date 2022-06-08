@@ -2,11 +2,11 @@ use super::{
     store, Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
     StreamIdOverflow, WindowSize,
 };
-use crate::codec::UserError;
+use crate::error::UserError;
 use crate::frame::{self, Reason};
 use crate::proto::{Error, Initiator};
 
-use bytes::Buf;
+use ntex_bytes::Buf;
 use http;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
