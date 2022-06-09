@@ -1,8 +1,6 @@
-use crate::hpack;
+use std::fmt;
 
 use ntex_bytes::Bytes;
-
-use std::fmt;
 
 /// A helper macro that unpacks a sequence of 4 bytes found in the buffer with
 /// the given identifier, starting at the given offset, into the given integer
@@ -66,13 +64,15 @@ pub use self::settings::{
     MAX_INITIAL_WINDOW_SIZE, MAX_MAX_FRAME_SIZE,
 };
 
+use crate::hpack;
+
 pub type FrameSize = u32;
 
 pub const HEADER_LEN: usize = 9;
 
 #[derive(Eq, PartialEq)]
-pub enum Frame<T = Bytes> {
-    Data(Data<T>),
+pub enum Frame {
+    Data(Data),
     Headers(Headers),
     Priority(Priority),
     PushPromise(PushPromise),
@@ -83,28 +83,7 @@ pub enum Frame<T = Bytes> {
     Reset(Reset),
 }
 
-impl<T> Frame<T> {
-    pub fn map<F, U>(self, f: F) -> Frame<U>
-    where
-        F: FnOnce(T) -> U,
-    {
-        use self::Frame::*;
-
-        match self {
-            Data(frame) => frame.map(f).into(),
-            Headers(frame) => frame.into(),
-            Priority(frame) => frame.into(),
-            PushPromise(frame) => frame.into(),
-            Settings(frame) => frame.into(),
-            Ping(frame) => frame.into(),
-            GoAway(frame) => frame.into(),
-            WindowUpdate(frame) => frame.into(),
-            Reset(frame) => frame.into(),
-        }
-    }
-}
-
-impl<T> fmt::Debug for Frame<T> {
+impl fmt::Debug for Frame {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         use self::Frame::*;
 
@@ -162,6 +141,9 @@ pub enum Error {
     /// This is returned if a HEADERS or PRIORITY frame is received with an
     /// invalid stream identifier.
     InvalidDependencyId,
+
+    /// An invalid preface
+    InvalidPreface,
 
     /// Continuation related error
     Continuation(ContinuationError),

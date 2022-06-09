@@ -53,9 +53,7 @@ impl Codec {
             encoder_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
         }))
     }
-}
 
-impl Codec {
     /// Updates the max received frame size.
     ///
     /// The change takes effect the next time a frame is decoded. In other
@@ -63,32 +61,28 @@ impl Codec {
     /// size greater than `val` but less than the max frame size in effect
     /// before calling this function, then the frame will be allowed.
     #[inline]
-    pub fn max_recv_frame_size(self, val: usize) -> Self {
+    pub fn set_max_recv_frame_size(&self, val: usize) {
         assert!(
             frame::DEFAULT_MAX_FRAME_SIZE as usize <= val
                 && val <= frame::MAX_MAX_FRAME_SIZE as usize
         );
         self.0.borrow_mut().decoder.set_max_frame_length(val);
-        self
     }
 
     /// Set the peer's max frame size.
-    pub fn max_send_frame_size(self, val: usize) -> Self {
+    pub fn set_max_send_frame_size(&self, val: usize) {
         assert!(val <= frame::MAX_MAX_FRAME_SIZE as usize);
         self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
-        self
     }
 
     /// Set the peer's header table size size.
-    pub fn send_header_table_size(self, val: usize) -> Self {
+    pub fn set_send_header_table_size(&self, val: usize) {
         self.0.borrow_mut().encoder_hpack.update_max_size(val);
-        self
     }
 
     /// Set the max header list size that can be received.
-    pub fn max_recv_header_list_size(self, val: usize) -> Self {
+    pub fn set_max_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
-        self
     }
 }
 
@@ -157,7 +151,6 @@ impl Decoder for Codec {
         log::trace!("decoding frame from {}B", src.len());
 
         let mut inner = self.0.borrow_mut();
-
         let mut bytes = if let Some(bytes) = inner.decoder.decode(src)? {
             bytes
         } else {

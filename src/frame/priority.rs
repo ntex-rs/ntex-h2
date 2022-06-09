@@ -35,7 +35,7 @@ impl Priority {
     }
 }
 
-impl<B> From<Priority> for Frame<B> {
+impl From<Priority> for Frame {
     fn from(src: Priority) -> Self {
         Frame::Priority(src)
     }

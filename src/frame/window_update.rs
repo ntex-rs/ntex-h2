@@ -55,7 +55,7 @@ impl WindowUpdate {
     }
 }
 
-impl<B> From<WindowUpdate> for frame::Frame<B> {
+impl From<WindowUpdate> for frame::Frame {
     fn from(src: WindowUpdate) -> Self {
         frame::Frame::WindowUpdate(src)
     }

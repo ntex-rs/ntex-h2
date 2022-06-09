@@ -387,8 +387,10 @@ pub struct Builder {
 }
 
 /// An error when the number of bytes read is more than max frame length.
-pub struct LengthDelimitedCodecError {
-    _priv: (),
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum LengthDelimitedCodecError {
+    MaxSize,
+    Adjusted,
 }
 
 /// A codec for frames delimited by a frame head specifying their lengths.
@@ -455,7 +457,7 @@ impl LengthDelimitedCodec {
 
             let n = src.get_uint(field_len);
             if n > self.builder.max_frame_len as u64 {
-                return Err(LengthDelimitedCodecError { _priv: () });
+                return Err(LengthDelimitedCodecError::MaxSize);
             }
 
             // The check above ensures there is no overflow
@@ -469,7 +471,7 @@ impl LengthDelimitedCodec {
             };
 
             // Error handling
-            n.ok_or(LengthDelimitedCodecError { _priv: () })?
+            n.ok_or(LengthDelimitedCodecError::Adjusted)?
         };
 
         let num_skip = self.builder.get_num_skip();
@@ -534,7 +536,7 @@ impl Encoder for LengthDelimitedCodec {
         let n = data.len();
 
         if n > self.builder.max_frame_len {
-            return Err(LengthDelimitedCodecError { _priv: () });
+            return Err(LengthDelimitedCodecError::MaxSize);
         }
 
         // Adjust `n` with bounds checking
@@ -544,7 +546,7 @@ impl Encoder for LengthDelimitedCodec {
             n.checked_sub(self.builder.length_adjustment as usize)
         };
 
-        let n = n.ok_or_else(|| LengthDelimitedCodecError { _priv: () })?;
+        let n = n.ok_or_else(|| LengthDelimitedCodecError::Adjusted)?;
 
         // Reserve capacity in the destination buffer to fit the frame and
         // length field (plus adjustment).
@@ -740,12 +742,6 @@ impl Default for Builder {
 }
 
 // ===== impl LengthDelimitedCodecError =====
-
-impl fmt::Debug for LengthDelimitedCodecError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LengthDelimitedCodecError").finish()
-    }
-}
 
 impl fmt::Display for LengthDelimitedCodecError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

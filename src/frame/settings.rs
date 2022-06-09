@@ -217,13 +217,13 @@ impl Settings {
         let head = Head::new(Kind::Settings, self.flags.into(), StreamId::zero());
         let payload_len = self.payload_len();
 
-        tracing::trace!("encoding SETTINGS; len={}", payload_len);
+        log::trace!("encoding SETTINGS; len={}", payload_len);
 
         head.encode(payload_len, dst);
 
         // Encode the settings
         self.for_each(|setting| {
-            tracing::trace!("encoding setting; val={:?}", setting);
+            log::trace!("encoding setting; val={:?}", setting);
             setting.encode(dst)
         });
     }
@@ -261,8 +261,8 @@ impl Settings {
     }
 }
 
-impl<T> From<Settings> for Frame<T> {
-    fn from(src: Settings) -> Frame<T> {
+impl From<Settings> for Frame {
+    fn from(src: Settings) -> Frame {
         Frame::Settings(src)
     }
 }

@@ -58,7 +58,7 @@ impl GoAway {
     }
 }
 
-impl<B> From<GoAway> for frame::Frame<B> {
+impl From<GoAway> for frame::Frame {
     fn from(src: GoAway) -> Self {
         frame::Frame::GoAway(src)
     }

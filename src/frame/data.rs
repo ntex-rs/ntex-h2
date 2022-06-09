@@ -1,7 +1,6 @@
-use crate::frame::{util, Error, Frame, Head, Kind, StreamId};
 use ntex_bytes::{Buf, BufMut, Bytes};
 
-use std::fmt;
+use crate::frame::{util, Error, Frame, Head, Kind, StreamId};
 
 /// Data frame
 ///
@@ -9,9 +8,9 @@ use std::fmt;
 /// with a stream. One or more DATA frames are used, for instance, to carry HTTP
 /// request or response payloads.
 #[derive(Eq, PartialEq)]
-pub struct Data<T = Bytes> {
+pub struct Data {
     stream_id: StreamId,
-    data: T,
+    data: Bytes,
     flags: DataFlags,
     pad_len: Option<u8>,
 }
@@ -23,9 +22,9 @@ const END_STREAM: u8 = 0x1;
 const PADDED: u8 = 0x8;
 const ALL: u8 = END_STREAM | PADDED;
 
-impl<T> Data<T> {
+impl Data {
     /// Creates a new DATA frame.
-    pub fn new(stream_id: StreamId, payload: T) -> Self {
+    pub fn new(stream_id: StreamId, payload: Bytes) -> Self {
         assert!(!stream_id.is_zero());
 
         Data {
@@ -79,7 +78,7 @@ impl<T> Data<T> {
     ///
     /// This does **not** include any padding that might have been originally
     /// included.
-    pub fn payload(&self) -> &T {
+    pub fn payload(&self) -> &Bytes {
         &self.data
     }
 
@@ -87,7 +86,7 @@ impl<T> Data<T> {
     ///
     /// This does **not** include any padding that might have been originally
     /// included.
-    pub fn payload_mut(&mut self) -> &mut T {
+    pub fn payload_mut(&mut self) -> &mut Bytes {
         &mut self.data
     }
 
@@ -95,28 +94,16 @@ impl<T> Data<T> {
     ///
     /// This does **not** include any padding that might have been originally
     /// included.
-    pub fn into_payload(self) -> T {
+    pub fn into_payload(self) -> Bytes {
         self.data
     }
 
     pub(crate) fn head(&self) -> Head {
         Head::new(Kind::Data, self.flags.into(), self.stream_id)
     }
-
-    pub(crate) fn map<F, U>(self, f: F) -> Data<U>
-    where
-        F: FnOnce(T) -> U,
-    {
-        Data {
-            stream_id: self.stream_id,
-            data: f(self.data),
-            flags: self.flags,
-            pad_len: self.pad_len,
-        }
-    }
 }
 
-impl Data<Bytes> {
+impl Data {
     pub(crate) fn load(head: Head, mut payload: Bytes) -> Result<Self, Error> {
         let flags = DataFlags::load(head.flag());
 
@@ -141,7 +128,7 @@ impl Data<Bytes> {
     }
 }
 
-impl<T: Buf> Data<T> {
+impl Data {
     /// Encode the data frame into the `dst` buffer.
     ///
     /// # Panics
@@ -157,14 +144,14 @@ impl<T: Buf> Data<T> {
     }
 }
 
-impl<T> From<Data<T>> for Frame<T> {
-    fn from(src: Data<T>) -> Self {
+impl From<Data> for Frame {
+    fn from(src: Data) -> Self {
         Frame::Data(src)
     }
 }
 
-impl<T> fmt::Debug for Data<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Debug for Data {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
         let mut f = fmt.debug_struct("Data");
         f.field("stream_id", &self.stream_id);
         if !self.flags.is_empty() {
@@ -223,8 +210,8 @@ impl From<DataFlags> for u8 {
     }
 }
 
-impl fmt::Debug for DataFlags {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+impl std::fmt::Debug for DataFlags {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
         util::debug_flags(fmt, self.0)
             .flag_if(self.is_end_stream(), "END_STREAM")
             .flag_if(self.is_padded(), "PADDED")

@@ -1,6 +1,6 @@
-use crate::frame::{self, Error, Head, Kind, Reason, StreamId};
-
 use ntex_bytes::BufMut;
+
+use crate::frame::{Error, Frame, Head, Kind, Reason, StreamId};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {
@@ -49,8 +49,8 @@ impl Reset {
     }
 }
 
-impl<B> From<Reset> for frame::Frame<B> {
+impl From<Reset> for Frame {
     fn from(src: Reset) -> Self {
-        frame::Frame::Reset(src)
+        Frame::Reset(src)
     }
 }

@@ -80,7 +80,8 @@
 
 #![doc(html_root_url = "https://docs.rs/h2/0.3.13")]
 // #![deny(missing_debug_implementations, missing_docs)]
-#![cfg_attr(test, deny(warnings))]
+//#![cfg_attr(test, deny(warnings))]
+#![allow(dead_code, warnings)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {
@@ -92,6 +93,7 @@ macro_rules! proto_err {
 }
 
 mod codec;
+mod consts;
 mod error;
 mod hpack;
 
@@ -100,7 +102,7 @@ pub mod frame;
 
 //pub mod client;
 pub mod ext;
-//pub mod server;
+pub mod server;
 //mod share;
 
 //#[cfg(fuzzing)]

@@ -1,5 +1,6 @@
-use crate::frame::{Error, Frame, Head, Kind, StreamId};
 use ntex_bytes::BufMut;
+
+use crate::frame::{Error, Frame, Head, Kind, StreamId};
 
 const ACK_FLAG: u8 = 0x1;
 
@@ -95,8 +96,8 @@ impl Ping {
     }
 }
 
-impl<T> From<Ping> for Frame<T> {
-    fn from(src: Ping) -> Frame<T> {
+impl From<Ping> for Frame {
+    fn from(src: Ping) -> Frame {
         Frame::Ping(src)
     }
 }

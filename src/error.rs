@@ -243,7 +243,7 @@ impl fmt::Display for UserError {
     }
 }
 
-/// Either an H2 reason  or an I/O error
+/// Either an H2 reason or an I/O error
 #[derive(Clone, Debug)]
 pub enum ProtocolError {
     Reset(StreamId, Reason, Initiator),
