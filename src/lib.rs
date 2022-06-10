@@ -75,10 +75,7 @@
 //! [`SendStream`]: struct.SendStream.html
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
-//! [`server::handshake`]: server/fn.handshake.html
-//! [`client::handshake`]: client/fn.handshake.html
 
-#![doc(html_root_url = "https://docs.rs/h2/0.3.13")]
 // #![deny(missing_debug_implementations, missing_docs)]
 //#![cfg_attr(test, deny(warnings))]
 #![allow(dead_code, warnings)]
@@ -97,18 +94,22 @@ mod consts;
 mod error;
 mod hpack;
 
-pub mod frame;
-//pub mod proto;
-
-//pub mod client;
-pub mod ext;
-pub mod server;
+mod connection;
+mod control;
+mod default;
+mod stream;
 //mod share;
+
+pub mod ext;
+pub mod frame;
+pub mod server;
+//pub mod client;
 
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{Error, Reason, UserError};
+pub use crate::error::{ProtocolError, UserError};
 //pub use crate::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream, StreamId};
 
-pub use codec::Codec;
+pub use self::codec::Codec;
+pub use self::control::{ControlMessage, ControlResult};

@@ -67,6 +67,7 @@ pub use self::settings::{
 use crate::hpack;
 
 pub type FrameSize = u32;
+pub type WindowSize = u32;
 
 pub const HEADER_LEN: usize = 9;
 

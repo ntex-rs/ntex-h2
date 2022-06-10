@@ -1,5 +1,5 @@
 use ntex::service::{fn_service, pipeline_factory};
-use ntex_h2::server;
+use ntex_h2::{server, ControlMessage};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{AlpnError, SslAcceptor, SslFiletype, SslMethod};
 
@@ -34,9 +34,9 @@ async fn main() -> std::io::Result<()> {
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
                     server::Server::build()
-                        .control(|msg: server::ControlFrame| async move {
+                        .control(|msg: ControlMessage<()>| async move {
                             println!("T: {:?}", msg);
-                            Ok::<_, ()>(())
+                            Ok::<_, ()>(msg.ack())
                         })
                         .finish(fn_service(|_msg: ()| async move { Ok::<_, ()>(()) })),
                 )

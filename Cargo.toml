@@ -33,16 +33,17 @@ ntex-service = "0.3.1"
 ntex-util = "0.1.17"
 
 futures-core = { version = "0.3", default-features = false }
-futures-sink = { version = "0.3", default-features = false }
-futures-util = { version = "0.3", default-features = false }
+#futures-sink = { version = "0.3", default-features = false }
+#futures-util = { version = "0.3", default-features = false }
 tokio = { version = "1", features = ["io-util"] }
-bytes = "1"
+bitflags = "1.3"
 http = "0.2"
 tracing = { version = "0.1.21", default-features = false, features = ["std"] }
 fnv = "1.0.5"
 slab = "0.4.2"
 indexmap = { version = "1.5.2", features = ["std"] }
 log = "0.4"
+pin-project-lite = "0.2"
 
 [dev-dependencies]
 # Fuzzing

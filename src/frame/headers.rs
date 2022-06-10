@@ -4,7 +4,7 @@ use http::header::{self, HeaderName, HeaderValue};
 use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
 use ntex_bytes::{BufMut, ByteString, Bytes, BytesMut};
 
-use super::{util, StreamDependency, StreamId};
+use super::{util, StreamId};
 use crate::ext::Protocol;
 use crate::frame::{Error, Frame, Head, Kind};
 use crate::hpack;
@@ -16,9 +16,6 @@ use crate::hpack;
 pub struct Headers {
     /// The ID of the stream with which this frame is associated.
     stream_id: StreamId,
-
-    /// The stream dependency information, if any.
-    stream_dep: Option<StreamDependency>,
 
     /// The header block fragment
     header_block: HeaderBlock,
@@ -102,7 +99,6 @@ impl Headers {
     pub fn new(stream_id: StreamId, pseudo: Pseudo, fields: HeaderMap) -> Self {
         Headers {
             stream_id,
-            stream_dep: None,
             header_block: HeaderBlock {
                 fields,
                 is_over_size: false,
@@ -118,7 +114,6 @@ impl Headers {
 
         Headers {
             stream_id,
-            stream_dep: None,
             header_block: HeaderBlock {
                 fields,
                 is_over_size: false,
@@ -133,62 +128,49 @@ impl Headers {
     /// HPACK decoding is done in the `load_hpack` step.
     pub fn load(head: Head, mut src: BytesMut) -> Result<(Self, BytesMut), Error> {
         let flags = HeadersFlag(head.flag());
-        let mut pad = 0;
-
-        tracing::trace!("loading headers; flags={:?}", flags);
+        log::trace!("loading headers; flags={:?}", flags);
 
         if head.stream_id().is_zero() {
             return Err(Error::InvalidStreamId);
         }
 
         // Read the padding length
-        if flags.is_padded() {
+        let pad = if flags.is_padded() {
             if src.is_empty() {
                 return Err(Error::MalformedMessage);
             }
-            pad = src[0] as usize;
+            let pad = src[0] as usize;
 
             // Drop the padding
             let _ = src.split_to(1);
-        }
+            pad
+        } else {
+            0
+        };
 
         // Read the stream dependency
-        let stream_dep = if flags.is_priority() {
+        if flags.is_priority() {
             if src.len() < 5 {
                 return Err(Error::MalformedMessage);
             }
-            let stream_dep = StreamDependency::load(&src[..5])?;
-
-            if stream_dep.dependency_id() == head.stream_id() {
-                return Err(Error::InvalidDependencyId);
-            }
-
-            // Drop the next 5 bytes
             let _ = src.split_to(5);
-
-            Some(stream_dep)
-        } else {
-            None
-        };
+        }
 
         if pad > 0 {
             if pad > src.len() {
                 return Err(Error::TooMuchPadding);
             }
-
-            let len = src.len() - pad;
-            src.truncate(len);
+            src.truncate(src.len() - pad);
         }
 
         let headers = Headers {
+            flags,
             stream_id: head.stream_id(),
-            stream_dep,
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
-            flags,
         };
 
         Ok((headers, src))
@@ -229,11 +211,6 @@ impl Headers {
 
     pub fn into_parts(self) -> (Pseudo, HeaderMap) {
         (self.header_block.pseudo, self.header_block.fields)
-    }
-
-    #[cfg(feature = "unstable")]
-    pub fn pseudo_mut(&mut self) -> &mut Pseudo {
-        &mut self.header_block.pseudo
     }
 
     /// Whether it has status 1xx
@@ -281,10 +258,6 @@ impl fmt::Debug for Headers {
 
         if let Some(ref protocol) = self.header_block.pseudo.protocol {
             builder.field("protocol", protocol);
-        }
-
-        if let Some(ref dep) = self.stream_dep {
-            builder.field("stream_dep", dep);
         }
 
         // `fields` and `pseudo` purposefully not included
@@ -557,21 +530,18 @@ impl Pseudo {
         }
     }
 
-    #[cfg(feature = "unstable")]
     pub fn set_status(&mut self, value: StatusCode) {
         self.status = Some(value);
     }
 
     pub fn set_scheme(&mut self, scheme: uri::Scheme) {
-        let bytes_str = match scheme.as_str() {
+        self.scheme = Some(match scheme.as_str() {
             "http" => ByteString::from_static("http"),
             "https" => ByteString::from_static("https"),
             s => ByteString::from(s),
-        };
-        self.scheme = Some(bytes_str);
+        });
     }
 
-    #[cfg(feature = "unstable")]
     pub fn set_protocol(&mut self, protocol: Protocol) {
         self.protocol = Some(protocol);
     }
@@ -782,10 +752,10 @@ impl HeaderBlock {
         macro_rules! set_pseudo {
             ($field:ident, $len:expr, $val:expr) => {{
                 if reg {
-                    tracing::trace!("load_hpack; header malformed -- pseudo not at head of block");
+                    log::trace!("load_hpack; header malformed -- pseudo not at head of block");
                     malformed = true;
                 } else if self.pseudo.$field.is_some() {
-                    tracing::trace!("load_hpack; header malformed -- repeated pseudo");
+                    log::trace!("load_hpack; header malformed -- repeated pseudo");
                     malformed = true;
                 } else {
                     let __val = $val;
@@ -793,7 +763,7 @@ impl HeaderBlock {
                     if headers_size < max_header_list_size {
                         self.pseudo.$field = Some(__val);
                     } else if !self.is_over_size {
-                        tracing::trace!("load_hpack; header list size over max");
+                        log::trace!("load_hpack; header list size over max");
                         self.is_over_size = true;
                     }
                 }
@@ -820,13 +790,10 @@ impl HeaderBlock {
                         || name == "keep-alive"
                         || name == "proxy-connection"
                     {
-                        tracing::trace!("load_hpack; connection level header");
+                        log::trace!("load_hpack; connection level header");
                         malformed = true;
                     } else if name == header::TE && value != "trailers" {
-                        tracing::trace!(
-                            "load_hpack; TE header not set to trailers; val={:?}",
-                            value
-                        );
+                        log::trace!("load_hpack; TE header not set to trailers; val={:?}", value);
                         malformed = true;
                     } else {
                         reg = true;
@@ -835,7 +802,7 @@ impl HeaderBlock {
                         if headers_size < max_header_list_size {
                             self.fields.append(name, value);
                         } else if !self.is_over_size {
-                            tracing::trace!("load_hpack; header list size over max");
+                            log::trace!("load_hpack; header list size over max");
                             self.is_over_size = true;
                         }
                     }
@@ -868,12 +835,12 @@ impl HeaderBlock {
         });
 
         if let Err(e) = res {
-            tracing::trace!("hpack decoding error; err={:?}", e);
+            log::trace!("hpack decoding error; err={:?}", e);
             return Err(e.into());
         }
 
         if malformed {
-            tracing::trace!("malformed message");
+            log::trace!("malformed message");
             return Err(Error::MalformedMessage);
         }
 
