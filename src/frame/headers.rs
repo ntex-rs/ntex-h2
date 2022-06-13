@@ -3,9 +3,8 @@ use std::{fmt, io::Cursor};
 use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
 
-use super::{util, StreamId};
-use super::{Error, Frame, Head, Kind};
-use crate::{ext::Protocol, hpack};
+use super::{util, Error, Frame, Head, Kind, Protocol, StreamId};
+use crate::hpack;
 
 /// Header frame
 ///
@@ -400,7 +399,7 @@ impl<'a> Iterator for Iter<'a> {
             }
 
             if let Some(protocol) = pseudo.protocol.take() {
-                return Some(Protocol(protocol));
+                return Some(Protocol(protocol.into()));
             }
 
             if let Some(status) = pseudo.status.take() {
@@ -502,7 +501,7 @@ impl HeaderBlock {
                     let __val = $val;
                     headers_size += decoded_header_size(stringify!($field).len() + 1, $len);
                     if headers_size < max_header_list_size {
-                        self.pseudo.$field = Some(__val);
+                        self.pseudo.$field = Some(__val.into());
                     } else if !self.is_over_size {
                         log::trace!("load_hpack; header list size over max");
                         self.is_over_size = true;

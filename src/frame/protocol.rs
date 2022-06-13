@@ -1,7 +1,7 @@
 //! Extensions specific to the HTTP/2 protocol.
-use std::{convert::TryFrom, fmt};
+use std::fmt;
 
-use ntex_bytes::{ByteString, Bytes};
+use ntex_bytes::ByteString;
 
 /// Represents the `:protocol` pseudo-header used by
 /// the [Extended CONNECT Protocol].
@@ -25,12 +25,6 @@ impl Protocol {
     pub fn as_str(&self) -> &str {
         self.value.as_ref()
     }
-
-    pub(crate) fn try_from(bytes: Bytes) -> Result<Self, ()> {
-        Ok(Self {
-            value: ByteString::try_from(bytes)?,
-        })
-    }
 }
 
 impl<'a> From<&'a str> for Protocol {
@@ -38,6 +32,18 @@ impl<'a> From<&'a str> for Protocol {
         Self {
             value: ByteString::from(value),
         }
+    }
+}
+
+impl From<ByteString> for Protocol {
+    fn from(value: ByteString) -> Self {
+        Protocol { value }
+    }
+}
+
+impl From<Protocol> for ByteString {
+    fn from(proto: Protocol) -> Self {
+        proto.value
     }
 }
 

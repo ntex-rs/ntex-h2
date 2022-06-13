@@ -100,7 +100,6 @@ mod default;
 mod message;
 mod request;
 
-pub mod ext;
 pub mod frame;
 pub mod server;
 //pub mod client;

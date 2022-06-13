@@ -4,7 +4,6 @@ use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
 
 use super::{DecoderError, NeedMore};
-use crate::ext::Protocol;
 
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -15,7 +14,7 @@ pub enum Header<T = HeaderName> {
     Method(Method),
     Scheme(ByteString),
     Path(ByteString),
-    Protocol(Protocol),
+    Protocol(ByteString),
     Status(StatusCode),
 }
 
@@ -80,7 +79,7 @@ impl Header {
                     Ok(Header::Path(value))
                 }
                 b"protocol" => {
-                    let value = Protocol::try_from(value)?;
+                    let value = ByteString::try_from(value)?;
                     Ok(Header::Protocol(value))
                 }
                 b"status" => {
@@ -108,7 +107,7 @@ impl Header {
             Header::Method(ref v) => 32 + 7 + v.as_ref().len(),
             Header::Scheme(ref v) => 32 + 7 + v.len(),
             Header::Path(ref v) => 32 + 5 + v.len(),
-            Header::Protocol(ref v) => 32 + 9 + v.as_str().len(),
+            Header::Protocol(ref v) => 32 + 9 + v.len(),
             Header::Status(_) => 32 + 7 + 3,
         }
     }
@@ -133,7 +132,7 @@ impl Header {
             Header::Method(ref v) => v.as_ref().as_ref(),
             Header::Scheme(ref v) => v.as_bytes(),
             Header::Path(ref v) => v.as_bytes(),
-            Header::Protocol(ref v) => v.as_ref(),
+            Header::Protocol(ref v) => v.as_bytes(),
             Header::Status(ref v) => v.as_str().as_ref(),
         }
     }
@@ -233,7 +232,7 @@ impl<'a> Name<'a> {
             Name::Method => Ok(Header::Method(Method::from_bytes(&*value)?)),
             Name::Scheme => Ok(Header::Scheme(ByteString::try_from(value)?)),
             Name::Path => Ok(Header::Path(ByteString::try_from(value)?)),
-            Name::Protocol => Ok(Header::Protocol(Protocol::try_from(value)?)),
+            Name::Protocol => Ok(Header::Protocol(ByteString::try_from(value)?)),
             Name::Status => {
                 match StatusCode::from_bytes(&value) {
                     Ok(status) => Ok(Header::Status(status)),
