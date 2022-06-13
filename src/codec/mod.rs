@@ -7,11 +7,14 @@ mod error;
 mod length_delimited;
 mod partial;
 
-use self::{length_delimited::LengthDelimitedCodec, partial::Continuable, partial::Partial};
+use self::{length_delimited::LengthDelimitedCodec, partial::Partial};
 use crate::{frame, frame::Frame, frame::Kind, hpack};
 
 // 16 MB "sane default" taken from golang http2
 const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
+
+// Push promise frame kind
+const PUSH_PROMISE: u8 = 5;
 
 #[derive(Debug)]
 pub struct Codec(RefCell<CodecInner>);
@@ -89,17 +92,15 @@ impl Codec {
 macro_rules! header_block {
     ($slf:ident, $frame:ident, $head:ident, $bytes:ident) => ({
         // Drop the frame header
-        // TODO: Change to drain: carllerche/bytes#130
         let _ = $bytes.split_to(frame::HEADER_LEN);
 
         // Parse the header frame w/o parsing the payload
-        let (mut frame, mut payload) = match frame::$frame::load($head, $bytes) {
+        let mut frame = match frame::$frame::load($head, &mut $bytes) {
             Ok(res) => Ok(res),
             Err(frame::Error::InvalidDependencyId) => {
                 proto_err!(stream: "invalid HEADERS dependency ID");
                 // A stream cannot depend on itself. An endpoint MUST
-                // treat this as a stream error (Section 5.4.2) of type
-                // `PROTOCOL_ERROR`.
+                // treat this as a stream error (Section 5.4.2) of type `PROTOCOL_ERROR`.
                 Err(frame::Error::InvalidDependencyId)
             },
             Err(e) => {
@@ -111,7 +112,7 @@ macro_rules! header_block {
         let is_end_headers = frame.is_end_headers();
 
         // Load the HPACK encoded headers
-        match frame.load_hpack(&mut payload, $slf.decoder_max_header_list_size, &mut $slf.decoder_hpack) {
+        match frame.load_hpack(&mut $bytes, $slf.decoder_max_header_list_size, &mut $slf.decoder_hpack) {
             Ok(_) => {},
             Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
             Err(frame::Error::MalformedMessage) => {
@@ -128,11 +129,11 @@ macro_rules! header_block {
         if is_end_headers {
             frame.into()
         } else {
-            tracing::trace!("loaded partial header block");
+            log::trace!("loaded partial header block");
             // Defer returning the frame
             $slf.partial = Some(Partial {
-                frame: Continuable::$frame(frame),
-                buf: payload,
+                frame,
+                buf: $bytes.split(),
             });
 
             return Ok(None);
@@ -157,76 +158,66 @@ impl Decoder for Codec {
             return Ok(None);
         };
 
+        // check push promise, we do not support push
+        if bytes[3] == PUSH_PROMISE {
+            return Err(frame::Error::UnexpectedPushPromise);
+        }
+
         // Parse the head
         let head = frame::Head::parse(&bytes);
+        let kind = head.kind();
 
-        if inner.partial.is_some() && head.kind() != Kind::Continuation {
-            proto_err!(conn: "expected CONTINUATION, got {:?}", head.kind());
+        if inner.partial.is_some() && kind != Kind::Continuation {
+            proto_err!(conn: "expected CONTINUATION, got {:?}", kind);
             return Err(frame::Error::Continuation(
                 frame::ContinuationError::Expected,
             ));
         }
 
-        let kind = head.kind();
-
-        // tracing::trace!(frame.kind = ?kind);
+        // log::trace!(frame.kind = ?kind);
         let frame = match kind {
-            Kind::Settings => {
-                let res = frame::Settings::load(head, &bytes[frame::HEADER_LEN..]);
-
-                res.map_err(|e| {
+            Kind::Settings => frame::Settings::load(head, &bytes[frame::HEADER_LEN..])
+                .map_err(|e| {
                     proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
                     e
                 })?
-                .into()
-            }
-            Kind::Ping => {
-                let res = frame::Ping::load(head, &bytes[frame::HEADER_LEN..]);
-
-                res.map_err(|e| {
+                .into(),
+            Kind::Ping => frame::Ping::load(head, &bytes[frame::HEADER_LEN..])
+                .map_err(|e| {
                     proto_err!(conn: "failed to load PING frame; err={:?}", e);
                     e
                 })?
-                .into()
-            }
-            Kind::WindowUpdate => {
-                let res = frame::WindowUpdate::load(head, &bytes[frame::HEADER_LEN..]);
-
-                res.map_err(|e| {
+                .into(),
+            Kind::WindowUpdate => frame::WindowUpdate::load(head, &bytes[frame::HEADER_LEN..])
+                .map_err(|e| {
                     proto_err!(conn: "failed to load WINDOW_UPDATE frame; err={:?}", e);
                     e
                 })?
-                .into()
-            }
+                .into(),
             Kind::Data => {
                 let _ = bytes.split_to(frame::HEADER_LEN);
-                let res = frame::Data::load(head, bytes.freeze());
 
-                // TODO: Should this always be connection level? Probably not...
-                res.map_err(|e| {
-                    proto_err!(conn: "failed to load DATA frame; err={:?}", e);
-                    e
-                })?
-                .into()
+                frame::Data::load(head, bytes.freeze())
+                    // TODO: Should this always be connection level? Probably not...
+                    .map_err(|e| {
+                        proto_err!(conn: "failed to load DATA frame; err={:?}", e);
+                        e
+                    })?
+                    .into()
             }
             Kind::Headers => header_block!(inner, Headers, head, bytes),
-            Kind::Reset => {
-                let res = frame::Reset::load(head, &bytes[frame::HEADER_LEN..]);
-                res.map_err(|e| {
+            Kind::Reset => frame::Reset::load(head, &bytes[frame::HEADER_LEN..])
+                .map_err(|e| {
                     proto_err!(conn: "failed to load RESET frame; err={:?}", e);
                     e
                 })?
-                .into()
-            }
-            Kind::GoAway => {
-                let res = frame::GoAway::load(&bytes[frame::HEADER_LEN..]);
-                res.map_err(|e| {
+                .into(),
+            Kind::GoAway => frame::GoAway::load(&bytes[frame::HEADER_LEN..])
+                .map_err(|e| {
                     proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
                     e
                 })?
-                .into()
-            }
-            Kind::PushPromise => header_block!(inner, PushPromise, head, bytes),
+                .into(),
             Kind::Priority => {
                 if head.stream_id() == 0 {
                     // Invalid stream identifier
@@ -253,15 +244,11 @@ impl Decoder for Codec {
             Kind::Continuation => {
                 let is_end_headers = (head.flag() & 0x4) == 0x4;
 
-                let mut partial = match inner.partial.take() {
-                    Some(partial) => partial,
-                    None => {
-                        proto_err!(conn: "received unexpected CONTINUATION frame");
-                        return Err(frame::Error::Continuation(
-                            frame::ContinuationError::Unexpected,
-                        ));
-                    }
-                };
+                // get partial frame
+                let mut partial = inner.partial.take().ok_or_else(|| {
+                    proto_err!(conn: "received unexpected CONTINUATION frame");
+                    frame::Error::Continuation(frame::ContinuationError::Unexpected)
+                })?;
 
                 // The stream identifiers must match
                 if partial.frame.stream_id() != head.stream_id() {
@@ -283,8 +270,7 @@ impl Decoder for Codec {
                         //
                         // Still, we need to be careful, because if a malicious
                         // attacker were to try to send a gigantic string, such
-                        // that it fits over multiple header blocks, we could
-                        // grow memory uncontrollably again, and that'd be a shame.
+                        // that it fits over multiple header blocks.
                         //
                         // Instead, we use a simple heuristic to determine if
                         // we should continue to ignore decoding, or to tell
@@ -348,23 +334,16 @@ impl Encoder for Codec {
         match item {
             Frame::Data(mut v) => {
                 // Ensure that the payload is not greater than the max frame.
-                let len = v.payload().remaining();
+                let len = v.payload().len();
                 if len > inner.encoder_max_frame_size as usize {
                     return Err(error::EncoderError::MaxSizeExceeded);
                 }
-
-                // Encode the frame head to the buffer
-                let head = v.head();
-                head.encode(len, buf);
-                v.encode_chunk(buf);
+                v.encode(buf);
 
                 // Save off the last frame...
                 inner.encoder_last_data_frame = Some(v);
             }
             Frame::Headers(v) => {
-                v.encode(&mut inner.encoder_hpack, buf);
-            }
-            Frame::PushPromise(v) => {
                 v.encode(&mut inner.encoder_hpack, buf);
             }
             Frame::Settings(v) => {
@@ -385,11 +364,7 @@ impl Encoder for Codec {
             }
 
             Frame::Priority(_) => {
-                /*
-                v.encode(self.buf.get_mut());
-                tracing::trace!("encoded priority; rem={:?}", self.buf.remaining());
-                */
-                unimplemented!();
+                unimplemented!()
             }
             Frame::Reset(v) => {
                 v.encode(buf);

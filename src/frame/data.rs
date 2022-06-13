@@ -1,4 +1,4 @@
-use ntex_bytes::{Buf, BufMut, Bytes};
+use ntex_bytes::{Bytes, BytesMut};
 
 use crate::frame::{util, Error, Frame, Head, Kind, StreamId};
 
@@ -12,10 +12,9 @@ pub struct Data {
     stream_id: StreamId,
     data: Bytes,
     flags: DataFlags,
-    pad_len: Option<u8>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Default, Copy, Clone, Eq, PartialEq)]
 struct DataFlags(u8);
 
 const END_STREAM: u8 = 0x1;
@@ -31,7 +30,6 @@ impl Data {
             stream_id,
             data: payload,
             flags: DataFlags::default(),
-            pad_len: None,
         }
     }
 
@@ -54,24 +52,8 @@ impl Data {
     }
 
     /// Sets the value for the `END_STREAM` flag on this frame.
-    pub fn set_end_stream(&mut self, val: bool) {
-        if val {
-            self.flags.set_end_stream();
-        } else {
-            self.flags.unset_end_stream();
-        }
-    }
-
-    /// Returns whether the `PADDED` flag is set on this frame.
-    #[cfg(feature = "unstable")]
-    pub fn is_padded(&self) -> bool {
-        self.flags.is_padded()
-    }
-
-    /// Sets the value for the `PADDED` flag on this frame.
-    #[cfg(feature = "unstable")]
-    pub fn set_padded(&mut self) {
-        self.flags.set_padded();
+    pub fn set_end_stream(&mut self) {
+        self.flags.set_end_stream();
     }
 
     /// Returns a reference to this frame's payload.
@@ -101,10 +83,8 @@ impl Data {
     pub(crate) fn head(&self) -> Head {
         Head::new(Kind::Data, self.flags.into(), self.stream_id)
     }
-}
 
-impl Data {
-    pub(crate) fn load(head: Head, mut payload: Bytes) -> Result<Self, Error> {
+    pub(crate) fn load(head: Head, mut data: Bytes) -> Result<Self, Error> {
         let flags = DataFlags::load(head.flag());
 
         // The stream identifier must not be zero
@@ -112,35 +92,23 @@ impl Data {
             return Err(Error::InvalidStreamId);
         }
 
-        let pad_len = if flags.is_padded() {
-            let len = util::strip_padding(&mut payload)?;
-            Some(len)
-        } else {
-            None
-        };
+        if flags.is_padded() {
+            util::strip_padding(&mut data)?;
+        }
 
         Ok(Data {
-            stream_id: head.stream_id(),
-            data: payload,
+            data,
             flags,
-            pad_len,
+            stream_id: head.stream_id(),
         })
     }
-}
 
-impl Data {
     /// Encode the data frame into the `dst` buffer.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `dst` cannot contain the data frame.
-    pub(crate) fn encode_chunk<U: BufMut>(&mut self, dst: &mut U) {
-        let len = self.data.remaining() as usize;
-
-        assert!(dst.remaining_mut() >= len);
-
-        self.head().encode(len, dst);
-        dst.put(&mut self.data);
+    pub(crate) fn encode(&self, dst: &mut BytesMut) {
+        // Encode the frame head to the buffer
+        self.head().encode(self.data.len(), dst);
+        // Encode payload
+        dst.extend_from_slice(&self.data);
     }
 }
 
@@ -156,9 +124,6 @@ impl std::fmt::Debug for Data {
         f.field("stream_id", &self.stream_id);
         if !self.flags.is_empty() {
             f.field("flags", &self.flags);
-        }
-        if let Some(ref pad_len) = self.pad_len {
-            f.field("pad_len", pad_len);
         }
         // `data` bytes purposefully excluded
         f.finish()
@@ -184,10 +149,6 @@ impl DataFlags {
         self.0 |= END_STREAM
     }
 
-    fn unset_end_stream(&mut self) {
-        self.0 &= !END_STREAM
-    }
-
     fn is_padded(&self) -> bool {
         self.0 & PADDED == PADDED
     }
@@ -195,12 +156,6 @@ impl DataFlags {
     #[cfg(feature = "unstable")]
     fn set_padded(&mut self) {
         self.0 |= PADDED
-    }
-}
-
-impl Default for DataFlags {
-    fn default() -> Self {
-        DataFlags(0)
     }
 }
 

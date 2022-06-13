@@ -18,17 +18,9 @@ const SHUTDOWN_PAYLOAD: Payload = [0x0b, 0x7b, 0xa2, 0xf0, 0x8b, 0x9b, 0xfe, 0x5
 const USER_PAYLOAD: Payload = [0x3b, 0x7c, 0xdb, 0x7a, 0x0b, 0x87, 0x16, 0xb4];
 
 impl Ping {
-    #[cfg(feature = "unstable")]
     pub const SHUTDOWN: Payload = SHUTDOWN_PAYLOAD;
 
-    #[cfg(not(feature = "unstable"))]
-    pub(crate) const SHUTDOWN: Payload = SHUTDOWN_PAYLOAD;
-
-    #[cfg(feature = "unstable")]
     pub const USER: Payload = USER_PAYLOAD;
-
-    #[cfg(not(feature = "unstable"))]
-    pub(crate) const USER: Payload = USER_PAYLOAD;
 
     pub fn new(payload: Payload) -> Ping {
         Ping {
@@ -86,7 +78,7 @@ impl Ping {
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
         let sz = self.payload.len();
-        tracing::trace!("encoding PING; ack={} len={}", self.ack, sz);
+        log::trace!("encoding PING; ack={} len={}", self.ack, sz);
 
         let flags = if self.ack { ACK_FLAG } else { 0 };
         let head = Head::new(Kind::Ping, flags, StreamId::zero());

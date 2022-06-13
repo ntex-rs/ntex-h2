@@ -6,33 +6,21 @@ use crate::{frame, hpack};
 #[derive(Debug)]
 pub(crate) struct Partial {
     /// Empty frame
-    pub(crate) frame: Continuable,
+    pub(crate) frame: frame::Headers,
 
     /// Partial header payload
     pub(crate) buf: BytesMut,
 }
 
-#[derive(Debug)]
-pub(crate) enum Continuable {
-    Headers(frame::Headers),
-    PushPromise(frame::PushPromise),
-}
-
 // ===== impl Continuable =====
 
-impl Continuable {
+impl Partial {
     pub(crate) fn stream_id(&self) -> frame::StreamId {
-        match *self {
-            Continuable::Headers(ref h) => h.stream_id(),
-            Continuable::PushPromise(ref p) => p.stream_id(),
-        }
+        self.frame.stream_id()
     }
 
     pub(crate) fn is_over_size(&self) -> bool {
-        match *self {
-            Continuable::Headers(ref h) => h.is_over_size(),
-            Continuable::PushPromise(ref p) => p.is_over_size(),
-        }
+        self.frame.is_over_size()
     }
 
     pub(crate) fn load_hpack(
@@ -41,24 +29,6 @@ impl Continuable {
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), frame::Error> {
-        match *self {
-            Continuable::Headers(ref mut h) => h.load_hpack(src, max_header_list_size, decoder),
-            Continuable::PushPromise(ref mut p) => p.load_hpack(src, max_header_list_size, decoder),
-        }
-    }
-}
-
-impl From<Continuable> for frame::Frame {
-    fn from(cont: Continuable) -> Self {
-        match cont {
-            Continuable::Headers(mut headers) => {
-                headers.set_end_headers();
-                headers.into()
-            }
-            Continuable::PushPromise(mut push) => {
-                push.set_end_headers();
-                push.into()
-            }
-        }
+        self.frame.load_hpack(src, max_header_list_size, decoder)
     }
 }

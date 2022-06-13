@@ -1,5 +1,8 @@
+use std::convert::TryFrom;
+
 use ntex::service::{fn_service, pipeline_factory};
-use ntex_h2::{server, ControlMessage};
+use ntex_h2::{server, ControlMessage, Message, MessageKind, Response};
+use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{AlpnError, SslAcceptor, SslFiletype, SslMethod};
 
@@ -38,7 +41,42 @@ async fn main() -> std::io::Result<()> {
                             println!("T: {:?}", msg);
                             Ok::<_, ()>(msg.ack())
                         })
-                        .finish(fn_service(|_msg: ()| async move { Ok::<_, ()>(()) })),
+                        .finish(fn_service(|mut msg: Message| async move {
+                            match msg.kind().take() {
+                                MessageKind::Request { req, eof } => {
+                                    println!("Got request: {:#?}", req);
+                                    let mut hdrs = HeaderMap::default();
+                                    hdrs.insert(
+                                        header::CONTENT_TYPE,
+                                        header::HeaderValue::try_from("text/plain").unwrap(),
+                                    );
+                                    let res = Response {
+                                        status: StatusCode::OK,
+                                        headers: hdrs,
+                                    };
+                                    msg.stream().send_response(res, false);
+                                    msg.stream().send_payload("hello world".into(), false);
+
+                                    let mut hdrs = HeaderMap::default();
+                                    hdrs.insert(
+                                        header::CONTENT_TYPE,
+                                        header::HeaderValue::try_from("blah").unwrap(),
+                                    );
+                                    msg.stream().send_trailers(hdrs);
+                                }
+                                MessageKind::Data(data) => {
+                                    println!("Got data: {:?}", data.len());
+                                }
+                                MessageKind::DataEof(data) => {
+                                    println!("Got eof data: {:?}", data.len());
+                                }
+                                MessageKind::Reset(reason) => {
+                                    println!("Got reset: {:?}", reason);
+                                }
+                                MessageKind::Empty => {}
+                            }
+                            Ok::<_, ()>(())
+                        })),
                 )
         })?
         .workers(1)

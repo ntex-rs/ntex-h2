@@ -1,6 +1,5 @@
+#![deny(dead_code, warnings)]
 use std::fmt;
-
-use ntex_bytes::Bytes;
 
 /// A helper macro that unpacks a sequence of 4 bytes found in the buffer with
 /// the given identifier, starting at the given offset, into the given integer
@@ -49,7 +48,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
-pub use self::headers::{parse_u64, Headers, Pseudo, PushPromise, PushPromiseHeaderError};
+pub use self::headers::{parse_u64, Headers, Pseudo};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
 pub use self::reason::Reason;
@@ -71,12 +70,10 @@ pub type WindowSize = u32;
 
 pub const HEADER_LEN: usize = 9;
 
-#[derive(Eq, PartialEq)]
 pub enum Frame {
     Data(Data),
     Headers(Headers),
     Priority(Priority),
-    PushPromise(PushPromise),
     Settings(Settings),
     Ping(Ping),
     GoAway(GoAway),
@@ -92,7 +89,6 @@ impl fmt::Debug for Frame {
             Data(ref frame) => fmt::Debug::fmt(frame, fmt),
             Headers(ref frame) => fmt::Debug::fmt(frame, fmt),
             Priority(ref frame) => fmt::Debug::fmt(frame, fmt),
-            PushPromise(ref frame) => fmt::Debug::fmt(frame, fmt),
             Settings(ref frame) => fmt::Debug::fmt(frame, fmt),
             Ping(ref frame) => fmt::Debug::fmt(frame, fmt),
             GoAway(ref frame) => fmt::Debug::fmt(frame, fmt),
@@ -103,7 +99,7 @@ impl fmt::Debug for Frame {
 }
 
 /// Errors that can occur during parsing an HTTP/2 frame.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Error {
     /// A length value other than 8 was set on a PING message.
     BadFrameSize,
@@ -146,6 +142,9 @@ pub enum Error {
     /// An invalid preface
     InvalidPreface,
 
+    /// Unexpected push promise
+    UnexpectedPushPromise,
+
     /// Continuation related error
     Continuation(ContinuationError),
 
@@ -153,7 +152,7 @@ pub enum Error {
     Hpack(hpack::DecoderError),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ContinuationError {
     /// Continuation frame is expected
     Expected,

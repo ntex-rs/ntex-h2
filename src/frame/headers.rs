@@ -1,18 +1,15 @@
 use std::{fmt, io::Cursor};
 
-use http::header::{self, HeaderName, HeaderValue};
-use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
-use ntex_bytes::{BufMut, ByteString, Bytes, BytesMut};
+use ntex_bytes::{ByteString, Bytes, BytesMut};
+use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
 
 use super::{util, StreamId};
-use crate::ext::Protocol;
-use crate::frame::{Error, Frame, Head, Kind};
-use crate::hpack;
+use super::{Error, Frame, Head, Kind};
+use crate::{ext::Protocol, hpack};
 
 /// Header frame
 ///
 /// This could be either a request or a response.
-#[derive(Eq, PartialEq)]
 pub struct Headers {
     /// The ID of the stream with which this frame is associated.
     stream_id: StreamId,
@@ -27,26 +24,8 @@ pub struct Headers {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
-#[derive(Eq, PartialEq)]
-pub struct PushPromise {
-    /// The ID of the stream with which this frame is associated.
-    stream_id: StreamId,
-
-    /// The ID of the stream being reserved by this PushPromise.
-    promised_id: StreamId,
-
-    /// The header block fragment
-    header_block: HeaderBlock,
-
-    /// The associated flags
-    flags: PushPromiseFlag,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-pub struct PushPromiseFlag(u8);
-
 // TODO: These fields shouldn't be `pub`
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct Pseudo {
     // Request
     pub method: Option<Method>,
@@ -59,16 +38,15 @@ pub struct Pseudo {
     pub status: Option<StatusCode>,
 }
 
-#[derive(Debug)]
-pub struct Iter {
+pub struct Iter<'a> {
     /// Pseudo headers
     pseudo: Option<Pseudo>,
 
     /// Header fields
-    fields: header::IntoIter<HeaderValue>,
+    fields: header::Iter<'a>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
@@ -101,8 +79,8 @@ impl Headers {
             stream_id,
             header_block: HeaderBlock {
                 fields,
-                is_over_size: false,
                 pseudo,
+                is_over_size: false,
             },
             flags: HeadersFlag::default(),
         }
@@ -114,19 +92,19 @@ impl Headers {
 
         Headers {
             stream_id,
+            flags,
             header_block: HeaderBlock {
                 fields,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
-            flags,
         }
     }
 
     /// Loads the header frame but doesn't actually do HPACK decoding.
     ///
     /// HPACK decoding is done in the `load_hpack` step.
-    pub fn load(head: Head, mut src: BytesMut) -> Result<(Self, BytesMut), Error> {
+    pub fn load(head: Head, src: &mut BytesMut) -> Result<Self, Error> {
         let flags = HeadersFlag(head.flag());
         log::trace!("loading headers; flags={:?}", flags);
 
@@ -163,7 +141,7 @@ impl Headers {
             src.truncate(src.len() - pad);
         }
 
-        let headers = Headers {
+        Ok(Headers {
             flags,
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
@@ -171,9 +149,7 @@ impl Headers {
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
-        };
-
-        Ok((headers, src))
+        })
     }
 
     pub fn load_hpack(
@@ -213,13 +189,12 @@ impl Headers {
         (self.header_block.pseudo, self.header_block.fields)
     }
 
-    /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
-        self.header_block.pseudo.is_informational()
-    }
-
     pub fn fields(&self) -> &HeaderMap {
         &self.header_block.fields
+    }
+
+    pub fn pseudo(&self) -> &Pseudo {
+        &self.header_block.pseudo
     }
 
     pub fn into_fields(self) -> HeaderMap {
@@ -274,9 +249,8 @@ pub fn parse_u64(src: &[u8]) -> Result<u64, ()> {
     }
 
     let mut ret = 0;
-
     for &d in src {
-        if d < b'0' || d > b'9' {
+        if !(b'0'..=b'9').contains(&d) {
             return Err(());
         }
 
@@ -285,194 +259,6 @@ pub fn parse_u64(src: &[u8]) -> Result<u64, ()> {
     }
 
     Ok(ret)
-}
-
-// ===== impl PushPromise =====
-
-#[derive(Debug)]
-pub enum PushPromiseHeaderError {
-    InvalidContentLength(Result<u64, ()>),
-    NotSafeAndCacheable,
-}
-
-impl PushPromise {
-    pub fn new(
-        stream_id: StreamId,
-        promised_id: StreamId,
-        pseudo: Pseudo,
-        fields: HeaderMap,
-    ) -> Self {
-        PushPromise {
-            flags: PushPromiseFlag::default(),
-            header_block: HeaderBlock {
-                fields,
-                is_over_size: false,
-                pseudo,
-            },
-            promised_id,
-            stream_id,
-        }
-    }
-
-    pub fn validate_request(req: &Request<()>) -> Result<(), PushPromiseHeaderError> {
-        use PushPromiseHeaderError::*;
-        // The spec has some requirements for promised request headers
-        // [https://httpwg.org/specs/rfc7540.html#PushRequests]
-
-        // A promised request "that indicates the presence of a request body
-        // MUST reset the promised stream with a stream error"
-        if let Some(content_length) = req.headers().get(header::CONTENT_LENGTH) {
-            let parsed_length = parse_u64(content_length.as_bytes());
-            if parsed_length != Ok(0) {
-                return Err(InvalidContentLength(parsed_length));
-            }
-        }
-        // "The server MUST include a method in the :method pseudo-header field
-        // that is safe and cacheable"
-        if !Self::safe_and_cacheable(req.method()) {
-            return Err(NotSafeAndCacheable);
-        }
-
-        Ok(())
-    }
-
-    fn safe_and_cacheable(method: &Method) -> bool {
-        // Cacheable: https://httpwg.org/specs/rfc7231.html#cacheable.methods
-        // Safe: https://httpwg.org/specs/rfc7231.html#safe.methods
-        return method == Method::GET || method == Method::HEAD;
-    }
-
-    pub fn fields(&self) -> &HeaderMap {
-        &self.header_block.fields
-    }
-
-    #[cfg(feature = "unstable")]
-    pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
-    }
-
-    /// Loads the push promise frame but doesn't actually do HPACK decoding.
-    ///
-    /// HPACK decoding is done in the `load_hpack` step.
-    pub fn load(head: Head, mut src: BytesMut) -> Result<(Self, BytesMut), Error> {
-        let flags = PushPromiseFlag(head.flag());
-        let mut pad = 0;
-
-        if head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
-        }
-
-        // Read the padding length
-        if flags.is_padded() {
-            if src.is_empty() {
-                return Err(Error::MalformedMessage);
-            }
-
-            // TODO: Ensure payload is sized correctly
-            pad = src[0] as usize;
-
-            // Drop the padding
-            let _ = src.split_to(1);
-        }
-
-        if src.len() < 5 {
-            return Err(Error::MalformedMessage);
-        }
-
-        let (promised_id, _) = StreamId::parse(&src[..4]);
-        // Drop promised_id bytes
-        let _ = src.split_to(4);
-
-        if pad > 0 {
-            if pad > src.len() {
-                return Err(Error::TooMuchPadding);
-            }
-
-            let len = src.len() - pad;
-            src.truncate(len);
-        }
-
-        let frame = PushPromise {
-            flags,
-            header_block: HeaderBlock {
-                fields: HeaderMap::new(),
-                is_over_size: false,
-                pseudo: Pseudo::default(),
-            },
-            promised_id,
-            stream_id: head.stream_id(),
-        };
-        Ok((frame, src))
-    }
-
-    pub fn load_hpack(
-        &mut self,
-        src: &mut BytesMut,
-        max_header_list_size: usize,
-        decoder: &mut hpack::Decoder,
-    ) -> Result<(), Error> {
-        self.header_block.load(src, max_header_list_size, decoder)
-    }
-
-    pub fn stream_id(&self) -> StreamId {
-        self.stream_id
-    }
-
-    pub fn promised_id(&self) -> StreamId {
-        self.promised_id
-    }
-
-    pub fn is_end_headers(&self) -> bool {
-        self.flags.is_end_headers()
-    }
-
-    pub fn set_end_headers(&mut self) {
-        self.flags.set_end_headers();
-    }
-
-    pub fn is_over_size(&self) -> bool {
-        self.header_block.is_over_size
-    }
-
-    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut) {
-        // At this point, the `is_end_headers` flag should always be set
-        debug_assert!(self.flags.is_end_headers());
-
-        let head = self.head();
-        let promised_id = self.promised_id;
-
-        self.header_block
-            .into_encoding(encoder)
-            .encode(&head, dst, |dst| {
-                dst.put_u32(promised_id.into());
-            })
-    }
-
-    fn head(&self) -> Head {
-        Head::new(Kind::PushPromise, self.flags.into(), self.stream_id)
-    }
-
-    /// Consume `self`, returning the parts of the frame
-    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
-    }
-}
-
-impl From<PushPromise> for Frame {
-    fn from(src: PushPromise) -> Self {
-        Frame::PushPromise(src)
-    }
-}
-
-impl fmt::Debug for PushPromise {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.debug_struct("PushPromise")
-            .field("stream_id", &self.stream_id)
-            .field("promised_id", &self.promised_id)
-            .field("flags", &self.flags)
-            // `fields` and `pseudo` purposefully not included
-            .finish()
-    }
 }
 
 // ===== impl Pseudo =====
@@ -550,11 +336,11 @@ impl Pseudo {
         self.authority = Some(authority);
     }
 
-    /// Whether it has status 1xx
-    pub(crate) fn is_informational(&self) -> bool {
-        self.status
-            .map_or(false, |status| status.is_informational())
-    }
+    // /// Whether it has status 1xx
+    // pub(crate) fn is_informational(&self) -> bool {
+    //     self.status
+    //         .map_or(false, |status| status.is_informational())
+    // }
 }
 
 // ===== impl EncodingHeaderBlock =====
@@ -590,7 +376,7 @@ impl EncodingHeaderBlock {
 
 // ===== impl Iter =====
 
-impl Iterator for Iter {
+impl<'a> Iterator for Iter<'a> {
     type Item = hpack::Header<Option<HeaderName>>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -624,9 +410,10 @@ impl Iterator for Iter {
 
         self.pseudo = None;
 
-        self.fields
-            .next()
-            .map(|(name, value)| Field { name, value })
+        self.fields.next().map(|(name, value)| Field {
+            name: Some(name.clone()),
+            value: value.clone(),
+        })
     }
 }
 
@@ -686,52 +473,6 @@ impl fmt::Debug for HeadersFlag {
             .flag_if(self.is_end_stream(), "END_STREAM")
             .flag_if(self.is_padded(), "PADDED")
             .flag_if(self.is_priority(), "PRIORITY")
-            .finish()
-    }
-}
-
-// ===== impl PushPromiseFlag =====
-
-impl PushPromiseFlag {
-    pub fn empty() -> PushPromiseFlag {
-        PushPromiseFlag(0)
-    }
-
-    pub fn load(bits: u8) -> PushPromiseFlag {
-        PushPromiseFlag(bits & ALL)
-    }
-
-    pub fn is_end_headers(&self) -> bool {
-        self.0 & END_HEADERS == END_HEADERS
-    }
-
-    pub fn set_end_headers(&mut self) {
-        self.0 |= END_HEADERS;
-    }
-
-    pub fn is_padded(&self) -> bool {
-        self.0 & PADDED == PADDED
-    }
-}
-
-impl Default for PushPromiseFlag {
-    /// Returns a `PushPromiseFlag` value with `END_HEADERS` set.
-    fn default() -> Self {
-        PushPromiseFlag(END_HEADERS)
-    }
-}
-
-impl From<PushPromiseFlag> for u8 {
-    fn from(src: PushPromiseFlag) -> u8 {
-        src.0
-    }
-}
-
-impl fmt::Debug for PushPromiseFlag {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        util::debug_flags(fmt, self.0)
-            .flag_if(self.is_end_headers(), "END_HEADERS")
-            .flag_if(self.is_padded(), "PADDED")
             .finish()
     }
 }
@@ -905,7 +646,7 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 mod test {
     use std::iter::FromIterator;
 
-    use http::HeaderValue;
+    use ntex_http::HeaderValue;
 
     use super::*;
     use crate::frame;

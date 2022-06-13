@@ -1,8 +1,7 @@
-use super::table::{Index, Table};
-use super::{huffman, Header};
-
-use http::header::{HeaderName, HeaderValue};
 use ntex_bytes::{BufMut, BytesMut};
+use ntex_http::header::{HeaderName, HeaderValue};
+
+use super::{huffman, table::Index, table::Table, Header};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -62,9 +61,6 @@ impl Encoder {
     where
         I: IntoIterator<Item = Header<Option<HeaderName>>>,
     {
-        let span = tracing::trace_span!("hpack::encode");
-        let _e = span.enter();
-
         self.encode_size_updates(dst);
 
         let mut last_index = None;
@@ -298,9 +294,10 @@ fn position(buf: &BytesMut) -> usize {
 
 #[cfg(test)]
 mod test {
+    use ntex_http::*;
+
     use super::*;
     use crate::hpack::Header;
-    use http::*;
 
     #[test]
     fn test_encode_method_get() {

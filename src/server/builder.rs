@@ -4,7 +4,7 @@ use ntex_service::{IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::time::Seconds;
 
 use crate::control::{ControlMessage, ControlResult};
-use crate::{consts, default::DefaultControlService, frame::Settings};
+use crate::{consts, default::DefaultControlService, frame::Settings, message::Message};
 
 use super::service::{Server, ServerInner};
 
@@ -73,6 +73,7 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     where
         F: IntoServiceFactory<S, ControlMessage<E>>,
         S: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
+        S::Error: fmt::Debug,
         S::InitError: fmt::Debug,
     {
         ServerBuilder {
@@ -292,13 +293,14 @@ impl<E, Ctl> ServerBuilder<E, Ctl>
 where
     E: fmt::Debug,
     Ctl: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
 {
     /// Creates a new configured HTTP/2 server.
     pub fn finish<F, Pub>(self, service: F) -> Server<Ctl, Pub>
     where
-        F: IntoServiceFactory<Pub, ()>,
-        Pub: ServiceFactory<(), Response = (), Error = E> + 'static,
+        F: IntoServiceFactory<Pub, Message>,
+        Pub: ServiceFactory<Message, Response = (), Error = E> + 'static,
         Pub::InitError: fmt::Debug,
     {
         Server::new(ServerInner {

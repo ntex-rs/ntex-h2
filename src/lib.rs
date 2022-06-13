@@ -97,8 +97,8 @@ mod hpack;
 mod connection;
 mod control;
 mod default;
-mod stream;
-//mod share;
+mod message;
+mod request;
 
 pub mod ext;
 pub mod frame;
@@ -109,7 +109,8 @@ pub mod server;
 //pub mod fuzz_bridge;
 
 pub use crate::error::{ProtocolError, UserError};
-//pub use crate::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendStream, StreamId};
 
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};
+pub use self::message::{Message, MessageKind};
+pub use self::request::{Request, Response};

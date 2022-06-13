@@ -2,11 +2,18 @@ use std::{error, fmt, io};
 
 use ntex_bytes::Bytes;
 
-use crate::frame::{GoAway, Reason, StreamId};
+use crate::frame::{self, GoAway, Reason, StreamId};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ProtocolError {
     UnexpectedSettingsAck,
+    Frame(frame::Error),
+}
+
+impl From<frame::Error> for ProtocolError {
+    fn from(err: frame::Error) -> Self {
+        ProtocolError::Frame(err)
+    }
 }
 
 impl From<ProtocolError> for GoAway {
@@ -15,6 +22,26 @@ impl From<ProtocolError> for GoAway {
             ProtocolError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
             }
+            ProtocolError::Frame(err) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StreamError {
+    UnexpectedHeadersFrame,
+    UnexpectedDataFrame,
+    InternalError(&'static str),
+}
+
+impl From<StreamError> for Reason {
+    fn from(err: StreamError) -> Reason {
+        match err {
+            StreamError::UnexpectedHeadersFrame => Reason::PROTOCOL_ERROR,
+            StreamError::UnexpectedDataFrame => Reason::PROTOCOL_ERROR,
+            StreamError::InternalError(_) => Reason::INTERNAL_ERROR,
         }
     }
 }

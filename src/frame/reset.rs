@@ -16,6 +16,11 @@ impl Reset {
         }
     }
 
+    pub fn set_reason(mut self, error_code: Reason) -> Self {
+        self.error_code = error_code;
+        self
+    }
+
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
@@ -38,7 +43,7 @@ impl Reset {
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
-        tracing::trace!(
+        log::trace!(
             "encoding RESET; id={:?} code={:?}",
             self.stream_id,
             self.error_code

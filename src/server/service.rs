@@ -1,14 +1,12 @@
-use std::task::{Context, Poll};
-use std::{fmt, future::Future, marker, pin::Pin, rc::Rc, time::Duration};
+use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
-use ntex_bytes::Bytes;
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceFactory};
 use ntex_util::{future::Ready, time::timeout_checked, time::Seconds};
 
 use crate::connection::{Config, Connection};
 use crate::control::{ControlMessage, ControlResult};
-use crate::{codec::Codec, consts, default::DefaultControlService, frame, frame::Settings};
+use crate::{codec::Codec, consts, frame, frame::Settings, message::Message};
 
 use super::{dispatcher::Dispatcher, error::ServerError, ServerBuilder};
 
@@ -40,8 +38,9 @@ impl Server<(), ()> {
 impl<Ctl, Pub> Server<Ctl, Pub>
 where
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -53,8 +52,9 @@ where
 impl<Ctl, Pub> ServiceFactory<IoBoxed> for Server<Ctl, Pub>
 where
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -73,8 +73,9 @@ impl<F, Ctl, Pub> ServiceFactory<Io<F>> for Server<Ctl, Pub>
 where
     F: Filter,
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -95,8 +96,9 @@ pub struct ServerHandler<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 impl<Ctl, Pub> ServerHandler<Ctl, Pub>
 where
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -194,8 +196,9 @@ where
 impl<Ctl, Pub> Service<IoBoxed> for ServerHandler<Ctl, Pub>
 where
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -204,12 +207,12 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, _: &mut Context<'_>, _is_error: bool) -> Poll<()> {
         Poll::Ready(())
     }
 
@@ -222,8 +225,9 @@ impl<F, Ctl, Pub> Service<Io<F>> for ServerHandler<Ctl, Pub>
 where
     F: Filter,
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<(), Response = ()> + 'static,
+    Pub: ServiceFactory<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -232,12 +236,12 @@ where
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
 
     #[inline]
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     #[inline]
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, _: &mut Context<'_>, _is_error: bool) -> Poll<()> {
         Poll::Ready(())
     }
 

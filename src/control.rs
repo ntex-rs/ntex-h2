@@ -1,14 +1,16 @@
 use std::{fmt, io};
 
-use crate::error;
 use crate::frame::{self, Frame, Reason, Reset, StreamId};
+use crate::{connection::Stream, error};
 
 #[derive(Debug)]
 pub enum ControlMessage<E> {
     // /// Ping frame is received
     // Ping(frame::Ping),
     /// Application level error from publish service
-    StreamError(StreamError<E>),
+    AppError(AppError<E>),
+    /// Stream level error
+    StreamError(StreamError),
     /// Protocol level error
     ProtocolError(ProtocolError),
     /// Remote GoAway is received
@@ -33,8 +35,9 @@ impl<E> ControlMessage<E> {
     //     }))
     // }
 
-    pub(super) fn stream_error(err: E, stream_id: StreamId) -> Self {
-        ControlMessage::StreamError(StreamError::new(err, stream_id))
+    /// Create a new `ControlMessage` for app level errors
+    pub(super) fn app_error(err: E, stream: Stream) -> Self {
+        ControlMessage::AppError(AppError::new(err, stream))
     }
 
     /// Create a new `ControlMessage` from GOAWAY packet.
@@ -51,6 +54,12 @@ impl<E> ControlMessage<E> {
         ControlMessage::Terminated(Terminated::new(is_error))
     }
 
+    /// Create a new `ControlMessage` for stream level errors
+    pub(super) fn stream_error(err: error::StreamError, stream: Stream) -> Self {
+        ControlMessage::StreamError(StreamError::new(err, stream))
+    }
+
+    /// Create a new `ControlMessage` for protocol level errors
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlMessage::ProtocolError(ProtocolError::new(err))
     }
@@ -58,6 +67,7 @@ impl<E> ControlMessage<E> {
     /// Default ack impl
     pub fn ack(self) -> ControlResult {
         match self {
+            ControlMessage::AppError(item) => item.ack(),
             ControlMessage::StreamError(item) => item.ack(),
             ControlMessage::ProtocolError(item) => item.ack(),
             ControlMessage::GoAway(item) => item.ack(),
@@ -69,17 +79,17 @@ impl<E> ControlMessage<E> {
 
 /// Service level error
 #[derive(Debug)]
-pub struct StreamError<E> {
+pub struct AppError<E> {
     err: E,
-    sid: StreamId,
+    stream: Stream,
     reason: Reason,
 }
 
-impl<E> StreamError<E> {
-    pub fn new(err: E, sid: StreamId) -> Self {
+impl<E> AppError<E> {
+    pub fn new(err: E, stream: Stream) -> Self {
         Self {
             err,
-            sid,
+            stream,
             reason: Reason::CANCEL,
         }
     }
@@ -101,7 +111,7 @@ impl<E> StreamError<E> {
     /// Ack service error, return disconnect packet and close connection.
     pub fn ack(mut self) -> ControlResult {
         ControlResult {
-            frame: Some(Reset::new(self.sid, self.reason).into()),
+            frame: Some(Reset::new(self.stream.id(), self.reason).into()),
             disconnect: false,
         }
     }
@@ -141,6 +151,46 @@ impl Terminated {
         ControlResult {
             frame: None,
             disconnect: true,
+        }
+    }
+}
+
+/// Stream level error
+#[derive(Debug)]
+pub struct StreamError {
+    err: error::StreamError,
+    frm: frame::Reset,
+    stream: Stream,
+}
+
+impl StreamError {
+    pub fn new(err: error::StreamError, stream: Stream) -> Self {
+        Self {
+            frm: frame::Reset::new(stream.id(), err.into()),
+            err,
+            stream,
+        }
+    }
+
+    #[inline]
+    /// Returns reference to a protocol error
+    pub fn get_ref(&self) -> &error::StreamError {
+        &self.err
+    }
+
+    #[inline]
+    /// Set reason code for go away packet
+    pub fn reason(mut self, reason: Reason) -> Self {
+        self.frm = self.frm.set_reason(reason);
+        self
+    }
+
+    #[inline]
+    /// Ack protocol error, return disconnect packet and close connection.
+    pub fn ack(self) -> ControlResult {
+        ControlResult {
+            frame: Some(self.frm.into()),
+            disconnect: false,
         }
     }
 }

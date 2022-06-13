@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 
-use http::{header::HeaderName, header::HeaderValue, Method, StatusCode};
 use ntex_bytes::{ByteString, Bytes};
+use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
 
 use super::{DecoderError, NeedMore};
 use crate::ext::Protocol;
@@ -183,7 +183,7 @@ impl Header {
     }
 
     pub fn skip_value_index(&self) -> bool {
-        use http::header;
+        use ntex_http::header;
 
         match *self {
             Header::Field { ref name, .. } => match *name {
