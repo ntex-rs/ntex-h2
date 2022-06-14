@@ -1,5 +1,4 @@
 mod builder;
-mod dispatcher;
 mod error;
 mod service;
 

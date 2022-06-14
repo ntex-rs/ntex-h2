@@ -1,10 +1,11 @@
 use std::mem;
 
 use ntex_bytes::Bytes;
+use ntex_http::HeaderMap;
+use ntex_util::future::Either;
 
 use crate::connection::Stream;
-use crate::frame::Reason;
-use crate::request::Request;
+use crate::frame::{PseudoHeaders, Reason};
 
 #[derive(Debug)]
 pub struct Message {
@@ -14,18 +15,37 @@ pub struct Message {
 
 #[derive(Debug)]
 pub enum MessageKind {
-    Request { req: Request, eof: bool },
+    Headers {
+        pseudo: PseudoHeaders,
+        headers: HeaderMap,
+        eof: bool,
+    },
     Data(Bytes),
-    DataEof(Bytes),
-    Reset(Reason),
+    Eof(StreamEof),
     Empty,
 }
 
+#[derive(Debug, Clone)]
+pub enum StreamEof {
+    Data(Bytes),
+    Trailers(HeaderMap),
+    Reset(Reason),
+}
+
 impl Message {
-    pub(crate) fn new(request: Request, eof: bool, stream: &Stream) -> Self {
+    pub(crate) fn new(
+        pseudo: PseudoHeaders,
+        headers: HeaderMap,
+        eof: bool,
+        stream: &Stream,
+    ) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Request { req: request, eof },
+            kind: MessageKind::Headers {
+                pseudo,
+                headers,
+                eof,
+            },
         }
     }
 
@@ -33,7 +53,7 @@ impl Message {
         if eof {
             Message {
                 stream: stream.clone(),
-                kind: MessageKind::DataEof(data),
+                kind: MessageKind::Eof(StreamEof::Data(data)),
             }
         } else {
             Message {

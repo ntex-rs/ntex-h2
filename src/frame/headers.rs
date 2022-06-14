@@ -23,9 +23,8 @@ pub struct Headers {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
-// TODO: These fields shouldn't be `pub`
 #[derive(Debug, Default)]
-pub struct Pseudo {
+pub struct PseudoHeaders {
     // Request
     pub method: Option<Method>,
     pub scheme: Option<ByteString>,
@@ -39,7 +38,7 @@ pub struct Pseudo {
 
 pub struct Iter<'a> {
     /// Pseudo headers
-    pseudo: Option<Pseudo>,
+    pseudo: Option<PseudoHeaders>,
 
     /// Header fields
     fields: header::Iter<'a>,
@@ -55,7 +54,7 @@ struct HeaderBlock {
 
     /// Pseudo headers, these are broken out as they must be sent as part of the
     /// headers frame.
-    pseudo: Pseudo,
+    pseudo: PseudoHeaders,
 }
 
 #[derive(Debug)]
@@ -73,7 +72,7 @@ const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
 impl Headers {
     /// Create a new HEADERS frame
-    pub fn new(stream_id: StreamId, pseudo: Pseudo, fields: HeaderMap) -> Self {
+    pub fn new(stream_id: StreamId, pseudo: PseudoHeaders, fields: HeaderMap) -> Self {
         Headers {
             stream_id,
             header_block: HeaderBlock {
@@ -95,7 +94,7 @@ impl Headers {
             header_block: HeaderBlock {
                 fields,
                 is_over_size: false,
-                pseudo: Pseudo::default(),
+                pseudo: PseudoHeaders::default(),
             },
         }
     }
@@ -146,7 +145,7 @@ impl Headers {
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 is_over_size: false,
-                pseudo: Pseudo::default(),
+                pseudo: PseudoHeaders::default(),
             },
         })
     }
@@ -184,7 +183,7 @@ impl Headers {
         self.header_block.is_over_size
     }
 
-    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
+    pub fn into_parts(self) -> (PseudoHeaders, HeaderMap) {
         (self.header_block.pseudo, self.header_block.fields)
     }
 
@@ -192,7 +191,7 @@ impl Headers {
         &self.header_block.fields
     }
 
-    pub fn pseudo(&self) -> &Pseudo {
+    pub fn pseudo(&self) -> &PseudoHeaders {
         &self.header_block.pseudo
     }
 
@@ -262,7 +261,7 @@ pub fn parse_u64(src: &[u8]) -> Result<u64, ()> {
 
 // ===== impl Pseudo =====
 
-impl Pseudo {
+impl PseudoHeaders {
     pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
         let parts = uri::Parts::from(uri);
 
@@ -279,7 +278,7 @@ impl Pseudo {
             _ => {}
         }
 
-        let mut pseudo = Pseudo {
+        let mut pseudo = PseudoHeaders {
             method: Some(method),
             scheme: None,
             authority: None,
@@ -305,7 +304,7 @@ impl Pseudo {
     }
 
     pub fn response(status: StatusCode) -> Self {
-        Pseudo {
+        PseudoHeaders {
             method: None,
             scheme: None,
             authority: None,

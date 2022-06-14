@@ -1,26 +1,25 @@
-use std::{fmt, marker::PhantomData, time::Duration};
+use std::{cell::Cell, cell::RefCell, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
 
-use ntex_service::{IntoServiceFactory, Service, ServiceFactory};
-use ntex_util::time::Seconds;
+use ntex::connect::{self, Address, Connect, Connector as DefaultConnector};
+use ntex_bytes::{ByteString, Bytes, PoolId, PoolRef};
+use ntex_io::IoBoxed;
+use ntex_service::{IntoService, Service};
+use ntex_util::time::{timeout_checked, Seconds};
 
-use crate::control::{ControlMessage, ControlResult};
-use crate::{consts, default::DefaultControlService, frame::Settings, message::Message};
+use crate::codec::Codec;
+use crate::connection::{Config, Connection};
+use crate::error::ProtocolError;
+use crate::frame::Settings;
+use crate::{consts, frame};
 
-use super::service::{Server, ServerInner};
+use super::{ClientConnection, ClientError};
 
-/// Builds server with custom configuration values.
-///
-/// Methods can be chained in order to set the configuration values.
-///
-/// New instances of `Builder` are obtained via [`Builder::new`].
-///
-/// See function level documentation for details on the various server
-/// configuration settings.
-///
-/// [`Builder::new`]: struct.ServerBuilder.html#method.new
-#[derive(Clone, Debug)]
-pub struct ServerBuilder<E, Ctl = DefaultControlService> {
-    control: Ctl,
+/// Mqtt client connector
+pub struct Connector<A, T>(Rc<RefCell<Inner<A, T>>>);
+
+struct Inner<A, T> {
+    address: A,
+    connector: T,
 
     /// Time to keep locally reset streams around before reaping.
     pub(super) reset_stream_duration: Seconds,
@@ -37,54 +36,35 @@ pub struct ServerBuilder<E, Ctl = DefaultControlService> {
     pub(super) handshake_timeout: Seconds,
     pub(super) disconnect_timeout: Seconds,
     pub(super) keepalive_timeout: Seconds,
-
-    _t: PhantomData<E>,
+    pub(super) pool: Cell<PoolRef>,
 }
 
-// ===== impl Builder =====
-
-impl<E> ServerBuilder<E> {
-    /// Returns a new server builder instance initialized with default
-    /// configuration values.
-    ///
-    /// Configuration methods can be chained on the return value.
-    pub fn new() -> ServerBuilder<E> {
-        ServerBuilder {
-            control: DefaultControlService,
+impl<A> Connector<A, ()>
+where
+    A: Address + Clone,
+{
+    #[allow(clippy::new_ret_no_self)]
+    /// Create new h2 connector
+    pub fn new(address: A) -> Connector<A, DefaultConnector<A>> {
+        Connector(Rc::new(RefCell::new(Inner {
+            address,
+            connector: DefaultConnector::default(),
+            settings: Settings::default(),
             reset_stream_duration: consts::DEFAULT_RESET_STREAM_SECS,
             reset_stream_max: consts::DEFAULT_RESET_STREAM_MAX,
-            settings: Settings::default(),
             initial_target_connection_window_size: None,
             handshake_timeout: Seconds(5),
             disconnect_timeout: Seconds(3),
             keepalive_timeout: Seconds(120),
-            _t: PhantomData,
-        }
+            pool: Cell::new(PoolId::P5.pool_ref()),
+        })))
     }
 }
 
-impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
-    /// Service to call with control frames
-    pub fn control<S, F>(self, service: F) -> ServerBuilder<E, S>
-    where
-        F: IntoServiceFactory<S, ControlMessage<E>>,
-        S: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
-        S::Error: fmt::Debug,
-        S::InitError: fmt::Debug,
-    {
-        ServerBuilder {
-            control: service.into_factory(),
-            reset_stream_duration: self.reset_stream_duration,
-            reset_stream_max: self.reset_stream_max,
-            settings: self.settings,
-            initial_target_connection_window_size: self.initial_target_connection_window_size,
-            handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
-            keepalive_timeout: self.keepalive_timeout,
-            _t: PhantomData,
-        }
-    }
-
+impl<A, T> Connector<A, T>
+where
+    A: Address + Clone,
+{
     /// Indicates the initial window size (in octets) for stream-level
     /// flow control for received data.
     ///
@@ -94,8 +74,11 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// The default value is 65,535.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
-    pub fn initial_window_size(&mut self, size: u32) -> &mut Self {
-        self.settings.set_initial_window_size(Some(size));
+    pub fn initial_window_size(&self, size: u32) -> &Self {
+        self.0
+            .borrow_mut()
+            .settings
+            .set_initial_window_size(Some(size));
         self
     }
 
@@ -108,9 +91,9 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// The default value is 65,535.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
-    pub fn initial_connection_window_size(&mut self, size: u32) -> &mut Self {
+    pub fn initial_connection_window_size(&self, size: u32) -> &Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
-        self.initial_target_connection_window_size = Some(size);
+        self.0.borrow_mut().initial_target_connection_window_size = Some(size);
         self
     }
 
@@ -127,8 +110,8 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     ///
     /// This function panics if `max` is not within the legal range specified
     /// above.
-    pub fn max_frame_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_frame_size(Some(max));
+    pub fn max_frame_size(&self, max: u32) -> &Self {
+        self.0.borrow_mut().settings.set_max_frame_size(Some(max));
         self
     }
 
@@ -141,8 +124,11 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     ///
     /// This setting is also used to limit the maximum amount of data that is
     /// buffered to decode HEADERS frames.
-    pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_header_list_size(Some(max));
+    pub fn max_header_list_size(&self, max: u32) -> &Self {
+        self.0
+            .borrow_mut()
+            .settings
+            .set_max_header_list_size(Some(max));
         self
     }
 
@@ -169,8 +155,11 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
     /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
-    pub fn max_concurrent_streams(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_concurrent_streams(Some(max));
+    pub fn max_concurrent_streams(&self, max: u32) -> &Self {
+        self.0
+            .borrow_mut()
+            .settings
+            .set_max_concurrent_streams(Some(max));
         self
     }
 
@@ -195,8 +184,8 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 10.
-    pub fn max_concurrent_reset_streams(&mut self, max: usize) -> &mut Self {
-        self.reset_stream_max = max;
+    pub fn max_concurrent_reset_streams(&self, max: usize) -> &Self {
+        self.0.borrow_mut().reset_stream_max = max;
         self
     }
 
@@ -221,16 +210,19 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 10 seconds.
-    pub fn reset_stream_duration(&mut self, dur: Seconds) -> &mut Self {
-        self.reset_stream_duration = dur;
+    pub fn reset_stream_duration(&self, dur: Seconds) -> &Self {
+        self.0.borrow_mut().reset_stream_duration = dur;
         self
     }
 
     /// Enables the [extended CONNECT protocol].
     ///
     /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
-    pub fn enable_connect_protocol(&mut self) -> &mut Self {
-        self.settings.set_enable_connect_protocol(Some(1));
+    pub fn enable_connect_protocol(&self) -> &Self {
+        self.0
+            .borrow_mut()
+            .settings
+            .set_enable_connect_protocol(Some(1));
         self
     }
 
@@ -239,8 +231,8 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// Hadnshake includes receiving preface and completing connection preparation.
     ///
     /// By default handshake timeuot is 5 seconds.
-    pub fn handshake_timeout(&mut self, timeout: Seconds) -> &mut Self {
-        self.handshake_timeout = timeout;
+    pub fn handshake_timeout(&self, timeout: Seconds) -> &Self {
+        self.0.borrow_mut().handshake_timeout = timeout;
         self
     }
 
@@ -252,50 +244,120 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// To disable timeout set value to 0.
     ///
     /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(&mut self, val: Seconds) -> &mut Self {
-        self.disconnect_timeout = val;
+    pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
+        self.0.borrow_mut().disconnect_timeout = val;
         self
     }
 
     /// Set keep-alive timeout.
     ///
     /// By default keep-alive time-out is set to 120 seconds.
-    pub fn idle_timeout(&mut self, timeout: Seconds) -> &mut Self {
-        self.keepalive_timeout = timeout;
+    pub fn idle_timeout(&self, timeout: Seconds) -> &Self {
+        self.0.borrow_mut().keepalive_timeout = timeout;
         self
     }
-}
 
-impl<E, Ctl> ServerBuilder<E, Ctl>
-where
-    E: fmt::Debug,
-    Ctl: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
-    Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-{
-    /// Creates a new configured HTTP/2 server.
-    pub fn finish<F, Pub>(self, service: F) -> Server<Ctl, Pub>
+    /// Set memory pool.
+    ///
+    /// Use specified memory pool for memory allocations. By default P5
+    /// memory pool is used.
+    pub fn memory_pool(&self, id: PoolId) -> &Self {
+        self.0.borrow_mut().pool.set(id.pool_ref());
+        self
+    }
+
+    /// Use custom connector
+    pub fn connector<U, F>(self, connector: F) -> Connector<A, U>
     where
-        F: IntoServiceFactory<Pub, Message>,
-        Pub: ServiceFactory<Message, Response = (), Error = E> + 'static,
-        Pub::InitError: fmt::Debug,
+        F: IntoService<U, Connect<A>>,
+        U: Service<Connect<A>, Error = connect::ConnectError>,
+        IoBoxed: From<U::Response>,
     {
-        Server::new(ServerInner {
-            control: self.control,
-            publish: service.into_factory(),
-            reset_stream_duration: self.reset_stream_duration,
-            reset_stream_max: self.reset_stream_max,
-            settings: self.settings,
-            initial_target_connection_window_size: self.initial_target_connection_window_size,
-            keepalive_timeout: self.keepalive_timeout,
-            handshake_timeout: self.handshake_timeout,
-            disconnect_timeout: self.disconnect_timeout,
-        })
+        let inner = self.0.borrow();
+        Connector(Rc::new(RefCell::new(Inner {
+            connector: connector.into_service(),
+            address: inner.address.clone(),
+            settings: inner.settings.clone(),
+            reset_stream_duration: inner.reset_stream_duration,
+            reset_stream_max: inner.reset_stream_max,
+            initial_target_connection_window_size: inner.initial_target_connection_window_size,
+            handshake_timeout: inner.handshake_timeout,
+            disconnect_timeout: inner.disconnect_timeout,
+            keepalive_timeout: inner.keepalive_timeout,
+            pool: inner.pool.clone(),
+        })))
     }
 }
 
-impl<E> Default for ServerBuilder<E> {
-    fn default() -> ServerBuilder<E> {
-        ServerBuilder::new()
+impl<A, T> Connector<A, T>
+where
+    A: Address + Clone,
+    T: Service<Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Response>,
+{
+    /// Connect to http2 server
+    pub fn connect(&self) -> impl Future<Output = Result<ClientConnection, ClientError>> {
+        let fut = timeout_checked(self.0.borrow().handshake_timeout, self._connect());
+        async move {
+            match fut.await {
+                Ok(res) => res.map_err(From::from),
+                Err(_) => Err(ClientError::HandshakeTimeout),
+            }
+        }
+    }
+
+    fn _connect(&self) -> impl Future<Output = Result<ClientConnection, ClientError>> {
+        let inner = self.0.clone();
+        let fut = {
+            let slf = inner.borrow();
+            slf.connector.call(Connect::new(slf.address.clone()))
+        };
+
+        async move {
+            let io = IoBoxed::from(fut.await?);
+            let slf = inner.borrow();
+            let codec = Rc::new(Codec::new());
+            if let Some(max) = slf.settings.max_frame_size() {
+                codec.set_max_recv_frame_size(max as usize);
+            }
+            if let Some(max) = slf.settings.max_header_list_size() {
+                codec.set_max_recv_header_list_size(max as usize);
+            }
+
+            // send preface
+            io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+
+            // send setting to the peer
+            io.encode(slf.settings.clone().into(), &codec).unwrap();
+
+            let cfg = Config {
+                local_init_window_sz: slf
+                    .settings
+                    .initial_window_size()
+                    .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE),
+                initial_max_send_streams: 0,
+                local_next_stream_id: 2.into(),
+                extended_connect_protocol_enabled: slf
+                    .settings
+                    .is_extended_connect_protocol_enabled()
+                    .unwrap_or(false),
+                local_reset_duration: slf.reset_stream_duration,
+                local_reset_max: slf.reset_stream_max,
+                remote_init_window_sz: frame::DEFAULT_INITIAL_WINDOW_SIZE,
+                remote_max_initiated: slf
+                    .settings
+                    .max_concurrent_streams()
+                    .map(|max| max as usize),
+            };
+            let con = Connection::new(cfg, io.get_ref(), codec.clone());
+
+            Ok(ClientConnection::new(
+                io,
+                con,
+                codec,
+                slf.keepalive_timeout,
+                slf.disconnect_timeout,
+            ))
+        }
     }
 }

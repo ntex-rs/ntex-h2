@@ -18,24 +18,37 @@ pub struct Decoder {
 
 /// Represents all errors that can be encountered while performing the decoding
 /// of an HPACK header set.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DecoderError {
+    #[error("InvalidRepresentation")]
     InvalidRepresentation,
+    #[error("InvalidIntegerPrefix")]
     InvalidIntegerPrefix,
+    #[error("InvalidTableIndex")]
     InvalidTableIndex,
+    #[error("InvalidHuffmanCode")]
     InvalidHuffmanCode,
+    #[error("InvalidUtf8")]
     InvalidUtf8,
+    #[error("InvalidStatusCode")]
     InvalidStatusCode,
+    #[error("InvalidPseudoheader")]
     InvalidPseudoheader,
+    #[error("InvalidMaxDynamicSize")]
     InvalidMaxDynamicSize,
+    #[error("IntegerOverflow")]
     IntegerOverflow,
+    #[error("{0}")]
     NeedMore(NeedMore),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NeedMore {
+    #[error("Unexpected end of stream")]
     UnexpectedEndOfStream,
+    #[error("Integer underflow")]
     IntegerUnderflow,
+    #[error("String underflow")]
     StringUnderflow,
 }
 
@@ -603,12 +616,6 @@ impl From<error::InvalidStatusCode> for DecoderError {
     fn from(_: error::InvalidStatusCode) -> DecoderError {
         // TODO: Better error
         DecoderError::InvalidUtf8
-    }
-}
-
-impl From<DecoderError> for frame::Error {
-    fn from(src: DecoderError) -> Self {
-        frame::Error::Hpack(src)
     }
 }
 

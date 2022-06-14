@@ -97,12 +97,12 @@ mod hpack;
 mod connection;
 mod control;
 mod default;
+mod dispatcher;
 mod message;
-mod request;
 
+pub mod client;
 pub mod frame;
 pub mod server;
-//pub mod client;
 
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
@@ -112,4 +112,3 @@ pub use crate::error::{ProtocolError, UserError};
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};
 pub use self::message::{Message, MessageKind};
-pub use self::request::{Request, Response};

@@ -6,9 +6,10 @@ use ntex_util::{future::Ready, time::timeout_checked, time::Seconds};
 
 use crate::connection::{Config, Connection};
 use crate::control::{ControlMessage, ControlResult};
+use crate::dispatcher::Dispatcher;
 use crate::{codec::Codec, consts, frame, frame::Settings, message::Message};
 
-use super::{dispatcher::Dispatcher, error::ServerError, ServerBuilder};
+use super::{error::ServerError, ServerBuilder};
 
 /// Http/2 server factory
 pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
@@ -21,7 +22,6 @@ pub(crate) struct ServerInner<Ctl, Pub> {
     pub(super) reset_stream_duration: Seconds,
     pub(super) reset_stream_max: usize,
     pub(super) initial_target_connection_window_size: Option<u32>,
-    pub(super) max_send_buffer_size: usize,
     pub(super) keepalive_timeout: Seconds,
     pub(super) handshake_timeout: Seconds,
     pub(super) disconnect_timeout: Seconds,
@@ -167,7 +167,6 @@ where
                     .initial_window_size()
                     .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE),
                 initial_max_send_streams: 0,
-                local_max_buffer_size: inner.max_send_buffer_size,
                 local_next_stream_id: 2.into(),
                 extended_connect_protocol_enabled: inner
                     .settings

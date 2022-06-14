@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 
 use ntex::service::{fn_service, pipeline_factory};
-use ntex_h2::{server, ControlMessage, Message, MessageKind, Response};
+use ntex_h2::{server, ControlMessage, Message, MessageKind};
 use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{AlpnError, SslAcceptor, SslFiletype, SslMethod};
@@ -43,18 +43,18 @@ async fn main() -> std::io::Result<()> {
                         })
                         .finish(fn_service(|mut msg: Message| async move {
                             match msg.kind().take() {
-                                MessageKind::Request { req, eof } => {
-                                    println!("Got request: {:#?}", req);
+                                MessageKind::Headers {
+                                    pseudo,
+                                    headers,
+                                    eof,
+                                } => {
+                                    println!("Got request: {:#?}\nheaders: {:#?}", pseudo, headers);
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(
                                         header::CONTENT_TYPE,
                                         header::HeaderValue::try_from("text/plain").unwrap(),
                                     );
-                                    let res = Response {
-                                        status: StatusCode::OK,
-                                        headers: hdrs,
-                                    };
-                                    msg.stream().send_response(res, false);
+                                    msg.stream().send_response(StatusCode::OK, hdrs, false);
                                     msg.stream().send_payload("hello world".into(), false);
 
                                     let mut hdrs = HeaderMap::default();
@@ -67,11 +67,8 @@ async fn main() -> std::io::Result<()> {
                                 MessageKind::Data(data) => {
                                     println!("Got data: {:?}", data.len());
                                 }
-                                MessageKind::DataEof(data) => {
-                                    println!("Got eof data: {:?}", data.len());
-                                }
-                                MessageKind::Reset(reason) => {
-                                    println!("Got reset: {:?}", reason);
+                                MessageKind::Eof(data) => {
+                                    println!("Got eof: {:?}", data);
                                 }
                                 MessageKind::Empty => {}
                             }

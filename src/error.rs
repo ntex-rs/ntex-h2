@@ -4,16 +4,12 @@ use ntex_bytes::Bytes;
 
 use crate::frame::{self, GoAway, Reason, StreamId};
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
+    #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
-    Frame(frame::Error),
-}
-
-impl From<frame::Error> for ProtocolError {
-    fn from(err: frame::Error) -> Self {
-        ProtocolError::Frame(err)
-    }
+    #[error("{0}")]
+    Frame(#[from] frame::Error),
 }
 
 impl From<ProtocolError> for GoAway {

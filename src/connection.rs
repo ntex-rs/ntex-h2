@@ -1,14 +1,13 @@
 use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 
 use ntex_bytes::Bytes;
-use ntex_http::HeaderMap;
+use ntex_http::{HeaderMap, StatusCode};
 use ntex_io::IoRef;
 use ntex_util::{time::Seconds, HashMap};
 use slab::Slab;
 
 use crate::error::{ProtocolError, StreamError};
-use crate::frame::{self, Data, GoAway, Headers, Pseudo, Reason, StreamId, WindowSize};
-use crate::request::{Request, Response};
+use crate::frame::{self, Data, GoAway, Headers, PseudoHeaders, Reason, StreamId, WindowSize};
 use crate::{codec::Codec, message::Message};
 
 #[derive(Debug)]
@@ -21,9 +20,6 @@ pub struct Config {
     /// the connection will overwrite this value with the
     /// MAX_CONCURRENT_STREAMS specified in the frame.
     pub initial_max_send_streams: usize,
-
-    /// Max amount of DATA bytes to buffer per stream.
-    pub local_max_buffer_size: usize,
 
     /// The stream ID to start the next local stream with
     pub local_next_stream_id: StreamId,
@@ -97,14 +93,11 @@ impl Stream {
         self.0.id
     }
 
-    pub fn send_response(&self, res: Response, eof: bool) {
+    pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
         match self.0.send.get() {
             HalfState::Headers => {
-                let pseudo = Pseudo {
-                    status: Some(res.status),
-                    ..Default::default()
-                };
-                let mut hdrs = Headers::new(self.0.id, pseudo, res.headers);
+                let pseudo = PseudoHeaders::response(status);
+                let mut hdrs = Headers::new(self.0.id, pseudo, headers);
                 hdrs.set_end_headers();
 
                 if eof {
@@ -158,7 +151,8 @@ impl Stream {
                 } else {
                     self.0.recv.set(HalfState::Payload);
                 }
-                Ok(Message::new(Request::from_headers(hdrs), eof, self))
+                let (pseudo, headers) = hdrs.into_parts();
+                Ok(Message::new(pseudo, headers, eof, self))
             }
             HalfState::Payload => Err(StreamError::UnexpectedHeadersFrame),
             HalfState::Closed => Err(StreamError::UnexpectedHeadersFrame),

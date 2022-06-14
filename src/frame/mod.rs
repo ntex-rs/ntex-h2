@@ -49,7 +49,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
-pub use self::headers::{parse_u64, Headers, Pseudo};
+pub use self::headers::{parse_u64, Headers, PseudoHeaders};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
 pub use self::protocol::Protocol;
@@ -101,79 +101,94 @@ impl fmt::Debug for Frame {
 }
 
 /// Errors that can occur during parsing an HTTP/2 frame.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum Error {
     /// A length value other than 8 was set on a PING message.
+    #[error("A length value other than 8 was set on a PING message")]
     BadFrameSize,
 
     /// Frame size exceeded
+    #[error("Frame size exceeded")]
     MaxFrameSize,
 
     /// The padding length was larger than the frame-header-specified
     /// length of the payload.
+    #[error("The padding length was larger than the frame-header-specified length of the payload")]
     TooMuchPadding,
 
     /// An invalid setting value was provided
+    #[error("An invalid setting value was provided")]
     InvalidSettingValue,
 
     /// An invalid window update value
+    #[error("An invalid window update value")]
     InvalidWindowUpdateValue,
 
     /// The payload length specified by the frame header was not the
     /// value necessary for the specific frame type.
+    #[error(
+        "The payload length specified by the frame header was not the value necessary for the specific frame type"
+    )]
     InvalidPayloadLength,
 
     /// Received a payload with an ACK settings frame
+    #[error("Received a payload with an ACK settings frame")]
     InvalidPayloadAckSettings,
 
     /// An invalid stream identifier was provided.
     ///
     /// This is returned if a SETTINGS or PING frame is received with a stream
     /// identifier other than zero.
+    #[error("An invalid stream identifier was provided")]
     InvalidStreamId,
 
     /// A request or response is malformed.
+    #[error("A request or response is malformed")]
     MalformedMessage,
 
     /// An invalid stream dependency ID was provided
     ///
     /// This is returned if a HEADERS or PRIORITY frame is received with an
     /// invalid stream identifier.
+    #[error("An invalid stream dependency ID was provided")]
     InvalidDependencyId,
 
     /// An invalid preface
+    #[error("An invalid preface")]
     InvalidPreface,
 
     /// Unexpected push promise
+    #[error("Unexpected push promise")]
     UnexpectedPushPromise,
 
     /// Continuation related error
-    Continuation(ContinuationError),
+    #[error("{0}")]
+    Continuation(#[from] ContinuationError),
 
     /// Failed to perform HPACK decoding
-    Hpack(hpack::DecoderError),
+    #[error("{0}")]
+    Hpack(#[from] hpack::DecoderError),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ContinuationError {
     /// Continuation frame is expected
+    #[error("Continuation frame is expected")]
     Expected,
 
     /// Continuation frame is unexpected
+    #[error("Continuation frame is unexpected")]
     Unexpected,
 
     /// Continuation frame's stream id is unexpected
+    #[error("Continuation frame's stream id is unexpected")]
     UnknownStreamId,
 
     /// Max left over size
+    #[error("Max left over size")]
     MaxLeftoverSize,
 
     /// Malformed frame
+    #[error("Malformed frame")]
     Malformed,
-}
-
-impl From<ContinuationError> for Error {
-    fn from(err: ContinuationError) -> Error {
-        Error::Continuation(err)
-    }
 }
