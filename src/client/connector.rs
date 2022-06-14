@@ -1,4 +1,4 @@
-use std::{cell::Cell, cell::RefCell, future::Future, num::NonZeroU16, num::NonZeroU32, rc::Rc};
+use std::{cell::Cell, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector as DefaultConnector};
 use ntex_bytes::{ByteString, Bytes, PoolId, PoolRef};
@@ -18,7 +18,6 @@ use super::{ClientConnection, ClientError};
 pub struct Connector<A, T>(Rc<RefCell<Inner<A, T>>>);
 
 struct Inner<A, T> {
-    address: A,
     connector: T,
 
     /// Time to keep locally reset streams around before reaping.
@@ -37,17 +36,18 @@ struct Inner<A, T> {
     pub(super) disconnect_timeout: Seconds,
     pub(super) keepalive_timeout: Seconds,
     pub(super) pool: Cell<PoolRef>,
+
+    _t: PhantomData<A>,
 }
 
 impl<A> Connector<A, ()>
 where
-    A: Address + Clone,
+    A: Address,
 {
     #[allow(clippy::new_ret_no_self)]
     /// Create new h2 connector
-    pub fn new(address: A) -> Connector<A, DefaultConnector<A>> {
+    pub fn new() -> Connector<A, DefaultConnector<A>> {
         Connector(Rc::new(RefCell::new(Inner {
-            address,
             connector: DefaultConnector::default(),
             settings: Settings::default(),
             reset_stream_duration: consts::DEFAULT_RESET_STREAM_SECS,
@@ -57,13 +57,14 @@ where
             disconnect_timeout: Seconds(3),
             keepalive_timeout: Seconds(120),
             pool: Cell::new(PoolId::P5.pool_ref()),
+            _t: PhantomData,
         })))
     }
 }
 
 impl<A, T> Connector<A, T>
 where
-    A: Address + Clone,
+    A: Address,
 {
     /// Indicates the initial window size (in octets) for stream-level
     /// flow control for received data.
@@ -276,7 +277,6 @@ where
         let inner = self.0.borrow();
         Connector(Rc::new(RefCell::new(Inner {
             connector: connector.into_service(),
-            address: inner.address.clone(),
             settings: inner.settings.clone(),
             reset_stream_duration: inner.reset_stream_duration,
             reset_stream_max: inner.reset_stream_max,
@@ -285,19 +285,23 @@ where
             disconnect_timeout: inner.disconnect_timeout,
             keepalive_timeout: inner.keepalive_timeout,
             pool: inner.pool.clone(),
+            _t: PhantomData,
         })))
     }
 }
 
 impl<A, T> Connector<A, T>
 where
-    A: Address + Clone,
+    A: Address,
     T: Service<Connect<A>, Error = connect::ConnectError>,
     IoBoxed: From<T::Response>,
 {
     /// Connect to http2 server
-    pub fn connect(&self) -> impl Future<Output = Result<ClientConnection, ClientError>> {
-        let fut = timeout_checked(self.0.borrow().handshake_timeout, self._connect());
+    pub fn connect(
+        &self,
+        address: A,
+    ) -> impl Future<Output = Result<ClientConnection, ClientError>> {
+        let fut = timeout_checked(self.0.borrow().handshake_timeout, self._connect(address));
         async move {
             match fut.await {
                 Ok(res) => res.map_err(From::from),
@@ -306,11 +310,11 @@ where
         }
     }
 
-    fn _connect(&self) -> impl Future<Output = Result<ClientConnection, ClientError>> {
+    fn _connect(&self, address: A) -> impl Future<Output = Result<ClientConnection, ClientError>> {
         let inner = self.0.clone();
         let fut = {
             let slf = inner.borrow();
-            slf.connector.call(Connect::new(slf.address.clone()))
+            slf.connector.call(Connect::new(address))
         };
 
         async move {

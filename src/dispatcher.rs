@@ -75,7 +75,6 @@ where
         PublishResponse<Pub, Ctl>,
         Either<Ready<Option<Frame>, ()>, ControlResponse<Pub::Error, Ctl>>,
     > {
-        log::trace!("processing HEADERS: {:#?}", hdrs);
         let id = hdrs.stream_id();
         let eos = hdrs.is_end_stream();
         let stream = self.connection.get(id);
@@ -99,8 +98,6 @@ where
         PublishResponse<Pub, Ctl>,
         Either<Ready<Option<Frame>, ()>, ControlResponse<Pub::Error, Ctl>>,
     > {
-        log::trace!("processing DATA: {:?}", data.payload().len());
-
         let id = data.stream_id();
         let eos = data.is_end_stream();
         let stream = self.connection.query(id);

@@ -5,7 +5,7 @@ use ntex_http::HeaderMap;
 use ntex_util::future::Either;
 
 use crate::connection::Stream;
-use crate::frame::{PseudoHeaders, Reason};
+use crate::frame::{PseudoHeaders, Reason, StreamId};
 
 #[derive(Debug)]
 pub struct Message {
@@ -63,16 +63,31 @@ impl Message {
         }
     }
 
+    pub(crate) fn trailers(hdrs: HeaderMap, stream: &Stream) -> Self {
+        Message {
+            stream: stream.clone(),
+            kind: MessageKind::Eof(StreamEof::Trailers(hdrs)),
+        }
+    }
+
+    #[inline]
+    pub fn id(&self) -> StreamId {
+        self.stream.id()
+    }
+
+    #[inline]
     pub fn kind(&mut self) -> &mut MessageKind {
         &mut self.kind
     }
 
+    #[inline]
     pub fn stream(&self) -> &Stream {
         &self.stream
     }
 }
 
 impl MessageKind {
+    #[inline]
     pub fn take(&mut self) -> MessageKind {
         mem::replace(self, MessageKind::Empty)
     }

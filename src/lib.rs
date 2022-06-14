@@ -110,5 +110,6 @@ pub mod server;
 pub use crate::error::{ProtocolError, UserError};
 
 pub use self::codec::Codec;
+pub use self::connection::Stream;
 pub use self::control::{ControlMessage, ControlResult};
-pub use self::message::{Message, MessageKind};
+pub use self::message::{Message, MessageKind, StreamEof};

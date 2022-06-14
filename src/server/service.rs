@@ -6,10 +6,10 @@ use ntex_util::{future::Ready, time::timeout_checked, time::Seconds};
 
 use crate::connection::{Config, Connection};
 use crate::control::{ControlMessage, ControlResult};
-use crate::dispatcher::Dispatcher;
-use crate::{codec::Codec, consts, frame, frame::Settings, message::Message};
+use crate::frame::{self, Settings};
+use crate::{codec::Codec, consts, dispatcher::Dispatcher, message::Message};
 
-use super::{error::ServerError, ServerBuilder};
+use super::{ServerBuilder, ServerError};
 
 /// Http/2 server factory
 pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);

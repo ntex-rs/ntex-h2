@@ -1,10 +1,9 @@
 use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 
-use ntex_bytes::Bytes;
-use ntex_http::{HeaderMap, StatusCode};
+use ntex_bytes::{ByteString, Bytes};
+use ntex_http::{HeaderMap, Method, StatusCode};
 use ntex_io::IoRef;
 use ntex_util::{time::Seconds, HashMap};
-use slab::Slab;
 
 use crate::error::{ProtocolError, StreamError};
 use crate::frame::{self, Data, GoAway, Headers, PseudoHeaders, Reason, StreamId, WindowSize};
@@ -14,6 +13,9 @@ use crate::{codec::Codec, message::Message};
 pub struct Config {
     /// Initial window size of locally initiated streams
     pub local_init_window_sz: WindowSize,
+
+    /// Initial window size of remote initiated streams
+    pub remote_init_window_sz: WindowSize,
 
     /// Initial maximum number of locally initiated streams.
     /// After receiving a Settings frame from the remote peer,
@@ -33,12 +35,12 @@ pub struct Config {
     /// Maximum number of locally reset streams to keep at a time
     pub local_reset_max: usize,
 
-    /// Initial window size of remote initiated streams
-    pub remote_init_window_sz: WindowSize,
-
     /// Maximum number of remote initiated streams
     pub remote_max_initiated: Option<usize>,
 }
+
+const HTTP_SCHEME: ByteString = ByteString::from_static("http");
+const HTTPS_SCHEME: ByteString = ByteString::from_static("https");
 
 bitflags::bitflags! {
     struct Flags: u8 {
@@ -49,17 +51,20 @@ bitflags::bitflags! {
 #[derive(Clone)]
 pub struct Stream(Rc<StreamInner>);
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Connection(Rc<RefCell<ConnectionInner>>);
 
+#[derive(Debug)]
 struct ConnectionInner {
     io: IoRef,
     codec: Rc<Codec>,
     cfg: Config,
     flags: Flags,
     streams: HashMap<StreamId, Stream>,
+    last_stream_id: StreamId,
 }
 
+#[derive(Debug)]
 struct StreamInner {
     /// The h2 stream identifier
     pub id: StreamId,
@@ -93,6 +98,19 @@ impl Stream {
         self.0.id
     }
 
+    pub(crate) fn send_headers(&self, mut hdrs: Headers) {
+        hdrs.set_end_headers();
+        if hdrs.is_end_stream() {
+            self.0.send.set(HalfState::Closed)
+        } else {
+            self.0.send.set(HalfState::Payload)
+        }
+        log::trace!("send headers {:#?}", hdrs);
+
+        let con = self.0.connection.borrow();
+        con.io.encode(hdrs.into(), &con.codec).unwrap();
+    }
+
     pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
         match self.0.send.get() {
             HalfState::Headers => {
@@ -112,6 +130,17 @@ impl Stream {
             }
             _ => (),
         }
+    }
+
+    pub fn send_data(&self, chunk: Bytes, eof: bool) {
+        let mut data = Data::new(self.0.id, chunk);
+        if eof {
+            data.set_end_stream();
+            self.0.send.set(HalfState::Closed);
+        }
+
+        let con = self.0.connection.borrow();
+        con.io.encode(data.into(), &con.codec).unwrap();
     }
 
     pub fn send_payload(&self, res: Bytes, eof: bool) {
@@ -143,6 +172,13 @@ impl Stream {
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Message, StreamError> {
+        log::trace!(
+            "processing HEADERS for {:?}:\n{:#?}\n{:#?}",
+            self.0.id,
+            hdrs,
+            self
+        );
+
         match self.0.recv.get() {
             HalfState::Headers => {
                 let eof = hdrs.is_end_stream();
@@ -154,7 +190,11 @@ impl Stream {
                 let (pseudo, headers) = hdrs.into_parts();
                 Ok(Message::new(pseudo, headers, eof, self))
             }
-            HalfState::Payload => Err(StreamError::UnexpectedHeadersFrame),
+            HalfState::Payload => {
+                // trailers
+                self.0.recv.set(HalfState::Closed);
+                Ok(Message::trailers(hdrs.into_fields(), self))
+            }
             HalfState::Closed => Err(StreamError::UnexpectedHeadersFrame),
         }
     }
@@ -184,7 +224,8 @@ impl fmt::Debug for Stream {
         let mut builder = f.debug_struct("Stream");
         builder
             .field("stream_id", &self.0.id)
-            .field("recv_state", &self.0.recv)
+            .field("recv_state", &self.0.recv.get())
+            .field("send_state", &self.0.send.get())
             .finish()
     }
 }
@@ -192,11 +233,12 @@ impl fmt::Debug for Stream {
 impl Connection {
     pub(crate) fn new(cfg: Config, io: IoRef, codec: Rc<Codec>) -> Self {
         Connection(Rc::new(RefCell::new(ConnectionInner {
-            cfg,
             io,
             codec,
+            cfg,
             flags: Flags::WAITING_ACK,
             streams: HashMap::default(),
+            last_stream_id: 1.into(),
         })))
     }
 
@@ -213,8 +255,33 @@ impl Connection {
         self.0.borrow_mut().streams.get(&id).map(|s| s.clone())
     }
 
+    pub(crate) fn send_request(
+        &self,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+    ) -> Stream {
+        let stream = {
+            let mut con = self.0.borrow_mut();
+            let id = con.last_stream_id.next_id().unwrap();
+            con.last_stream_id = id;
+            let stream = Stream::new(id, self.0.clone());
+            con.streams.insert(id, stream.clone());
+            stream
+        };
+
+        let pseudo = PseudoHeaders {
+            method: Some(method),
+            path: Some(path),
+            scheme: Some(HTTP_SCHEME),
+            ..Default::default()
+        };
+        stream.send_headers(Headers::new(stream.id(), pseudo, headers));
+        stream
+    }
+
     pub(crate) fn recv_settings(&self, settings: frame::Settings) -> Result<(), ProtocolError> {
-        log::trace!("processing SETTINGS: {:#?}", settings);
+        log::trace!("processing incoming SETTINGS: {:#?}", settings);
 
         let mut inner = self.0.borrow_mut();
         if settings.is_ack() {

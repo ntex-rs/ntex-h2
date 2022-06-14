@@ -1,7 +1,7 @@
 use std::{cell::RefCell, convert::TryFrom, fmt, future::Future, marker, rc::Rc};
 
 use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{Method, Version};
+use ntex_http::{HeaderMap, Method, Version};
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{boxed, into_service, IntoService, Service};
 use ntex_util::future::{Either, Ready};
@@ -9,11 +9,11 @@ use ntex_util::time::{sleep, Millis, Seconds};
 use ntex_util::HashMap;
 
 use crate::codec::Codec;
-use crate::connection::Connection;
+use crate::connection::{Connection, Stream};
 use crate::control::ControlMessage;
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::frame::StreamId;
+use crate::frame::{Headers, StreamId};
 use crate::message::Message;
 
 use super::ClientError;
@@ -44,8 +44,8 @@ impl Client {
         Self(con)
     }
 
-    pub fn send_request(&self, method: Method, path: ByteString, data: Option<Bytes>) -> StreamId {
-        todo!()
+    pub fn send_request(&self, method: Method, path: ByteString, headers: HeaderMap) -> Stream {
+        self.0.send_request(method, path, headers)
     }
 
     pub fn close(&self) {}

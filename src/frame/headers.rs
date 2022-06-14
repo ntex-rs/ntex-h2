@@ -227,7 +227,8 @@ impl fmt::Debug for Headers {
         let mut builder = f.debug_struct("Headers");
         builder
             .field("stream_id", &self.stream_id)
-            .field("flags", &self.flags);
+            .field("flags", &self.flags)
+            .field("headers", &self.header_block);
 
         if let Some(ref protocol) = self.header_block.pseudo.protocol {
             builder.field("protocol", protocol);
@@ -333,12 +334,6 @@ impl PseudoHeaders {
     pub fn set_authority(&mut self, authority: ByteString) {
         self.authority = Some(authority);
     }
-
-    // /// Whether it has status 1xx
-    // pub(crate) fn is_informational(&self) -> bool {
-    //     self.status
-    //         .map_or(false, |status| status.is_informational())
-    // }
 }
 
 // ===== impl EncodingHeaderBlock =====
