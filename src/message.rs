@@ -4,8 +4,8 @@ use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 use ntex_util::future::Either;
 
-use crate::connection::Stream;
 use crate::frame::{PseudoHeaders, Reason, StreamId};
+use crate::stream::Stream;
 
 #[derive(Debug)]
 pub struct Message {

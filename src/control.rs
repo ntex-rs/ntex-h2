@@ -1,7 +1,7 @@
 use std::{fmt, io};
 
 use crate::frame::{self, Frame, Reason, Reset, StreamId};
-use crate::{connection::Stream, error};
+use crate::{error, stream::Stream};
 
 #[derive(Debug)]
 pub enum ControlMessage<E> {

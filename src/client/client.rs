@@ -8,13 +8,10 @@ use ntex_util::future::{Either, Ready};
 use ntex_util::time::{sleep, Millis, Seconds};
 use ntex_util::HashMap;
 
-use crate::codec::Codec;
-use crate::connection::{Connection, Stream};
-use crate::control::ControlMessage;
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
 use crate::frame::{Headers, StreamId};
-use crate::message::Message;
+use crate::{codec::Codec, connection::Connection, ControlMessage, Message, Stream};
 
 use super::ClientError;
 

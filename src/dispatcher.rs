@@ -4,11 +4,10 @@ use ntex_io::DispatchItem;
 use ntex_service::Service;
 use ntex_util::{future::Either, future::Ready, ready, HashMap};
 
-use crate::connection::{Connection, Stream};
 use crate::control::{ControlMessage, ControlResult};
 use crate::error::{ProtocolError, StreamError};
 use crate::frame::{self, Data, Frame, GoAway, Headers, Reason, StreamId};
-use crate::{codec::Codec, message::Message};
+use crate::{codec::Codec, connection::Connection, message::Message, stream::Stream};
 
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Ctl, Pub>

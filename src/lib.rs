@@ -90,15 +90,16 @@ macro_rules! proto_err {
 }
 
 mod codec;
-mod consts;
-mod error;
-mod hpack;
-
 mod connection;
+mod consts;
 mod control;
 mod default;
 mod dispatcher;
+mod error;
+mod flow;
+mod hpack;
 mod message;
+mod stream;
 
 pub mod client;
 pub mod frame;
@@ -110,6 +111,6 @@ pub mod server;
 pub use crate::error::{ProtocolError, UserError};
 
 pub use self::codec::Codec;
-pub use self::connection::Stream;
 pub use self::control::{ControlMessage, ControlResult};
 pub use self::message::{Message, MessageKind, StreamEof};
+pub use self::stream::Stream;
