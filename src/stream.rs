@@ -106,7 +106,7 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn recv_data(&mut self, data: Data) -> Result<Option<Message>, StreamError> {
+    pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, ProtocolError> {
         log::trace!(
             "processing DATA frame for {:?}: {:?}",
             self.0.id,
@@ -121,7 +121,8 @@ impl StreamRef {
                 }
                 Ok(Some(Message::data(data.into_payload(), eof, self)))
             }
-            _ => Ok(None),
+            HalfState::Headers => Err(ProtocolError::StreamIdle("DATA framed received")),
+            HalfState::Closed => Ok(None),
         }
     }
 

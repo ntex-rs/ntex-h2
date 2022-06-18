@@ -13,6 +13,8 @@ pub enum ProtocolError {
     Reason(Reason),
     #[error("{0}")]
     Encoder(#[from] EncoderError),
+    #[error("Stream idle: {0}")]
+    StreamIdle(&'static str),
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
     /// Window update value is zero
@@ -37,6 +39,9 @@ impl From<ProtocolError> for GoAway {
             }
             ProtocolError::UnknownStream => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
+            }
+            ProtocolError::StreamIdle(s) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Stream idle: {}", s))
             }
             ProtocolError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")

@@ -8,21 +8,10 @@ use ntex_util::{future::Either, time::Seconds, HashMap};
 use crate::error::{ProtocolError, StreamError};
 use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, flow::FlowControl};
+use crate::{codec::Codec, flow::FlowControl, message::Message};
 
 #[derive(Debug)]
 pub(crate) struct Config {
-    // /// Initial maximum number of locally initiated streams.
-    // /// After receiving a Settings frame from the remote peer,
-    // /// the connection will overwrite this value with the
-    // /// MAX_CONCURRENT_STREAMS specified in the frame.
-    // pub initial_max_send_streams: usize,
-
-    // /// If extended connect protocol is enabled.
-    // pub extended_connect_protocol_enabled: bool,
-
-    // /// Maximum number of remote initiated streams
-    // pub remote_max_initiated: Option<usize>,
     /// Initial window size of locally initiated streams
     pub(crate) window_sz: WindowSize,
     pub(crate) window_sz_threshold: WindowSize,
@@ -32,8 +21,12 @@ pub(crate) struct Config {
     pub(crate) reset_max: usize,
     pub(crate) settings: Settings,
     /// Initial window size for new connections.
-    pub(super) connection_window_sz: WindowSize,
+    pub(crate) connection_window_sz: WindowSize,
     pub(crate) connection_window_sz_threshold: WindowSize,
+    /// Maximum number of remote initiated streams
+    pub(crate) remote_max_concurrent_streams: Option<u32>,
+    // /// If extended connect protocol is enabled.
+    // pub extended_connect_protocol_enabled: bool,
 }
 
 const HTTP_SCHEME: ByteString = ByteString::from_static("http");
@@ -52,9 +45,10 @@ pub(crate) struct ConnectionInner {
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
 
-    // Loca config
+    // Local config
     pub(crate) local_config: Rc<Config>,
-
+    // Maximum number of locally initiated streams
+    pub(crate) local_max_concurrent_streams: Cell<Option<u32>>,
     // Initial window size of remote initiated streams
     pub(crate) remote_window_sz: Cell<WindowSize>,
 }
@@ -83,8 +77,9 @@ impl Connection {
             recv_flow: Cell::new(recv_flow),
             streams: RefCell::new(HashMap::default()),
             next_stream_id: Cell::new(StreamId::new(1)),
-            local_config: config,
             settings_processed: Cell::new(false),
+            local_config: config,
+            local_max_concurrent_streams: Cell::new(None),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
         }))
     }
@@ -131,6 +126,17 @@ impl Connection {
         Ok(())
     }
 
+    pub(crate) fn recv_data(
+        &self,
+        frm: frame::Data,
+    ) -> Result<(StreamRef, Option<Message>), ProtocolError> {
+        if let Some(stream) = self.query(frm.stream_id()) {
+            stream.recv_data(frm).map(move |item| (stream, item))
+        } else {
+            Err(ProtocolError::from(frame::FrameError::InvalidStreamId))
+        }
+    }
+
     pub(crate) fn recv_settings(&self, settings: frame::Settings) -> Result<(), ProtocolError> {
         log::trace!("processing incoming settings: {:#?}", settings);
 
@@ -171,6 +177,9 @@ impl Connection {
             }
             if let Some(max) = settings.max_header_list_size() {
                 self.0.codec.set_send_header_list_size(max as usize);
+            }
+            if let Some(max) = settings.max_concurrent_streams() {
+                self.0.local_max_concurrent_streams.set(Some(max));
             }
 
             // RFC 7540 §6.9.2

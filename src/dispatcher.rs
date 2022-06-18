@@ -6,7 +6,7 @@ use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::control::{ControlMessage, ControlResult};
 use crate::error::{ProtocolError, StreamError};
-use crate::frame::{self, Data, Frame, GoAway, Headers, Reason, StreamId};
+use crate::frame::{Data, Frame, GoAway, Headers, Reason, StreamId};
 use crate::{codec::Codec, connection::Connection, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
@@ -101,29 +101,18 @@ where
         }
     }
 
-    pub(crate) fn recv_data(&self, data: Data) -> ServiceFut<Pub, Ctl, Pub::Error> {
-        let id = data.stream_id();
-        let eos = data.is_end_stream();
-        let stream = self.connection.query(id);
-
-        if let Some(mut stream) = stream {
-            match stream.recv_data(data) {
-                Ok(Some(msg)) => Either::Left(PublishResponse::new(
-                    self.publish.call(msg),
-                    stream,
-                    &self.inner,
-                )),
-                Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
-                Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::stream_error(err),
-                    &self.inner,
-                ))),
-            }
-        } else {
-            Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(frame::FrameError::InvalidStreamId.into()),
+    pub(crate) fn recv_data(&self, frm: Data) -> ServiceFut<Pub, Ctl, Pub::Error> {
+        match self.connection.recv_data(frm) {
+            Ok((stream, Some(msg))) => Either::Left(PublishResponse::new(
+                self.publish.call(msg),
+                stream,
                 &self.inner,
-            )))
+            )),
+            Ok((_, None)) => Either::Right(Either::Left(Ready::Ok(None))),
+            Err(err) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(err),
+                &self.inner,
+            ))),
         }
     }
 }

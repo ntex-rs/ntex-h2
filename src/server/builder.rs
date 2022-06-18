@@ -288,6 +288,7 @@ where
         let window_sz_threshold = ((window_sz as f32) / 3.0) as u32;
         let connection_window_sz = self.initial_target_connection_window_size;
         let connection_window_sz_threshold = ((connection_window_sz as f32) / 4.0) as u32;
+        let remote_max_concurrent_streams = settings.max_concurrent_streams();
 
         let cfg = Config {
             settings,
@@ -295,6 +296,7 @@ where
             window_sz_threshold,
             connection_window_sz,
             connection_window_sz_threshold,
+            remote_max_concurrent_streams,
             reset_duration: self.reset_stream_duration,
             reset_max: self.reset_stream_max,
         };

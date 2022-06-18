@@ -129,37 +129,6 @@ where
         self
     }
 
-    /// Sets the maximum number of concurrent streams.
-    ///
-    /// The maximum concurrent streams setting only controls the maximum number
-    /// of streams that can be initiated by the remote peer. In other words,
-    /// when this setting is set to 100, this does not limit the number of
-    /// concurrent streams that can be created by the caller.
-    ///
-    /// It is recommended that this value be no smaller than 100, so as to not
-    /// unnecessarily limit parallelism. However, any value is legal, including
-    /// 0. If `max` is set to 0, then the remote will not be permitted to
-    /// initiate streams.
-    ///
-    /// Note that streams in the reserved state, i.e., push promises that have
-    /// been reserved but the stream has not started, do not count against this
-    /// setting.
-    ///
-    /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `h2` library will immediately reset
-    /// the stream.
-    ///
-    /// See [Section 5.1.2] in the HTTP/2 spec for more details.
-    ///
-    /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
-    pub fn max_concurrent_streams(&self, max: u32) -> &Self {
-        self.0
-            .borrow_mut()
-            .settings
-            .set_max_concurrent_streams(Some(max));
-        self
-    }
-
     /// Sets the maximum number of concurrent locally reset streams.
     ///
     /// When a stream is explicitly reset by either calling
@@ -326,6 +295,7 @@ where
             let window_sz_threshold = ((window_sz as f32) / 3.0) as u32;
             let connection_window_sz = slf.initial_target_connection_window_size;
             let connection_window_sz_threshold = ((connection_window_sz as f32) / 4.0) as u32;
+            let remote_max_concurrent_streams = settings.max_concurrent_streams();
 
             let cfg = Config {
                 settings,
@@ -333,6 +303,7 @@ where
                 window_sz_threshold,
                 connection_window_sz,
                 connection_window_sz_threshold,
+                remote_max_concurrent_streams,
                 reset_duration: slf.reset_stream_duration,
                 reset_max: slf.reset_stream_max,
             };
