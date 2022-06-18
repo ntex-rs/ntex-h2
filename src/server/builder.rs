@@ -1,6 +1,6 @@
-use std::{fmt, marker::PhantomData, time::Duration};
+use std::{fmt, marker::PhantomData};
 
-use ntex_service::{IntoServiceFactory, Service, ServiceFactory};
+use ntex_service::{IntoServiceFactory, ServiceFactory};
 use ntex_util::time::Seconds;
 
 use crate::control::{ControlMessage, ControlResult};

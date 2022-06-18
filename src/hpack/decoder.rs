@@ -4,7 +4,6 @@ use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
 use ntex_http::{error, header, Method, StatusCode};
 
 use super::{huffman, Header};
-use crate::frame;
 
 /// Decodes headers using HPACK
 #[derive(Debug)]

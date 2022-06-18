@@ -116,7 +116,7 @@ where
                                 Ok(true)
                             } else {
                                 log::trace!("read_preface: invalid preface");
-                                Err(ServerError::<()>::Frame(frame::Error::InvalidPreface))
+                                Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
                             }
                         } else {
                             Ok(false)

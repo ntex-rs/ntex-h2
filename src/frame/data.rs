@@ -1,6 +1,6 @@
 use ntex_bytes::{Bytes, BytesMut};
 
-use crate::frame::{util, Error, Frame, Head, Kind, StreamId};
+use crate::frame::{util, Frame, FrameError, Head, Kind, StreamId};
 
 /// Data frame
 ///
@@ -84,12 +84,12 @@ impl Data {
         Head::new(Kind::Data, self.flags.into(), self.stream_id)
     }
 
-    pub(crate) fn load(head: Head, mut data: Bytes) -> Result<Self, Error> {
+    pub(crate) fn load(head: Head, mut data: Bytes) -> Result<Self, FrameError> {
         let flags = DataFlags::load(head.flag());
 
         // The stream identifier must not be zero
         if head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         if flags.is_padded() {

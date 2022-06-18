@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{cmp, fmt, ops};
 
 use crate::consts::MAX_WINDOW_SIZE;
 use crate::frame::{Reason, WindowSize};
@@ -217,29 +217,29 @@ impl PartialEq<usize> for Window {
 }
 
 impl PartialOrd<usize> for Window {
-    fn partial_cmp(&self, other: &usize) -> Option<::std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &usize) -> Option<cmp::Ordering> {
         if self.0 < 0 {
-            Some(::std::cmp::Ordering::Less)
+            Some(cmp::Ordering::Less)
         } else {
             (self.0 as usize).partial_cmp(other)
         }
     }
 }
 
-impl ::std::ops::SubAssign<WindowSize> for Window {
+impl ops::SubAssign<WindowSize> for Window {
     fn sub_assign(&mut self, other: WindowSize) {
         self.0 -= other as i32;
     }
 }
 
-impl ::std::ops::Add<WindowSize> for Window {
+impl ops::Add<WindowSize> for Window {
     type Output = Self;
     fn add(self, other: WindowSize) -> Self::Output {
         Window(self.0 + other as i32)
     }
 }
 
-impl ::std::ops::AddAssign<WindowSize> for Window {
+impl ops::AddAssign<WindowSize> for Window {
     fn add_assign(&mut self, other: WindowSize) {
         self.0 += other as i32;
     }

@@ -2,7 +2,6 @@ use std::mem;
 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
-use ntex_util::future::Either;
 
 use crate::frame::{PseudoHeaders, Reason, StreamId};
 use crate::stream::Stream;

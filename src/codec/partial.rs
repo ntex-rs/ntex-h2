@@ -28,7 +28,7 @@ impl Partial {
         src: &mut BytesMut,
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
-    ) -> Result<(), frame::Error> {
+    ) -> Result<(), frame::FrameError> {
         self.frame.load_hpack(src, max_header_list_size, decoder)
     }
 }

@@ -2,7 +2,7 @@ use std::fmt;
 
 use ntex_bytes::{BufMut, Bytes, BytesMut};
 
-use crate::frame::{self, Error, Head, Kind, Reason, StreamId};
+use crate::frame::{self, FrameError, Head, Kind, Reason, StreamId};
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct GoAway {
@@ -50,9 +50,9 @@ impl GoAway {
         &self.data
     }
 
-    pub fn load(payload: &[u8]) -> Result<GoAway, Error> {
+    pub fn load(payload: &[u8]) -> Result<GoAway, FrameError> {
         if payload.len() < 8 {
-            return Err(Error::BadFrameSize);
+            return Err(FrameError::BadFrameSize);
         }
 
         let (last_stream_id, _) = StreamId::parse(&payload[..4]);

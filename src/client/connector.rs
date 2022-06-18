@@ -1,14 +1,13 @@
 use std::{cell::Cell, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
 use ntex::connect::{self, Address, Connect, Connector as DefaultConnector};
-use ntex_bytes::{ByteString, Bytes, PoolId, PoolRef};
+use ntex_bytes::{PoolId, PoolRef};
 use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Service};
 use ntex_util::time::{timeout_checked, Seconds};
 
 use crate::codec::Codec;
 use crate::connection::{Config, Connection};
-use crate::error::ProtocolError;
 use crate::frame::Settings;
 use crate::{consts, frame};
 
@@ -329,7 +328,7 @@ where
             }
 
             // send preface
-            io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+            let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
 
             // send setting to the peer
             io.encode(slf.settings.clone().into(), &codec).unwrap();

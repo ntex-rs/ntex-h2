@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::frame::{util, Error, Frame, FrameSize, Head, Kind, StreamId};
+use crate::frame::{util, Frame, FrameError, FrameSize, Head, Kind, StreamId};
 use ntex_bytes::{BufMut, BytesMut};
 
 #[derive(Clone, Default, Eq, PartialEq)]
@@ -127,13 +127,13 @@ impl Settings {
     }
     */
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Settings, FrameError> {
         use self::Setting::*;
 
         debug_assert_eq!(head.kind(), crate::frame::Kind::Settings);
 
         if !head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         // Load the flag
@@ -142,7 +142,7 @@ impl Settings {
         if flag.is_ack() {
             // Ensure that the payload is empty
             if !payload.is_empty() {
-                return Err(Error::InvalidPayloadLength);
+                return Err(FrameError::InvalidPayloadLength);
             }
 
             // Return the ACK frame
@@ -152,7 +152,7 @@ impl Settings {
         // Ensure the payload length is correct, each setting is 6 bytes long.
         if payload.len() % 6 != 0 {
             log::debug!("invalid settings payload length; len={:?}", payload.len());
-            return Err(Error::InvalidPayloadAckSettings);
+            return Err(FrameError::InvalidPayloadAckSettings);
         }
 
         let mut settings = Settings::default();
@@ -168,7 +168,7 @@ impl Settings {
                         settings.enable_push = Some(val);
                     }
                     _ => {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 },
                 Some(MaxConcurrentStreams(val)) => {
@@ -176,14 +176,14 @@ impl Settings {
                 }
                 Some(InitialWindowSize(val)) => {
                     if val as usize > MAX_INITIAL_WINDOW_SIZE {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     } else {
                         settings.initial_window_size = Some(val);
                     }
                 }
                 Some(MaxFrameSize(val)) => {
                     if val < DEFAULT_MAX_FRAME_SIZE || val > MAX_MAX_FRAME_SIZE {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     } else {
                         settings.max_frame_size = Some(val);
                     }
@@ -196,7 +196,7 @@ impl Settings {
                         settings.enable_connect_protocol = Some(val);
                     }
                     _ => {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 },
                 None => {}

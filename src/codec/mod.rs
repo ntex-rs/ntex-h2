@@ -1,11 +1,13 @@
 use std::cell::RefCell;
 
-use ntex_bytes::{Buf, BytesMut};
+use ntex_bytes::BytesMut;
 use ntex_codec::{Decoder, Encoder};
 
 mod error;
 mod length_delimited;
 mod partial;
+
+pub use self::error::EncoderError;
 
 use self::{length_delimited::LengthDelimitedCodec, partial::Partial};
 use crate::{frame, frame::Frame, frame::Kind, hpack};
@@ -97,11 +99,11 @@ macro_rules! header_block {
         // Parse the header frame w/o parsing the payload
         let mut frame = match frame::$frame::load($head, &mut $bytes) {
             Ok(res) => Ok(res),
-            Err(frame::Error::InvalidDependencyId) => {
+            Err(frame::FrameError::InvalidDependencyId) => {
                 proto_err!(stream: "invalid HEADERS dependency ID");
                 // A stream cannot depend on itself. An endpoint MUST
                 // treat this as a stream error (Section 5.4.2) of type `PROTOCOL_ERROR`.
-                Err(frame::Error::InvalidDependencyId)
+                Err(frame::FrameError::InvalidDependencyId)
             },
             Err(e) => {
                 proto_err!(conn: "failed to load frame; err={:?}", e);
@@ -114,11 +116,11 @@ macro_rules! header_block {
         // Load the HPACK encoded headers
         match frame.load_hpack(&mut $bytes, $slf.decoder_max_header_list_size, &mut $slf.decoder_hpack) {
             Ok(_) => {},
-            Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
-            Err(frame::Error::MalformedMessage) => {
+            Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
+            Err(frame::FrameError::MalformedMessage) => {
                 let id = $head.stream_id();
                 proto_err!(stream: "malformed header block; stream={:?}", id);
-                return Err(frame::Error::MalformedMessage)
+                return Err(frame::FrameError::MalformedMessage)
             },
             Err(e) => {
                 proto_err!(conn: "failed HPACK decoding; err={:?}", e);
@@ -143,12 +145,12 @@ macro_rules! header_block {
 
 impl Decoder for Codec {
     type Item = Frame;
-    type Error = frame::Error;
+    type Error = frame::FrameError;
 
     /// Decodes a frame.
     ///
     /// This method is intentionally de-generified and outlined because it is very large.
-    fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::Error> {
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::FrameError> {
         log::trace!("decoding frame from {}B", src.len());
 
         let mut inner = self.0.borrow_mut();
@@ -160,7 +162,7 @@ impl Decoder for Codec {
 
         // check push promise, we do not support push
         if bytes[3] == PUSH_PROMISE {
-            return Err(frame::Error::UnexpectedPushPromise);
+            return Err(frame::FrameError::UnexpectedPushPromise);
         }
 
         // Parse the head
@@ -169,8 +171,8 @@ impl Decoder for Codec {
 
         if inner.partial.is_some() && kind != Kind::Continuation {
             proto_err!(conn: "expected CONTINUATION, got {:?}", kind);
-            return Err(frame::Error::Continuation(
-                frame::ContinuationError::Expected,
+            return Err(frame::FrameError::Continuation(
+                frame::FrameContinuationError::Expected,
             ));
         }
 
@@ -222,18 +224,18 @@ impl Decoder for Codec {
                 if head.stream_id() == 0 {
                     // Invalid stream identifier
                     proto_err!(conn: "invalid stream ID 0");
-                    return Err(frame::Error::InvalidStreamId);
+                    return Err(frame::FrameError::InvalidStreamId);
                 }
 
                 match frame::Priority::load(head, &bytes[frame::HEADER_LEN..]) {
                     Ok(frame) => frame.into(),
-                    Err(frame::Error::InvalidDependencyId) => {
+                    Err(frame::FrameError::InvalidDependencyId) => {
                         // A stream cannot depend on itself. An endpoint MUST
                         // treat this as a stream error (Section 5.4.2) of type
                         // `PROTOCOL_ERROR`.
                         let id = head.stream_id();
                         proto_err!(stream: "PRIORITY invalid dependency ID; stream={:?}", id);
-                        return Err(frame::Error::InvalidDependencyId);
+                        return Err(frame::FrameError::InvalidDependencyId);
                     }
                     Err(e) => {
                         proto_err!(conn: "failed to load PRIORITY frame; err={:?};", e);
@@ -247,14 +249,14 @@ impl Decoder for Codec {
                 // get partial frame
                 let mut partial = inner.partial.take().ok_or_else(|| {
                     proto_err!(conn: "received unexpected CONTINUATION frame");
-                    frame::Error::Continuation(frame::ContinuationError::Unexpected)
+                    frame::FrameError::Continuation(frame::FrameContinuationError::Unexpected)
                 })?;
 
                 // The stream identifiers must match
                 if partial.frame.stream_id() != head.stream_id() {
                     proto_err!(conn: "CONTINUATION frame stream ID does not match previous frame stream ID");
-                    return Err(frame::Error::Continuation(
-                        frame::ContinuationError::UnknownStreamId,
+                    return Err(frame::FrameError::Continuation(
+                        frame::FrameContinuationError::UnknownStreamId,
                     ));
                 }
 
@@ -277,8 +279,8 @@ impl Decoder for Codec {
                         // the attacker to go away.
                         if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size {
                             proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
-                            return Err(frame::Error::Continuation(
-                                frame::ContinuationError::MaxLeftoverSize,
+                            return Err(frame::FrameError::Continuation(
+                                frame::FrameContinuationError::MaxLeftoverSize,
                             ));
                         }
                     }
@@ -291,12 +293,12 @@ impl Decoder for Codec {
                     &mut inner.decoder_hpack,
                 ) {
                     Ok(_) => {}
-                    Err(frame::Error::Hpack(hpack::DecoderError::NeedMore(_)))
+                    Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_)))
                         if !is_end_headers => {}
-                    Err(frame::Error::MalformedMessage) => {
+                    Err(frame::FrameError::MalformedMessage) => {
                         let id = head.stream_id();
                         proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);
-                        return Err(frame::ContinuationError::Malformed.into());
+                        return Err(frame::FrameContinuationError::Malformed.into());
                     }
                     Err(e) => {
                         proto_err!(conn: "failed HPACK decoding; err={:?}", e);
@@ -332,7 +334,7 @@ impl Encoder for Codec {
         let mut inner = self.0.borrow_mut();
 
         match item {
-            Frame::Data(mut v) => {
+            Frame::Data(v) => {
                 // Ensure that the payload is not greater than the max frame.
                 let len = v.payload().len();
                 if len > inner.encoder_max_frame_size as usize {

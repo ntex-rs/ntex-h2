@@ -1,4 +1,3 @@
-#![deny(dead_code, warnings)]
 use std::fmt;
 
 /// A helper macro that unpacks a sequence of 4 bytes found in the buffer with
@@ -102,7 +101,7 @@ impl fmt::Debug for Frame {
 
 /// Errors that can occur during parsing an HTTP/2 frame.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
-pub enum Error {
+pub enum FrameError {
     /// A length value other than 8 was set on a PING message.
     #[error("A length value other than 8 was set on a PING message")]
     BadFrameSize,
@@ -163,7 +162,7 @@ pub enum Error {
 
     /// Continuation related error
     #[error("{0}")]
-    Continuation(#[from] ContinuationError),
+    Continuation(#[from] FrameContinuationError),
 
     /// Failed to perform HPACK decoding
     #[error("{0}")]
@@ -171,7 +170,7 @@ pub enum Error {
 }
 
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ContinuationError {
+pub enum FrameContinuationError {
     /// Continuation frame is expected
     #[error("Continuation frame is expected")]
     Expected,

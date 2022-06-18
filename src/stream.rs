@@ -1,14 +1,12 @@
-use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
+use std::{cell::Cell, cell::RefCell, fmt, rc::Rc};
 
-use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{HeaderMap, Method, StatusCode};
-use ntex_io::IoRef;
-use ntex_util::{time::Seconds, HashMap};
+use ntex_bytes::Bytes;
+use ntex_http::{HeaderMap, StatusCode};
 
 use crate::connection::ConnectionInner;
-use crate::error::{ProtocolError, StreamError};
-use crate::frame::{self, Data, GoAway, Headers, PseudoHeaders, Reason, StreamId, WindowSize};
-use crate::{codec::Codec, message::Message};
+use crate::error::StreamError;
+use crate::frame::{Data, Headers, PseudoHeaders, StreamId, WindowUpdate};
+use crate::{flow::FlowControl, message::Message};
 
 #[derive(Clone)]
 pub struct Stream(Rc<StreamInner>);
@@ -17,12 +15,13 @@ pub struct Stream(Rc<StreamInner>);
 struct StreamInner {
     /// The h2 stream identifier
     pub id: StreamId,
+    /// Receive part
     recv: Cell<HalfState>,
+    recv_flow: Cell<FlowControl>,
+    /// Send part
     send: Cell<HalfState>,
-    ///// Send data flow control
-    //pub send_flow: FlowControl,
-    ///// Receive data flow control
-    //pub recv_flow: FlowControl,
+    send_flow: Cell<FlowControl>,
+    /// config
     connection: Rc<RefCell<ConnectionInner>>,
 }
 
@@ -39,7 +38,9 @@ impl Stream {
             id,
             connection,
             recv: Cell::new(HalfState::Headers),
+            recv_flow: Cell::new(FlowControl::new()),
             send: Cell::new(HalfState::Headers),
+            send_flow: Cell::new(FlowControl::new()),
         }))
     }
 
@@ -166,6 +167,8 @@ impl Stream {
             _ => Err(StreamError::UnexpectedDataFrame),
         }
     }
+
+    pub(crate) fn recv_window_update(&mut self, wu: WindowUpdate) {}
 }
 
 impl fmt::Debug for Stream {

@@ -1,7 +1,7 @@
-use std::{fmt, io};
+use std::io;
 
-use crate::frame::{self, Frame, Reason, Reset, StreamId};
-use crate::{error, stream::Stream};
+use crate::frame::{Frame, Reason, Reset};
+use crate::{error, frame, stream::Stream};
 
 #[derive(Debug)]
 pub enum ControlMessage<E> {
@@ -109,7 +109,7 @@ impl<E> AppError<E> {
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(mut self) -> ControlResult {
+    pub fn ack(self) -> ControlResult {
         ControlResult {
             frame: Some(Reset::new(self.stream.id(), self.reason).into()),
             disconnect: false,

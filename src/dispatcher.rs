@@ -2,10 +2,10 @@ use std::{cell, fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, ta
 
 use ntex_io::DispatchItem;
 use ntex_service::Service;
-use ntex_util::{future::Either, future::Ready, ready, HashMap};
+use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::control::{ControlMessage, ControlResult};
-use crate::error::{ProtocolError, StreamError};
+use crate::error::ProtocolError;
 use crate::frame::{self, Data, Frame, GoAway, Headers, Reason, StreamId};
 use crate::{codec::Codec, connection::Connection, message::Message, stream::Stream};
 
@@ -115,7 +115,7 @@ where
             }
         } else {
             Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(frame::Error::InvalidStreamId.into()),
+                ControlMessage::proto_error(frame::FrameError::InvalidStreamId.into()),
                 &self.inner,
             )))
         }
@@ -197,8 +197,7 @@ where
                     self.handle_proto_error(self.connection.recv_settings(settings))
                 }
                 Frame::WindowUpdate(update) => {
-                    log::trace!("processing WINDOW_UPDATE: {:#?}", update);
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    self.handle_proto_error(self.connection.recv_window_update(update))
                 }
                 Frame::Reset(reset) => {
                     log::trace!("processing RESET: {:#?}", reset);

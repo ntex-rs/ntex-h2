@@ -1,4 +1,4 @@
-use crate::frame::{self, Error, Head, Kind, StreamId};
+use crate::frame::{self, FrameError, Head, Kind, StreamId};
 
 use ntex_bytes::BufMut;
 
@@ -27,10 +27,10 @@ impl WindowUpdate {
     }
 
     /// Builds a `WindowUpdate` frame from a raw frame.
-    pub fn load(head: Head, payload: &[u8]) -> Result<WindowUpdate, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<WindowUpdate, FrameError> {
         debug_assert_eq!(head.kind(), crate::frame::Kind::WindowUpdate);
         if payload.len() != 4 {
-            return Err(Error::BadFrameSize);
+            return Err(FrameError::BadFrameSize);
         }
 
         // Clear the most significant bit, as that is reserved and MUST be ignored
@@ -38,7 +38,7 @@ impl WindowUpdate {
         let size_increment = unpack_octets_4!(payload, 0, u32) & !SIZE_INCREMENT_MASK;
 
         if size_increment == 0 {
-            return Err(Error::InvalidWindowUpdateValue);
+            return Err(FrameError::InvalidWindowUpdateValue);
         }
 
         Ok(WindowUpdate {

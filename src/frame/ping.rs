@@ -1,6 +1,6 @@
 use ntex_bytes::BufMut;
 
-use crate::frame::{Error, Frame, Head, Kind, StreamId};
+use crate::frame::{Frame, FrameError, Head, Kind, StreamId};
 
 const ACK_FLAG: u8 = 0x1;
 
@@ -46,7 +46,7 @@ impl Ping {
     }
 
     /// Builds a `Ping` frame from a raw frame.
-    pub fn load(head: Head, bytes: &[u8]) -> Result<Ping, Error> {
+    pub fn load(head: Head, bytes: &[u8]) -> Result<Ping, FrameError> {
         debug_assert_eq!(head.kind(), crate::frame::Kind::Ping);
 
         // PING frames are not associated with any individual stream. If a PING
@@ -54,13 +54,13 @@ impl Ping {
         // 0x0, the recipient MUST respond with a connection error
         // (Section 5.4.1) of type PROTOCOL_ERROR.
         if !head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         // In addition to the frame header, PING frames MUST contain 8 octets of opaque
         // data in the payload.
         if bytes.len() != 8 {
-            return Err(Error::BadFrameSize);
+            return Err(FrameError::BadFrameSize);
         }
 
         let mut payload = [0; 8];

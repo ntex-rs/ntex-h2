@@ -1,20 +1,24 @@
-use std::{error, fmt, io};
+use std::fmt;
 
-use ntex_bytes::Bytes;
-
-use crate::frame::{self, GoAway, Reason, StreamId};
+pub use crate::codec::EncoderError;
+use crate::frame::{self, GoAway, Reason};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ProtocolError {
+    #[error("{0}")]
+    Encoder(#[from] EncoderError),
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
     #[error("{0}")]
-    Frame(#[from] frame::Error),
+    Frame(#[from] frame::FrameError),
 }
 
 impl From<ProtocolError> for GoAway {
     fn from(err: ProtocolError) -> GoAway {
         match err {
+            ProtocolError::Encoder(_) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
+            }
             ProtocolError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
             }

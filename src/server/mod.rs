@@ -14,7 +14,7 @@ pub enum ServerError<E> {
     Service(E),
     /// Http/2 frame codec error
     #[error("Http/2 codec error: {0}")]
-    Frame(#[from] frame::Error),
+    Frame(#[from] frame::FrameError),
     /// Dispatcher error
     #[error("Dispatcher error")]
     Dispatcher,

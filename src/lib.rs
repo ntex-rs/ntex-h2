@@ -11,7 +11,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! h2 = "0.3"
+//! ntex-h2 = "0.1"
 //! ```
 //!
 //! # Layout
@@ -78,7 +78,8 @@
 
 // #![deny(missing_debug_implementations, missing_docs)]
 //#![cfg_attr(test, deny(warnings))]
-#![allow(dead_code, warnings)]
+//#![deny(dead_code)]
+#![allow(dead_code, unused_variables)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {
@@ -97,18 +98,18 @@ mod default;
 mod dispatcher;
 mod error;
 mod flow;
-mod hpack;
 mod message;
 mod stream;
 
 pub mod client;
 pub mod frame;
+pub mod hpack;
 pub mod server;
 
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{ProtocolError, UserError};
+pub use crate::error::{EncoderError, ProtocolError, UserError};
 
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};

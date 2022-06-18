@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData, task::Context, task::Poll};
+use std::{fmt, task::Context, task::Poll};
 
 use ntex_service::{Service, ServiceFactory};
 use ntex_util::future::Ready;

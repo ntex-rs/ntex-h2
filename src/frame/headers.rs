@@ -3,7 +3,7 @@ use std::{fmt, io::Cursor};
 use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
 
-use super::{util, Error, Frame, Head, Kind, Protocol, StreamId};
+use super::{util, Frame, FrameError, Head, Kind, Protocol, StreamId};
 use crate::hpack;
 
 /// Header frame
@@ -102,18 +102,18 @@ impl Headers {
     /// Loads the header frame but doesn't actually do HPACK decoding.
     ///
     /// HPACK decoding is done in the `load_hpack` step.
-    pub fn load(head: Head, src: &mut BytesMut) -> Result<Self, Error> {
+    pub fn load(head: Head, src: &mut BytesMut) -> Result<Self, FrameError> {
         let flags = HeadersFlag(head.flag());
         log::trace!("loading headers; flags={:?}", flags);
 
         if head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         // Read the padding length
         let pad = if flags.is_padded() {
             if src.is_empty() {
-                return Err(Error::MalformedMessage);
+                return Err(FrameError::MalformedMessage);
             }
             let pad = src[0] as usize;
 
@@ -127,14 +127,14 @@ impl Headers {
         // Read the stream dependency
         if flags.is_priority() {
             if src.len() < 5 {
-                return Err(Error::MalformedMessage);
+                return Err(FrameError::MalformedMessage);
             }
             let _ = src.split_to(5);
         }
 
         if pad > 0 {
             if pad > src.len() {
-                return Err(Error::TooMuchPadding);
+                return Err(FrameError::TooMuchPadding);
             }
             src.truncate(src.len() - pad);
         }
@@ -155,7 +155,7 @@ impl Headers {
         src: &mut BytesMut,
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
-    ) -> Result<(), Error> {
+    ) -> Result<(), FrameError> {
         self.header_block.load(src, max_header_list_size, decoder)
     }
 
@@ -478,7 +478,7 @@ impl HeaderBlock {
         src: &mut BytesMut,
         max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
-    ) -> Result<(), Error> {
+    ) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
         let mut headers_size = self.calculate_header_list_size();
@@ -575,7 +575,7 @@ impl HeaderBlock {
 
         if malformed {
             log::trace!("malformed message");
-            return Err(Error::MalformedMessage);
+            return Err(FrameError::MalformedMessage);
         }
 
         Ok(())

@@ -21,11 +21,11 @@ pub struct StreamDependency {
 }
 
 impl Priority {
-    pub fn load(head: Head, payload: &[u8]) -> Result<Self, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Self, FrameError> {
         let dependency = StreamDependency::load(payload)?;
 
         if dependency.dependency_id() == head.stream_id() {
-            return Err(Error::InvalidDependencyId);
+            return Err(FrameError::InvalidDependencyId);
         }
 
         Ok(Priority {
@@ -52,9 +52,9 @@ impl StreamDependency {
         }
     }
 
-    pub fn load(src: &[u8]) -> Result<Self, Error> {
+    pub fn load(src: &[u8]) -> Result<Self, FrameError> {
         if src.len() != 5 {
-            return Err(Error::InvalidPayloadLength);
+            return Err(FrameError::InvalidPayloadLength);
         }
 
         // Parse the stream ID and exclusive flag

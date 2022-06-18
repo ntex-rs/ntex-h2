@@ -1,13 +1,12 @@
-use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
+use std::{cell::RefCell, rc::Rc};
 
-use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{HeaderMap, Method, StatusCode};
+use ntex_bytes::ByteString;
+use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_util::{time::Seconds, HashMap};
 
-use crate::error::{ProtocolError, StreamError};
-use crate::frame::{self, Data, GoAway, Headers, PseudoHeaders, Reason, StreamId, WindowSize};
-use crate::{codec::Codec, message::Message, stream::Stream};
+use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize};
+use crate::{codec::Codec, error::ProtocolError, stream::Stream};
 
 #[derive(Debug)]
 pub(crate) struct Config {
@@ -125,8 +124,16 @@ impl Connection {
                 return Err(ProtocolError::UnexpectedSettingsAck);
             }
         } else {
-            inner.io.encode(frame::Settings::ack().into(), &inner.codec);
+            inner
+                .io
+                .encode(frame::Settings::ack().into(), &inner.codec)?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn recv_window_update(&self, frm: frame::WindowUpdate) -> Result<(), ProtocolError> {
+        log::trace!("processing incoming WINDOW_UPDATE: {:#?}", frm);
+
         Ok(())
     }
 }

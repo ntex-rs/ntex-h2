@@ -1,6 +1,6 @@
 use ntex_bytes::BufMut;
 
-use crate::frame::{Error, Frame, Head, Kind, Reason, StreamId};
+use crate::frame::{Frame, FrameError, Head, Kind, Reason, StreamId};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {
@@ -29,9 +29,9 @@ impl Reset {
         self.error_code
     }
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Reset, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Reset, FrameError> {
         if payload.len() != 4 {
-            return Err(Error::InvalidPayloadLength);
+            return Err(FrameError::InvalidPayloadLength);
         }
 
         let error_code = unpack_octets_4!(payload, 0, u32);

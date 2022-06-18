@@ -1,19 +1,14 @@
-use std::{cell::RefCell, convert::TryFrom, fmt, future::Future, marker, rc::Rc};
+use std::{fmt, rc::Rc};
 
-use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{HeaderMap, Method, Version};
-use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
-use ntex_service::{boxed, into_service, IntoService, Service};
-use ntex_util::future::{Either, Ready};
+use ntex_bytes::ByteString;
+use ntex_http::{HeaderMap, Method};
+use ntex_io::{Dispatcher as IoDispatcher, IoBoxed};
+use ntex_service::{IntoService, Service};
 use ntex_util::time::{sleep, Millis, Seconds};
-use ntex_util::HashMap;
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::frame::{Headers, StreamId};
-use crate::{codec::Codec, connection::Connection, ControlMessage, Message, Stream};
-
-use super::ClientError;
+use crate::{codec::Codec, connection::Connection, Message, Stream};
 
 /// Http2 client
 #[derive(Clone)]
