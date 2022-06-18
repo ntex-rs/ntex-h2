@@ -1,7 +1,7 @@
 use std::io;
 
 use crate::frame::{Frame, Reason, Reset};
-use crate::{error, frame, stream::Stream};
+use crate::{error, frame, stream::StreamRef};
 
 #[derive(Debug)]
 pub enum ControlMessage<E> {
@@ -36,7 +36,7 @@ impl<E> ControlMessage<E> {
     // }
 
     /// Create a new `ControlMessage` for app level errors
-    pub(super) fn app_error(err: E, stream: Stream) -> Self {
+    pub(super) fn app_error(err: E, stream: StreamRef) -> Self {
         ControlMessage::AppError(AppError::new(err, stream))
     }
 
@@ -55,8 +55,8 @@ impl<E> ControlMessage<E> {
     }
 
     /// Create a new `ControlMessage` for stream level errors
-    pub(super) fn stream_error(err: error::StreamError, stream: Stream) -> Self {
-        ControlMessage::StreamError(StreamError::new(err, stream))
+    pub(super) fn stream_error(err: error::StreamError) -> Self {
+        ControlMessage::StreamError(StreamError::new(err))
     }
 
     /// Create a new `ControlMessage` for protocol level errors
@@ -81,12 +81,12 @@ impl<E> ControlMessage<E> {
 #[derive(Debug)]
 pub struct AppError<E> {
     err: E,
-    stream: Stream,
     reason: Reason,
+    stream: StreamRef,
 }
 
 impl<E> AppError<E> {
-    pub fn new(err: E, stream: Stream) -> Self {
+    fn new(err: E, stream: StreamRef) -> Self {
         Self {
             err,
             stream,
@@ -160,15 +160,13 @@ impl Terminated {
 pub struct StreamError {
     err: error::StreamError,
     frm: frame::Reset,
-    stream: Stream,
 }
 
 impl StreamError {
-    pub fn new(err: error::StreamError, stream: Stream) -> Self {
+    fn new(err: error::StreamError) -> Self {
         Self {
-            frm: frame::Reset::new(stream.id(), err.into()),
+            frm: frame::Reset::new(err.id(), err.reason()),
             err,
-            stream,
         }
     }
 
@@ -176,6 +174,12 @@ impl StreamError {
     /// Returns reference to a protocol error
     pub fn get_ref(&self) -> &error::StreamError {
         &self.err
+    }
+
+    #[inline]
+    /// Returns stream error kind reference
+    pub fn kind(&self) -> &error::StreamErrorKind {
+        self.err.kind()
     }
 
     #[inline]

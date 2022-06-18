@@ -3,28 +3,6 @@ use std::{cmp, fmt, ops};
 use crate::consts::MAX_WINDOW_SIZE;
 use crate::frame::{Reason, WindowSize};
 
-// We don't want to send WINDOW_UPDATE frames for tiny changes, but instead
-// aggregate them when the changes are significant. Many implementations do
-// this by keeping a "ratio" of the update version the allowed window size.
-//
-// While some may wish to represent this ratio as percentage, using a f32,
-// we skip having to deal with float math and stick to integers. To do so,
-// the "ratio" is represented by 2 i32s, split into the numerator and
-// denominator. For example, a 50% ratio is simply represented as 1/2.
-//
-// An example applying this ratio: If a stream has an allowed window size of
-// 100 bytes, WINDOW_UPDATE frames are scheduled when the unclaimed change
-// becomes greater than 1/2, or 50 bytes.
-const UNCLAIMED_NUMERATOR: i32 = 1;
-const UNCLAIMED_DENOMINATOR: i32 = 2;
-
-#[test]
-fn sanity_unclaimed_ratio() {
-    assert!(UNCLAIMED_NUMERATOR < UNCLAIMED_DENOMINATOR);
-    assert!(UNCLAIMED_NUMERATOR >= 0);
-    assert!(UNCLAIMED_DENOMINATOR > 0);
-}
-
 #[derive(Copy, Clone, Debug)]
 pub struct FlowControl {
     /// Window the peer knows about.
@@ -39,47 +17,18 @@ pub struct FlowControl {
     /// default (64kb) - used (32kb) - settings_diff (64kb - 16kb): -16kb
     /// ```
     window_size: Window,
-
-    /// Window that we know about.
-    ///
-    /// This can go negative if a user declares a smaller target window than
-    /// the peer knows about.
-    available: Window,
 }
 
 impl FlowControl {
-    pub fn new() -> FlowControl {
+    pub fn new(sz: i32) -> FlowControl {
         FlowControl {
-            window_size: Window(0),
-            available: Window(0),
+            window_size: Window(sz),
         }
     }
 
     /// Returns the window size as known by the peer
     pub fn window_size(&self) -> WindowSize {
         self.window_size.as_size()
-    }
-
-    /// Returns the window size available to the consumer
-    pub fn available(&self) -> Window {
-        self.available
-    }
-
-    /// Returns true if there is unavailable window capacity
-    pub fn has_unavailable(&self) -> bool {
-        if self.window_size < 0 {
-            return false;
-        }
-
-        self.window_size > self.available
-    }
-
-    pub fn claim_capacity(&mut self, capacity: WindowSize) {
-        self.available -= capacity;
-    }
-
-    pub fn assign_capacity(&mut self, capacity: WindowSize) {
-        self.available += capacity;
     }
 
     /// If a WINDOW_UPDATE frame should be sent, returns a positive number
@@ -89,17 +38,17 @@ impl FlowControl {
     /// available bytes does not reach the threshold, this returns `None`.
     ///
     /// This represents pending outbound WINDOW_UPDATE frames.
-    pub fn unclaimed_capacity(&self) -> Option<WindowSize> {
-        let available = self.available;
-
-        if self.window_size >= available {
+    pub fn need_update_window(
+        &self,
+        max_size: WindowSize,
+        threshold_size: WindowSize,
+    ) -> Option<WindowSize> {
+        if (self.window_size.0 as u32) >= max_size {
             return None;
         }
 
-        let unclaimed = available.0 - self.window_size.0;
-        let threshold = self.window_size.0 / UNCLAIMED_DENOMINATOR * UNCLAIMED_NUMERATOR;
-
-        if unclaimed < threshold {
+        let unclaimed = max_size - (self.window_size.0 as u32);
+        if unclaimed < threshold_size {
             None
         } else {
             Some(unclaimed as WindowSize)
@@ -131,53 +80,25 @@ impl FlowControl {
         Ok(())
     }
 
-    /// Decrement the send-side window size.
+    /// Decrement the window size.
     ///
     /// This is called after receiving a SETTINGS frame with a lower
     /// INITIAL_WINDOW_SIZE value.
-    pub fn dec_send_window(&mut self, sz: WindowSize) {
-        log::trace!(
-            "dec_window; sz={}; window={}, available={}",
-            sz,
-            self.window_size,
-            self.available
-        );
-        // This should not be able to overflow `window_size` from the bottom.
+    pub fn dec_window(&mut self, sz: WindowSize) {
+        log::trace!("dec_window; sz={}; window={}", sz, self.window_size);
         self.window_size -= sz;
-    }
-
-    /// Decrement the recv-side window size.
-    ///
-    /// This is called after receiving a SETTINGS ACK frame with a lower
-    /// INITIAL_WINDOW_SIZE value.
-    pub fn dec_recv_window(&mut self, sz: WindowSize) {
-        log::trace!(
-            "dec_recv_window; sz={}; window={}, available={}",
-            sz,
-            self.window_size,
-            self.available
-        );
-        // This should not be able to overflow `window_size` from the bottom.
-        self.window_size -= sz;
-        self.available -= sz;
     }
 
     /// Decrements the window reflecting data has actually been sent. The caller
     /// must ensure that the window has capacity.
     pub fn send_data(&mut self, sz: WindowSize) {
-        log::trace!(
-            "send_data; sz={}; window={}; available={}",
-            sz,
-            self.window_size,
-            self.available
-        );
+        log::trace!("send_data; sz={}; window={}", sz, self.window_size);
 
         // Ensure that the argument is correct
         assert!(self.window_size >= sz as usize);
 
         // Update values
         self.window_size -= sz;
-        self.available -= sz;
     }
 }
 

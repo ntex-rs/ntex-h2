@@ -1,18 +1,19 @@
-use std::{cell::Cell, cell::RefCell, fmt, rc::Rc};
+use std::{cell::Cell, cmp::Ordering, fmt, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_http::{HeaderMap, StatusCode};
 
-use crate::connection::ConnectionInner;
-use crate::error::StreamError;
-use crate::frame::{Data, Headers, PseudoHeaders, StreamId, WindowUpdate};
-use crate::{flow::FlowControl, message::Message};
+use crate::error::{ProtocolError, StreamError, StreamErrorKind};
+use crate::frame::{Data, Headers, PseudoHeaders, Reason, StreamId, WindowSize, WindowUpdate};
+use crate::{connection::ConnectionInner, flow::FlowControl, frame, message::Message};
 
-#[derive(Clone)]
 pub struct Stream(Rc<StreamInner>);
 
+#[derive(Clone, Debug)]
+pub(crate) struct StreamRef(pub(crate) Rc<StreamInner>);
+
 #[derive(Debug)]
-struct StreamInner {
+pub(crate) struct StreamInner {
     /// The h2 stream identifier
     pub id: StreamId,
     /// Receive part
@@ -21,8 +22,8 @@ struct StreamInner {
     /// Send part
     send: Cell<HalfState>,
     send_flow: Cell<FlowControl>,
-    /// config
-    connection: Rc<RefCell<ConnectionInner>>,
+    /// Connection config
+    con: Rc<ConnectionInner>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,19 +33,28 @@ enum HalfState {
     Closed,
 }
 
-impl Stream {
-    pub(crate) fn new(id: StreamId, connection: Rc<RefCell<ConnectionInner>>) -> Self {
-        Stream(Rc::new(StreamInner {
+impl StreamRef {
+    pub(crate) fn new(id: StreamId, con: Rc<ConnectionInner>) -> Self {
+        // if peer has accepted settings, we can use local config window size
+        // otherwise use default window size
+        let recv_flow = if con.settings_processed.get() {
+            FlowControl::new(con.local_config.window_sz as i32)
+        } else {
+            FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
+        };
+        let send_flow = FlowControl::new(con.remote_window_sz.get() as i32);
+
+        StreamRef(Rc::new(StreamInner {
             id,
-            connection,
+            con,
             recv: Cell::new(HalfState::Headers),
-            recv_flow: Cell::new(FlowControl::new()),
+            recv_flow: Cell::new(recv_flow),
             send: Cell::new(HalfState::Headers),
-            send_flow: Cell::new(FlowControl::new()),
+            send_flow: Cell::new(send_flow),
         }))
     }
 
-    pub fn id(&self) -> StreamId {
+    pub(crate) fn id(&self) -> StreamId {
         self.0.id
     }
 
@@ -57,76 +67,20 @@ impl Stream {
         }
         log::trace!("send headers {:#?}", hdrs);
 
-        let con = self.0.connection.borrow();
-        con.io.encode(hdrs.into(), &con.codec).unwrap();
-    }
-
-    pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
-        match self.0.send.get() {
-            HalfState::Headers => {
-                let pseudo = PseudoHeaders::response(status);
-                let mut hdrs = Headers::new(self.0.id, pseudo, headers);
-                hdrs.set_end_headers();
-
-                if eof {
-                    hdrs.set_end_stream();
-                    self.0.send.set(HalfState::Closed)
-                } else {
-                    self.0.send.set(HalfState::Payload)
-                }
-
-                let con = self.0.connection.borrow();
-                con.io.encode(hdrs.into(), &con.codec).unwrap();
-            }
-            _ => (),
-        }
-    }
-
-    pub fn send_data(&self, chunk: Bytes, eof: bool) {
-        let mut data = Data::new(self.0.id, chunk);
-        if eof {
-            data.set_end_stream();
-            self.0.send.set(HalfState::Closed);
-        }
-
-        let con = self.0.connection.borrow();
-        con.io.encode(data.into(), &con.codec).unwrap();
-    }
-
-    pub fn send_payload(&self, res: Bytes, eof: bool) {
-        match self.0.send.get() {
-            HalfState::Payload => {
-                let mut data = Data::new(self.0.id, res);
-                if eof {
-                    data.set_end_stream();
-                    self.0.send.set(HalfState::Closed);
-                }
-
-                let con = self.0.connection.borrow();
-                con.io.encode(data.into(), &con.codec).unwrap();
-            }
-            _ => (),
-        }
-    }
-
-    pub fn send_trailers(&self, map: HeaderMap) {
-        if self.0.send.get() == HalfState::Payload {
-            self.0.send.set(HalfState::Closed);
-
-            let mut hdrs = Headers::trailers(self.0.id, map);
-            hdrs.set_end_headers();
-            hdrs.set_end_stream();
-            let con = self.0.connection.borrow();
-            con.io.encode(hdrs.into(), &con.codec).unwrap();
-        }
+        self.0
+            .con
+            .io
+            .encode(hdrs.into(), &self.0.con.codec)
+            .unwrap();
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Message, StreamError> {
         log::trace!(
-            "processing HEADERS for {:?}:\n{:#?}\n{:#?}",
+            "processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.0.id,
             hdrs,
-            self
+            self.0.recv.get(),
+            self.0.send.get(),
         );
 
         match self.0.recv.get() {
@@ -145,13 +99,16 @@ impl Stream {
                 self.0.recv.set(HalfState::Closed);
                 Ok(Message::trailers(hdrs.into_fields(), self))
             }
-            HalfState::Closed => Err(StreamError::UnexpectedHeadersFrame),
+            HalfState::Closed => Err(StreamError::new(
+                self.0.clone(),
+                StreamErrorKind::UnexpectedHeadersFrame,
+            )),
         }
     }
 
-    pub(crate) fn recv_data(&mut self, data: Data) -> Result<Message, StreamError> {
+    pub(crate) fn recv_data(&mut self, data: Data) -> Result<Option<Message>, StreamError> {
         log::trace!(
-            "processing DATA for {:?}: {:?}",
+            "processing DATA frame for {:?}: {:?}",
             self.0.id,
             data.payload().len()
         );
@@ -162,13 +119,128 @@ impl Stream {
                 if eof {
                     self.0.recv.set(HalfState::Closed);
                 }
-                Ok(Message::data(data.into_payload(), eof, self))
+                Ok(Some(Message::data(data.into_payload(), eof, self)))
             }
-            _ => Err(StreamError::UnexpectedDataFrame),
+            _ => Ok(None),
         }
     }
 
-    pub(crate) fn recv_window_update(&mut self, wu: WindowUpdate) {}
+    pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
+        if frm.size_increment() == 0 {
+            Err(StreamError::new(
+                self.0.clone(),
+                StreamErrorKind::ZeroWindowUpdateValue,
+            ))
+        } else {
+            let mut flow = self.0.send_flow.get();
+            flow.inc_window(frm.size_increment())
+                .map_err(|e| StreamError::new(self.0.clone(), StreamErrorKind::LocalReason(e)))?;
+            self.0.send_flow.set(flow);
+            Ok(())
+        }
+    }
+
+    pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), ProtocolError> {
+        let mut flow = self.0.send_flow.get();
+        match upd.cmp(&0) {
+            Ordering::Less => flow.dec_window(upd.abs() as u32), // We must decrease the (remote) window
+            Ordering::Greater => flow
+                .inc_window(upd as u32)
+                .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
+            Ordering::Equal => return Ok(()),
+        }
+        self.0.send_flow.set(flow);
+        Ok(())
+    }
+
+    pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, ProtocolError> {
+        let mut flow = self.0.recv_flow.get();
+        match upd.cmp(&0) {
+            Ordering::Less => flow.dec_window(upd.abs() as u32), // We must decrease the (local) window
+            Ordering::Greater => flow
+                .inc_window(upd as u32)
+                .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
+            Ordering::Equal => return Ok(None),
+        }
+        if let Some(val) = flow.need_update_window(
+            self.0.con.local_config.window_sz,
+            self.0.con.local_config.window_sz_threshold,
+        ) {
+            let _ = flow.inc_window(val);
+            Ok(Some(val))
+        } else {
+            self.0.recv_flow.set(flow);
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn into_stream(self) -> Stream {
+        Stream(self.0)
+    }
+}
+
+impl Stream {
+    pub fn id(&self) -> StreamId {
+        self.0.id
+    }
+
+    pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
+        match self.0.send.get() {
+            HalfState::Headers => {
+                let pseudo = PseudoHeaders::response(status);
+                let mut hdrs = Headers::new(self.0.id, pseudo, headers);
+                hdrs.set_end_headers();
+
+                if eof {
+                    hdrs.set_end_stream();
+                    self.0.send.set(HalfState::Closed)
+                } else {
+                    self.0.send.set(HalfState::Payload)
+                }
+
+                self.0
+                    .con
+                    .io
+                    .encode(hdrs.into(), &self.0.con.codec)
+                    .unwrap();
+            }
+            _ => (),
+        }
+    }
+
+    pub fn send_payload(&self, res: Bytes, eof: bool) {
+        match self.0.send.get() {
+            HalfState::Payload => {
+                let mut data = Data::new(self.0.id, res);
+                if eof {
+                    data.set_end_stream();
+                    self.0.send.set(HalfState::Closed);
+                }
+
+                self.0
+                    .con
+                    .io
+                    .encode(data.into(), &self.0.con.codec)
+                    .unwrap();
+            }
+            _ => (),
+        }
+    }
+
+    pub fn send_trailers(&self, map: HeaderMap) {
+        if self.0.send.get() == HalfState::Payload {
+            self.0.send.set(HalfState::Closed);
+
+            let mut hdrs = Headers::trailers(self.0.id, map);
+            hdrs.set_end_headers();
+            hdrs.set_end_stream();
+            self.0
+                .con
+                .io
+                .encode(hdrs.into(), &self.0.con.codec)
+                .unwrap();
+        }
+    }
 }
 
 impl fmt::Debug for Stream {

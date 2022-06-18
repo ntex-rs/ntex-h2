@@ -86,11 +86,9 @@ impl Settings {
         self.max_frame_size
     }
 
-    pub fn set_max_frame_size(&mut self, size: Option<u32>) {
-        if let Some(val) = size {
-            assert!(DEFAULT_MAX_FRAME_SIZE <= val && val <= MAX_MAX_FRAME_SIZE);
-        }
-        self.max_frame_size = size;
+    pub fn set_max_frame_size(&mut self, size: u32) {
+        assert!((DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&size));
+        self.max_frame_size = Some(size);
     }
 
     pub fn max_header_list_size(&self) -> Option<u32> {
@@ -182,10 +180,10 @@ impl Settings {
                     }
                 }
                 Some(MaxFrameSize(val)) => {
-                    if val < DEFAULT_MAX_FRAME_SIZE || val > MAX_MAX_FRAME_SIZE {
-                        return Err(FrameError::InvalidSettingValue);
-                    } else {
+                    if (DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&val) {
                         settings.max_frame_size = Some(val);
+                    } else {
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 }
                 Some(MaxHeaderListSize(val)) => {

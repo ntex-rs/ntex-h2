@@ -4,11 +4,11 @@ use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 
 use crate::frame::{PseudoHeaders, Reason, StreamId};
-use crate::stream::Stream;
+use crate::stream::StreamRef;
 
 #[derive(Debug)]
 pub struct Message {
-    stream: Stream,
+    stream: StreamRef,
     kind: MessageKind,
 }
 
@@ -36,7 +36,7 @@ impl Message {
         pseudo: PseudoHeaders,
         headers: HeaderMap,
         eof: bool,
-        stream: &Stream,
+        stream: &StreamRef,
     ) -> Self {
         Message {
             stream: stream.clone(),
@@ -48,7 +48,7 @@ impl Message {
         }
     }
 
-    pub(crate) fn data(data: Bytes, eof: bool, stream: &Stream) -> Self {
+    pub(crate) fn data(data: Bytes, eof: bool, stream: &StreamRef) -> Self {
         if eof {
             Message {
                 stream: stream.clone(),
@@ -62,7 +62,7 @@ impl Message {
         }
     }
 
-    pub(crate) fn trailers(hdrs: HeaderMap, stream: &Stream) -> Self {
+    pub(crate) fn trailers(hdrs: HeaderMap, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
             kind: MessageKind::Eof(StreamEof::Trailers(hdrs)),
@@ -79,10 +79,10 @@ impl Message {
         &mut self.kind
     }
 
-    #[inline]
-    pub fn stream(&self) -> &Stream {
-        &self.stream
-    }
+    //#[inline]
+    //pub fn stream(&self) -> &Stream {
+    //    &self.stream
+    //}
 }
 
 impl MessageKind {

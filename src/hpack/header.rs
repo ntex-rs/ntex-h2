@@ -185,18 +185,18 @@ impl Header {
         use ntex_http::header;
 
         match *self {
-            Header::Field { ref name, .. } => match *name {
+            Header::Field { ref name, .. } => matches!(
+                *name,
                 header::AGE
-                | header::AUTHORIZATION
-                | header::CONTENT_LENGTH
-                | header::ETAG
-                | header::IF_MODIFIED_SINCE
-                | header::IF_NONE_MATCH
-                | header::LOCATION
-                | header::COOKIE
-                | header::SET_COOKIE => true,
-                _ => false,
-            },
+                    | header::AUTHORIZATION
+                    | header::CONTENT_LENGTH
+                    | header::ETAG
+                    | header::IF_MODIFIED_SINCE
+                    | header::IF_NONE_MATCH
+                    | header::LOCATION
+                    | header::COOKIE
+                    | header::SET_COOKIE
+            ),
             Header::Path(..) => true,
             _ => false,
         }

@@ -6,8 +6,7 @@ use ntex_util::{future::Ready, time::timeout_checked, time::Seconds};
 
 use crate::connection::{Config, Connection};
 use crate::control::{ControlMessage, ControlResult};
-use crate::frame::{self, Settings};
-use crate::{codec::Codec, consts, dispatcher::Dispatcher, message::Message};
+use crate::{codec::Codec, consts, dispatcher::Dispatcher, frame, message::Message};
 
 use super::{ServerBuilder, ServerError};
 
@@ -17,11 +16,7 @@ pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 pub(crate) struct ServerInner<Ctl, Pub> {
     pub(super) control: Ctl,
     pub(super) publish: Pub,
-
-    pub(super) settings: Settings,
-    pub(super) reset_stream_duration: Seconds,
-    pub(super) reset_stream_max: usize,
-    pub(super) initial_target_connection_window_size: Option<u32>,
+    pub(super) config: Rc<Config>,
     pub(super) keepalive_timeout: Seconds,
     pub(super) handshake_timeout: Seconds,
     pub(super) disconnect_timeout: Seconds,
@@ -150,37 +145,8 @@ where
             .map_err(|_| ServerError::HandshakeTimeout)??;
 
             // create h2 codec
-            let codec = Rc::new(Codec::new());
-            if let Some(max) = inner.settings.max_frame_size() {
-                codec.set_max_recv_frame_size(max as usize);
-            }
-            if let Some(max) = inner.settings.max_header_list_size() {
-                codec.set_max_recv_header_list_size(max as usize);
-            }
-
-            // send setting to the peer
-            req.encode(inner.settings.clone().into(), &codec).unwrap();
-
-            let cfg = Config {
-                local_init_window_sz: inner
-                    .settings
-                    .initial_window_size()
-                    .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE),
-                initial_max_send_streams: 0,
-                local_next_stream_id: 2.into(),
-                extended_connect_protocol_enabled: inner
-                    .settings
-                    .is_extended_connect_protocol_enabled()
-                    .unwrap_or(false),
-                local_reset_duration: inner.reset_stream_duration,
-                local_reset_max: inner.reset_stream_max,
-                remote_init_window_sz: frame::DEFAULT_INITIAL_WINDOW_SIZE,
-                remote_max_initiated: inner
-                    .settings
-                    .max_concurrent_streams()
-                    .map(|max| max as usize),
-            };
-            let con = Connection::new(cfg, req.get_ref(), codec.clone());
+            let codec = Rc::new(Codec::default());
+            let con = Connection::new(req.get_ref(), codec.clone(), inner.config.clone());
 
             // start protocol dispatcher
             IoDispatcher::new(req, codec, Dispatcher::new(con, ctl_srv, pub_srv))

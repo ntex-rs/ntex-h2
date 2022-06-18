@@ -35,10 +35,10 @@ struct CodecInner {
     partial: Option<Partial>, // Partially loaded headers frame
 }
 
-impl Codec {
-    /// Returns a new `Codec` with the default max frame size
+impl Default for Codec {
     #[inline]
-    pub fn new() -> Self {
+    /// Returns a new `Codec` with the default max frame size
+    fn default() -> Self {
         // Delimit the frames
         let decoder = self::length_delimited::Builder::new()
             .length_field_length(3)
@@ -58,7 +58,9 @@ impl Codec {
             encoder_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
         }))
     }
+}
 
+impl Codec {
     /// Updates the max received frame size.
     ///
     /// The change takes effect the next time a frame is decoded. In other
@@ -66,7 +68,7 @@ impl Codec {
     /// size greater than `val` but less than the max frame size in effect
     /// before calling this function, then the frame will be allowed.
     #[inline]
-    pub fn set_max_recv_frame_size(&self, val: usize) {
+    pub fn set_recv_frame_size(&self, val: usize) {
         assert!(
             frame::DEFAULT_MAX_FRAME_SIZE as usize <= val
                 && val <= frame::MAX_MAX_FRAME_SIZE as usize
@@ -74,20 +76,20 @@ impl Codec {
         self.0.borrow_mut().decoder.set_max_frame_length(val);
     }
 
+    /// Set the max header list size that can be received.
+    pub fn set_recv_header_list_size(&self, val: usize) {
+        self.0.borrow_mut().decoder_max_header_list_size = val;
+    }
+
     /// Set the peer's max frame size.
-    pub fn set_max_send_frame_size(&self, val: usize) {
+    pub fn set_send_frame_size(&self, val: usize) {
         assert!(val <= frame::MAX_MAX_FRAME_SIZE as usize);
         self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
     }
 
     /// Set the peer's header table size size.
-    pub fn set_send_header_table_size(&self, val: usize) {
+    pub fn set_send_header_list_size(&self, val: usize) {
         self.0.borrow_mut().encoder_hpack.update_max_size(val);
-    }
-
-    /// Set the max header list size that can be received.
-    pub fn set_max_recv_header_list_size(&self, val: usize) {
-        self.0.borrow_mut().decoder_max_header_list_size = val;
     }
 }
 

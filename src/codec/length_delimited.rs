@@ -169,7 +169,7 @@ impl Encoder for LengthDelimitedCodec {
             n.checked_sub(self.builder.length_adjustment as usize)
         };
 
-        let n = n.ok_or_else(|| LengthDelimitedCodecError::Adjusted)?;
+        let n = n.ok_or(LengthDelimitedCodecError::Adjusted)?;
 
         // Reserve capacity in the destination buffer to fit the frame and
         // length field (plus adjustment).

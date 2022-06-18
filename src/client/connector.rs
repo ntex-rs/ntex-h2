@@ -6,12 +6,9 @@ use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Service};
 use ntex_util::time::{timeout_checked, Seconds};
 
-use crate::codec::Codec;
-use crate::connection::{Config, Connection};
-use crate::frame::Settings;
-use crate::{consts, frame};
-
 use super::{ClientConnection, ClientError};
+use crate::connection::{Config, Connection};
+use crate::{codec::Codec, consts, frame, frame::Settings};
 
 /// Mqtt client connector
 pub struct Connector<A, T>(Rc<RefCell<Inner<A, T>>>);
@@ -29,7 +26,7 @@ struct Inner<A, T> {
     pub(super) settings: Settings,
 
     /// Initial target window size for new connections.
-    pub(super) initial_target_connection_window_size: Option<u32>,
+    pub(super) initial_target_connection_window_size: u32,
 
     pub(super) handshake_timeout: Seconds,
     pub(super) disconnect_timeout: Seconds,
@@ -51,7 +48,7 @@ where
             settings: Settings::default(),
             reset_stream_duration: consts::DEFAULT_RESET_STREAM_SECS,
             reset_stream_max: consts::DEFAULT_RESET_STREAM_MAX,
-            initial_target_connection_window_size: None,
+            initial_target_connection_window_size: consts::DEFAULT_CONNECTION_WINDOW_SIZE,
             handshake_timeout: Seconds(5),
             disconnect_timeout: Seconds(3),
             keepalive_timeout: Seconds(120),
@@ -88,12 +85,12 @@ where
     /// The initial window of a connection is used as part of flow control. For more details,
     /// see [`FlowControl`].
     ///
-    /// The default value is 65,535.
+    /// The default value is 1Mb.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
     pub fn initial_connection_window_size(&self, size: u32) -> &Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
-        self.0.borrow_mut().initial_target_connection_window_size = Some(size);
+        self.0.borrow_mut().initial_target_connection_window_size = size;
         self
     }
 
@@ -111,7 +108,7 @@ where
     /// This function panics if `max` is not within the legal range specified
     /// above.
     pub fn max_frame_size(&self, max: u32) -> &Self {
-        self.0.borrow_mut().settings.set_max_frame_size(Some(max));
+        self.0.borrow_mut().settings.set_max_frame_size(max);
         self
     }
 
@@ -274,6 +271,7 @@ where
         IoBoxed: From<U::Response>,
     {
         let inner = self.0.borrow();
+
         Connector(Rc::new(RefCell::new(Inner {
             connector: connector.into_service(),
             settings: inner.settings.clone(),
@@ -319,40 +317,30 @@ where
         async move {
             let io = IoBoxed::from(fut.await?);
             let slf = inner.borrow();
-            let codec = Rc::new(Codec::new());
-            if let Some(max) = slf.settings.max_frame_size() {
-                codec.set_max_recv_frame_size(max as usize);
-            }
-            if let Some(max) = slf.settings.max_header_list_size() {
-                codec.set_max_recv_header_list_size(max as usize);
-            }
+            let codec = Rc::new(Codec::default());
+
+            let settings = slf.settings.clone();
+            let window_sz = settings
+                .initial_window_size()
+                .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE);
+            let window_sz_threshold = ((window_sz as f32) / 3.0) as u32;
+            let connection_window_sz = slf.initial_target_connection_window_size;
+            let connection_window_sz_threshold = ((connection_window_sz as f32) / 4.0) as u32;
+
+            let cfg = Config {
+                settings,
+                window_sz,
+                window_sz_threshold,
+                connection_window_sz,
+                connection_window_sz_threshold,
+                reset_duration: slf.reset_stream_duration,
+                reset_max: slf.reset_stream_max,
+            };
 
             // send preface
             let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
 
-            // send setting to the peer
-            io.encode(slf.settings.clone().into(), &codec).unwrap();
-
-            let cfg = Config {
-                local_init_window_sz: slf
-                    .settings
-                    .initial_window_size()
-                    .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE),
-                initial_max_send_streams: 0,
-                local_next_stream_id: 2.into(),
-                extended_connect_protocol_enabled: slf
-                    .settings
-                    .is_extended_connect_protocol_enabled()
-                    .unwrap_or(false),
-                local_reset_duration: slf.reset_stream_duration,
-                local_reset_max: slf.reset_stream_max,
-                remote_init_window_sz: frame::DEFAULT_INITIAL_WINDOW_SIZE,
-                remote_max_initiated: slf
-                    .settings
-                    .max_concurrent_streams()
-                    .map(|max| max as usize),
-            };
-            let con = Connection::new(cfg, io.get_ref(), codec.clone());
+            let con = Connection::new(io.get_ref(), codec.clone(), Rc::new(cfg));
 
             Ok(ClientConnection::new(
                 io,

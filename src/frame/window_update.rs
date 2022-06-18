@@ -37,10 +37,6 @@ impl WindowUpdate {
         // when received.
         let size_increment = unpack_octets_4!(payload, 0, u32) & !SIZE_INCREMENT_MASK;
 
-        if size_increment == 0 {
-            return Err(FrameError::InvalidWindowUpdateValue);
-        }
-
         Ok(WindowUpdate {
             stream_id: head.stream_id(),
             size_increment,

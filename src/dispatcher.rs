@@ -5,9 +5,9 @@ use ntex_service::Service;
 use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::control::{ControlMessage, ControlResult};
-use crate::error::ProtocolError;
+use crate::error::{ProtocolError, StreamError};
 use crate::frame::{self, Data, Frame, GoAway, Headers, Reason, StreamId};
-use crate::{codec::Codec, connection::Connection, message::Message, stream::Stream};
+use crate::{codec::Codec, connection::Connection, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Ctl, Pub>
@@ -32,6 +32,9 @@ struct Inner<Ctl> {
     last_stream_id: StreamId,
 }
 
+type ServiceFut<Pub, Ctl, E> =
+    Either<PublishResponse<Pub, Ctl>, Either<Ready<Option<Frame>, ()>, ControlResponse<E, Ctl>>>;
+
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
 where
     Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult>,
@@ -54,10 +57,7 @@ where
     fn handle_proto_error(
         &self,
         result: Result<(), ProtocolError>,
-    ) -> Either<
-        PublishResponse<Pub, Ctl>,
-        Either<Ready<Option<Frame>, ()>, ControlResponse<Pub::Error, Ctl>>,
-    > {
+    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
             Err(err) => Either::Right(Either::Right(ControlResponse::new(
@@ -67,13 +67,24 @@ where
         }
     }
 
-    fn recv_headers(
+    fn handle_mixed_error(
         &self,
-        hdrs: Headers,
-    ) -> Either<
-        PublishResponse<Pub, Ctl>,
-        Either<Ready<Option<Frame>, ()>, ControlResponse<Pub::Error, Ctl>>,
-    > {
+        result: Result<(), Either<ProtocolError, StreamError>>,
+    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
+        match result {
+            Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
+            Err(Either::Left(err)) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(err),
+                &self.inner,
+            ))),
+            Err(Either::Right(err)) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::stream_error(err),
+                &self.inner,
+            ))),
+        }
+    }
+
+    fn recv_headers(&self, hdrs: Headers) -> ServiceFut<Pub, Ctl, Pub::Error> {
         let id = hdrs.stream_id();
         let eos = hdrs.is_end_stream();
         let stream = self.connection.get(id);
@@ -84,32 +95,27 @@ where
                 &self.inner,
             )),
             Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::stream_error(err, stream.clone()),
+                ControlMessage::stream_error(err),
                 &self.inner,
             ))),
         }
     }
 
-    pub(crate) fn recv_data(
-        &self,
-        data: Data,
-    ) -> Either<
-        PublishResponse<Pub, Ctl>,
-        Either<Ready<Option<Frame>, ()>, ControlResponse<Pub::Error, Ctl>>,
-    > {
+    pub(crate) fn recv_data(&self, data: Data) -> ServiceFut<Pub, Ctl, Pub::Error> {
         let id = data.stream_id();
         let eos = data.is_end_stream();
         let stream = self.connection.query(id);
 
         if let Some(mut stream) = stream {
             match stream.recv_data(data) {
-                Ok(msg) => Either::Left(PublishResponse::new(
+                Ok(Some(msg)) => Either::Left(PublishResponse::new(
                     self.publish.call(msg),
                     stream,
                     &self.inner,
                 )),
+                Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
                 Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::stream_error(err, stream.clone()),
+                    ControlMessage::stream_error(err),
                     &self.inner,
                 ))),
             }
@@ -197,7 +203,7 @@ where
                     self.handle_proto_error(self.connection.recv_settings(settings))
                 }
                 Frame::WindowUpdate(update) => {
-                    self.handle_proto_error(self.connection.recv_window_update(update))
+                    self.handle_mixed_error(self.connection.recv_window_update(update))
                 }
                 Frame::Reset(reset) => {
                     log::trace!("processing RESET: {:#?}", reset);
@@ -215,7 +221,7 @@ where
                     )))
                 }
                 Frame::Priority(prio) => {
-                    log::trace!("PRIORITY frame is not supported: {:#?}", prio);
+                    log::debug!("PRIORITY frame is not supported: {:#?}", prio);
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             },
@@ -253,7 +259,7 @@ where
 pin_project_lite::pin_project! {
     /// Publish service response future
     pub(crate) struct PublishResponse<P: Service<Message>, C: Service<ControlMessage<P::Error>>> {
-        stream: Stream,
+        stream: StreamRef,
         #[pin]
         state: PublishResponseState<P, C>,
         inner: Rc<Inner<C>>,
@@ -275,7 +281,7 @@ where
     C: Service<ControlMessage<P::Error>, Response = ControlResult>,
     C::Error: fmt::Debug,
 {
-    fn new(fut: P::Future, stream: Stream, inner: &Rc<Inner<C>>) -> Self {
+    fn new(fut: P::Future, stream: StreamRef, inner: &Rc<Inner<C>>) -> Self {
         Self {
             stream,
             inner: inner.clone(),
@@ -303,12 +309,12 @@ where
                     this.state.set(PublishResponseState::Control {
                         fut: ControlResponse::new(
                             ControlMessage::app_error(e, this.stream.clone()),
-                            &this.inner,
+                            this.inner,
                         ),
                     });
-                    return self.poll(cx);
+                    self.poll(cx)
                 }
-                Poll::Pending => return Poll::Pending,
+                Poll::Pending => Poll::Pending,
             },
             PublishResponseStateProject::Control { fut } => fut.poll(cx),
         }

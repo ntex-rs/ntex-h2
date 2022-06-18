@@ -1,10 +1,11 @@
-use std::{fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData, rc::Rc};
 
 use ntex_service::{IntoServiceFactory, ServiceFactory};
 use ntex_util::time::Seconds;
 
+use crate::connection::Config;
 use crate::control::{ControlMessage, ControlResult};
-use crate::{consts, default::DefaultControlService, frame::Settings, message::Message};
+use crate::{consts, default::DefaultControlService, frame, frame::Settings, message::Message};
 
 use super::service::{Server, ServerInner};
 
@@ -32,7 +33,7 @@ pub struct ServerBuilder<E, Ctl = DefaultControlService> {
     pub(super) settings: Settings,
 
     /// Initial target window size for new connections.
-    pub(super) initial_target_connection_window_size: Option<u32>,
+    pub(super) initial_target_connection_window_size: u32,
 
     pub(super) handshake_timeout: Seconds,
     pub(super) disconnect_timeout: Seconds,
@@ -54,7 +55,7 @@ impl<E> ServerBuilder<E> {
             reset_stream_duration: consts::DEFAULT_RESET_STREAM_SECS,
             reset_stream_max: consts::DEFAULT_RESET_STREAM_MAX,
             settings: Settings::default(),
-            initial_target_connection_window_size: None,
+            initial_target_connection_window_size: consts::DEFAULT_CONNECTION_WINDOW_SIZE,
             handshake_timeout: Seconds(5),
             disconnect_timeout: Seconds(3),
             keepalive_timeout: Seconds(120),
@@ -105,12 +106,12 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// The initial window of a connection is used as part of flow control. For more details,
     /// see [`FlowControl`].
     ///
-    /// The default value is 65,535.
+    /// The default value is 1Mb.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
     pub fn initial_connection_window_size(&mut self, size: u32) -> &mut Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
-        self.initial_target_connection_window_size = Some(size);
+        self.initial_target_connection_window_size = size;
         self
     }
 
@@ -128,7 +129,7 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// This function panics if `max` is not within the legal range specified
     /// above.
     pub fn max_frame_size(&mut self, max: u32) -> &mut Self {
-        self.settings.set_max_frame_size(Some(max));
+        self.settings.set_max_frame_size(max);
         self
     }
 
@@ -280,13 +281,28 @@ where
         Pub: ServiceFactory<Message, Response = (), Error = E> + 'static,
         Pub::InitError: fmt::Debug,
     {
+        let settings = self.settings;
+        let window_sz = settings
+            .initial_window_size()
+            .unwrap_or(frame::DEFAULT_INITIAL_WINDOW_SIZE);
+        let window_sz_threshold = ((window_sz as f32) / 3.0) as u32;
+        let connection_window_sz = self.initial_target_connection_window_size;
+        let connection_window_sz_threshold = ((connection_window_sz as f32) / 4.0) as u32;
+
+        let cfg = Config {
+            settings,
+            window_sz,
+            window_sz_threshold,
+            connection_window_sz,
+            connection_window_sz_threshold,
+            reset_duration: self.reset_stream_duration,
+            reset_max: self.reset_stream_max,
+        };
+
         Server::new(ServerInner {
             control: self.control,
             publish: service.into_factory(),
-            reset_stream_duration: self.reset_stream_duration,
-            reset_stream_max: self.reset_stream_max,
-            settings: self.settings,
-            initial_target_connection_window_size: self.initial_target_connection_window_size,
+            config: Rc::new(cfg),
             keepalive_timeout: self.keepalive_timeout,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,

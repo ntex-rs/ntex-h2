@@ -1,5 +1,6 @@
 //! Http2 client
 
+#[allow(clippy::module_inception)]
 mod client;
 mod connector;
 

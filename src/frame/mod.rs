@@ -119,10 +119,6 @@ pub enum FrameError {
     #[error("An invalid setting value was provided")]
     InvalidSettingValue,
 
-    /// An invalid window update value
-    #[error("An invalid window update value")]
-    InvalidWindowUpdateValue,
-
     /// The payload length specified by the frame header was not the
     /// value necessary for the specific frame type.
     #[error(
