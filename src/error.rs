@@ -5,10 +5,10 @@ pub use crate::codec::EncoderError;
 use crate::frame::{self, GoAway, Reason, StreamId};
 use crate::stream::StreamInner;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
-    #[error("Unknown stream")]
-    UnknownStream,
+    #[error("Unknown stream {0:?}")]
+    UnknownStream(frame::Frame),
     #[error("Reason: {0}")]
     Reason(Reason),
     #[error("{0}")]
@@ -30,14 +30,14 @@ impl From<Reason> for ProtocolError {
     }
 }
 
-impl From<ProtocolError> for GoAway {
-    fn from(err: ProtocolError) -> GoAway {
-        match err {
-            ProtocolError::Reason(reason) => GoAway::new(reason),
+impl ProtocolError {
+    pub fn to_goaway(&self) -> GoAway {
+        match self {
+            ProtocolError::Reason(reason) => GoAway::new(*reason),
             ProtocolError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
             }
-            ProtocolError::UnknownStream => {
+            ProtocolError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
             }
             ProtocolError::StreamIdle(s) => {
@@ -79,6 +79,7 @@ impl StreamError {
     #[inline]
     pub fn reason(&self) -> Reason {
         match self.kind {
+            StreamErrorKind::Reset(r) => r,
             StreamErrorKind::LocalReason(r) => r,
             StreamErrorKind::ZeroWindowUpdateValue => Reason::PROTOCOL_ERROR,
             StreamErrorKind::UnexpectedHeadersFrame => Reason::PROTOCOL_ERROR,
@@ -90,6 +91,7 @@ impl StreamError {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StreamErrorKind {
+    Reset(Reason),
     LocalReason(Reason),
     ZeroWindowUpdateValue,
     UnexpectedHeadersFrame,

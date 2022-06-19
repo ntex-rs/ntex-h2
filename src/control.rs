@@ -209,7 +209,7 @@ pub struct ProtocolError {
 impl ProtocolError {
     pub fn new(err: error::ProtocolError) -> Self {
         Self {
-            frm: err.into(),
+            frm: err.to_goaway(),
             err,
         }
     }

@@ -64,7 +64,7 @@ async fn main() -> std::io::Result<()> {
                                     );
                                     msg.stream().send_trailers(hdrs);
                                 }
-                                MessageKind::Data(data) => {
+                                MessageKind::Data(data, cap) => {
                                     println!("Got data: {:?}", data.len());
                                 }
                                 MessageKind::Eof(data) => {

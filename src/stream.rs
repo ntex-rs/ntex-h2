@@ -1,10 +1,13 @@
-use std::{cell::Cell, cmp::Ordering, fmt, ops, rc::Rc};
+use std::{cell::Cell, cmp::Ordering, fmt, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
 use ntex_http::{HeaderMap, StatusCode};
+use ntex_util::{future::poll_fn, task::LocalWaker};
 
 use crate::error::{ProtocolError, StreamError, StreamErrorKind};
-use crate::frame::{Data, Headers, PseudoHeaders, Reason, StreamId, WindowSize, WindowUpdate};
+use crate::frame::{
+    Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
+};
 use crate::{connection::ConnectionInner, flow::FlowControl, frame, message::Message};
 
 pub struct Stream(Rc<StreamInner>);
@@ -99,8 +102,11 @@ pub(crate) struct StreamInner {
     /// Send part
     send: Cell<HalfState>,
     send_flow: Cell<FlowControl>,
+    send_waker: LocalWaker,
     /// Connection config
     con: Rc<ConnectionInner>,
+    /// error state
+    error: Cell<Option<StreamErrorKind>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -170,6 +176,8 @@ impl StreamRef {
             recv_size: Cell::new(0),
             send: Cell::new(HalfState::Headers),
             send_flow: Cell::new(send_flow),
+            send_waker: LocalWaker::new(),
+            error: Cell::new(None),
         }))
     }
 
@@ -245,6 +253,13 @@ impl StreamRef {
         }
     }
 
+    pub(crate) fn recv_rst_stream(&self, frm: Reset) {
+        self.0.recv.set(HalfState::Closed);
+        self.0.send.set(HalfState::Closed);
+        self.0.error.set(Some(StreamErrorKind::Reset(frm.reason())));
+        self.0.send_waker.wake();
+    }
+
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
         if frm.size_increment() == 0 {
             Err(StreamError::new(
@@ -259,6 +274,10 @@ impl StreamRef {
                 .inc_window(frm.size_increment())
                 .map_err(|e| StreamError::new(self.0.clone(), StreamErrorKind::LocalReason(e)))?;
             self.0.send_flow.set(flow);
+
+            if flow.window_size() > 0 {
+                self.0.send_waker.wake();
+            }
             Ok(())
         }
     }
@@ -336,22 +355,29 @@ impl Stream {
         }
     }
 
-    pub fn send_payload(&self, res: Bytes, eof: bool) {
+    pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), StreamError> {
         match self.0.send.get() {
-            HalfState::Payload => {
-                let mut data = Data::new(self.0.id, res);
-                if eof {
-                    data.set_end_stream();
-                    self.0.send.set(HalfState::Closed);
-                }
+            HalfState::Payload => loop {
+                let win = self.available_send_capacity();
+                if win > 0 {
+                    let mut data = Data::new(self.0.id, res.split_to(win as usize));
+                    if eof && res.is_empty() {
+                        data.set_end_stream();
+                        self.0.send.set(HalfState::Closed);
+                    }
 
-                self.0
-                    .con
-                    .io
-                    .encode(data.into(), &self.0.con.codec)
-                    .unwrap();
-            }
-            _ => (),
+                    self.0
+                        .con
+                        .io
+                        .encode(data.into(), &self.0.con.codec)
+                        .unwrap();
+                    if res.is_empty() {
+                        return Ok(());
+                    }
+                }
+                self.send_capacity().await?;
+            },
+            _ => Ok(()),
         }
     }
 
@@ -367,6 +393,30 @@ impl Stream {
                 .io
                 .encode(hdrs.into(), &self.0.con.codec)
                 .unwrap();
+        }
+    }
+
+    pub fn available_send_capacity(&self) -> WindowSize {
+        self.0.send_flow.get().window_size()
+    }
+
+    pub async fn send_capacity(&self) -> Result<WindowSize, StreamError> {
+        poll_fn(|cx| self.poll_send_capacity(cx)).await
+    }
+
+    pub fn poll_send_capacity(
+        &self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<WindowSize, StreamError>> {
+        if let Some(kind) = self.0.error.get() {
+            Poll::Ready(Err(StreamError::new(self.0.clone(), kind)))
+        } else {
+            let win = self.0.send_flow.get().window_size();
+            if win > 0 {
+                Poll::Ready(Ok(win))
+            } else {
+                Poll::Pending
+            }
         }
     }
 }

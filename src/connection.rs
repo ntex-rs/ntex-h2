@@ -72,6 +72,10 @@ impl ConnectionInner {
         }
         self.recv_flow.set(recv_flow);
     }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        true
+    }
 }
 
 impl Connection {
@@ -279,7 +283,23 @@ impl Connection {
         } else if let Some(stream) = self.query(frm.stream_id()) {
             stream.recv_window_update(frm).map_err(Either::Right)
         } else {
-            Err(Either::Left(ProtocolError::UnknownStream))
+            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
+        }
+    }
+
+    pub(crate) fn recv_rst_stream(
+        &self,
+        frm: frame::Reset,
+    ) -> Result<(), Either<ProtocolError, StreamError>> {
+        log::trace!("processing incoming {:#?}", frm);
+
+        if frm.stream_id().is_zero() {
+            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
+        } else if let Some(stream) = self.query(frm.stream_id()) {
+            stream.recv_rst_stream(frm);
+            Ok(())
+        } else {
+            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
         }
     }
 }
