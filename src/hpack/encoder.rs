@@ -1,8 +1,7 @@
-use super::table::{Index, Table};
-use super::{huffman, Header};
+use ntex_bytes::{BufMut, BytesMut};
+use ntex_http::header::{HeaderName, HeaderValue};
 
-use bytes::{BufMut, BytesMut};
-use http::header::{HeaderName, HeaderValue};
+use super::{huffman, table::Index, table::Table, Header};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -62,9 +61,6 @@ impl Encoder {
     where
         I: IntoIterator<Item = Header<Option<HeaderName>>>,
     {
-        let span = tracing::trace_span!("hpack::encode");
-        let _e = span.enter();
-
         self.encode_size_updates(dst);
 
         let mut last_index = None;
@@ -118,12 +114,12 @@ impl Encoder {
                 encode_int(idx, 7, 0x80, dst);
             }
             Index::Name(idx, _) => {
-                let header = self.table.resolve(&index);
+                let header = self.table.resolve(index);
 
                 encode_not_indexed(idx, header.value_slice(), header.is_sensitive(), dst);
             }
             Index::Inserted(_) => {
-                let header = self.table.resolve(&index);
+                let header = self.table.resolve(index);
 
                 assert!(!header.is_sensitive());
 
@@ -133,7 +129,7 @@ impl Encoder {
                 encode_str(header.value_slice(), dst);
             }
             Index::InsertedValue(idx, _) => {
-                let header = self.table.resolve(&index);
+                let header = self.table.resolve(index);
 
                 assert!(!header.is_sensitive());
 
@@ -141,7 +137,7 @@ impl Encoder {
                 encode_str(header.value_slice(), dst);
             }
             Index::NotIndexed(_) => {
-                let header = self.table.resolve(&index);
+                let header = self.table.resolve(index);
 
                 encode_not_indexed2(
                     header.name().as_slice(),
@@ -298,9 +294,10 @@ fn position(buf: &BytesMut) -> usize {
 
 #[cfg(test)]
 mod test {
+    use ntex_http::*;
+
     use super::*;
     use crate::hpack::Header;
-    use http::*;
 
     #[test]
     fn test_encode_method_get() {

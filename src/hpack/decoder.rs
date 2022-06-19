@@ -1,15 +1,9 @@
-use super::{header::BytesStr, huffman, Header};
-use crate::frame;
+use std::{cmp, collections::VecDeque, io::Cursor, str::Utf8Error};
 
-use bytes::{Buf, Bytes, BytesMut};
-use http::header;
-use http::method::{self, Method};
-use http::status::{self, StatusCode};
+use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
+use ntex_http::{error, header, Method, StatusCode};
 
-use std::cmp;
-use std::collections::VecDeque;
-use std::io::Cursor;
-use std::str::Utf8Error;
+use super::{huffman, Header};
 
 /// Decodes headers using HPACK
 #[derive(Debug)]
@@ -23,24 +17,37 @@ pub struct Decoder {
 
 /// Represents all errors that can be encountered while performing the decoding
 /// of an HPACK header set.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DecoderError {
+    #[error("InvalidRepresentation")]
     InvalidRepresentation,
+    #[error("InvalidIntegerPrefix")]
     InvalidIntegerPrefix,
+    #[error("InvalidTableIndex")]
     InvalidTableIndex,
+    #[error("InvalidHuffmanCode")]
     InvalidHuffmanCode,
+    #[error("InvalidUtf8")]
     InvalidUtf8,
+    #[error("InvalidStatusCode")]
     InvalidStatusCode,
+    #[error("InvalidPseudoheader")]
     InvalidPseudoheader,
+    #[error("InvalidMaxDynamicSize")]
     InvalidMaxDynamicSize,
+    #[error("IntegerOverflow")]
     IntegerOverflow,
+    #[error("{0}")]
     NeedMore(NeedMore),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NeedMore {
+    #[error("Unexpected end of stream")]
     UnexpectedEndOfStream,
+    #[error("Integer underflow")]
     IntegerUnderflow,
+    #[error("String underflow")]
     StringUnderflow,
 }
 
@@ -189,25 +196,20 @@ impl Decoder {
             self.last_max_update = size;
         }
 
-        let span = tracing::trace_span!("hpack::decode");
-        let _e = span.enter();
-
-        tracing::trace!("decode");
-
         while let Some(ty) = peek_u8(src) {
             // At this point we are always at the beginning of the next block
             // within the HPACK data. The type of the block can always be
             // determined from the first byte.
             match Representation::load(ty)? {
                 Indexed => {
-                    tracing::trace!(rem = src.remaining(), kind = %"Indexed");
+                    // tracing::trace!(rem = src.remaining(), kind = %"Indexed");
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
                     consume(src);
                     f(entry);
                 }
                 LiteralWithIndexing => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
+                    // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
                     can_resize = false;
                     let entry = self.decode_literal(src, true)?;
 
@@ -218,14 +220,14 @@ impl Decoder {
                     f(entry);
                 }
                 LiteralWithoutIndexing => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
+                    // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
                     f(entry);
                 }
                 LiteralNeverIndexed => {
-                    tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
+                    // tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
@@ -235,7 +237,7 @@ impl Decoder {
                     f(entry);
                 }
                 SizeUpdate => {
-                    tracing::trace!(rem = src.remaining(), kind = %"SizeUpdate");
+                    // tracing::trace!(rem = src.remaining(), kind = %"SizeUpdate");
                     if !can_resize {
                         return Err(DecoderError::InvalidMaxDynamicSize);
                     }
@@ -257,10 +259,10 @@ impl Decoder {
             return Err(DecoderError::InvalidMaxDynamicSize);
         }
 
-        tracing::debug!(
-            from = self.table.size(),
-            to = new_size,
-            "Decoder changed max table size"
+        log::debug!(
+            "Decoder changed max table size, from {} to {}",
+            self.table.size(),
+            new_size,
         );
 
         self.table.set_max_size(new_size);
@@ -318,7 +320,7 @@ impl Decoder {
         let len = decode_int(buf, 7)?;
 
         if len > buf.remaining() {
-            tracing::trace!(len, remaining = buf.remaining(), "decode_string underflow",);
+            log::trace!("decode_string underflow {:?} {:?}", len, buf.remaining());
             return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
         }
 
@@ -396,7 +398,7 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
     const VARINT_MASK: u8 = 0b0111_1111;
     const VARINT_FLAG: u8 = 0b1000_0000;
 
-    if prefix_size < 1 || prefix_size > 8 {
+    if !(1..=8).contains(&prefix_size) {
         return Err(DecoderError::InvalidIntegerPrefix);
     }
 
@@ -581,6 +583,13 @@ impl From<Utf8Error> for DecoderError {
     }
 }
 
+impl From<()> for DecoderError {
+    fn from(_: ()) -> DecoderError {
+        // TODO: Better error?
+        DecoderError::InvalidUtf8
+    }
+}
+
 impl From<header::InvalidHeaderValue> for DecoderError {
     fn from(_: header::InvalidHeaderValue) -> DecoderError {
         // TODO: Better error?
@@ -595,38 +604,32 @@ impl From<header::InvalidHeaderName> for DecoderError {
     }
 }
 
-impl From<method::InvalidMethod> for DecoderError {
-    fn from(_: method::InvalidMethod) -> DecoderError {
+impl From<error::InvalidMethod> for DecoderError {
+    fn from(_: error::InvalidMethod) -> DecoderError {
         // TODO: Better error
         DecoderError::InvalidUtf8
     }
 }
 
-impl From<status::InvalidStatusCode> for DecoderError {
-    fn from(_: status::InvalidStatusCode) -> DecoderError {
+impl From<error::InvalidStatusCode> for DecoderError {
+    fn from(_: error::InvalidStatusCode) -> DecoderError {
         // TODO: Better error
         DecoderError::InvalidUtf8
-    }
-}
-
-impl From<DecoderError> for frame::Error {
-    fn from(src: DecoderError) -> Self {
-        frame::Error::Hpack(src)
     }
 }
 
 /// Get an entry from the static table
 pub fn get_static(idx: usize) -> Header {
-    use http::header::HeaderValue;
+    use ntex_http::header::HeaderValue;
 
     match idx {
-        1 => Header::Authority(BytesStr::from_static("")),
+        1 => Header::Authority(ByteString::from_static("")),
         2 => Header::Method(Method::GET),
         3 => Header::Method(Method::POST),
-        4 => Header::Path(BytesStr::from_static("/")),
-        5 => Header::Path(BytesStr::from_static("/index.html")),
-        6 => Header::Scheme(BytesStr::from_static("http")),
-        7 => Header::Scheme(BytesStr::from_static("https")),
+        4 => Header::Path(ByteString::from_static("/")),
+        5 => Header::Path(ByteString::from_static("/index.html")),
+        6 => Header::Scheme(ByteString::from_static("http")),
+        7 => Header::Scheme(ByteString::from_static("https")),
         8 => Header::Status(StatusCode::OK),
         9 => Header::Status(StatusCode::NO_CONTENT),
         10 => Header::Status(StatusCode::PARTIAL_CONTENT),

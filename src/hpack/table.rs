@@ -1,12 +1,9 @@
+use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem, usize};
+
+use fxhash::FxHasher;
+use ntex_http::{header, Method};
+
 use super::Header;
-
-use fnv::FnvHasher;
-use http::header;
-use http::method::Method;
-
-use std::collections::VecDeque;
-use std::hash::{Hash, Hasher};
-use std::{cmp, mem, usize};
 
 /// HPACK encoder table
 #[derive(Debug)]
@@ -404,7 +401,7 @@ impl Table {
 
         // Find the associated position
         probe_loop!(probe < self.indices.len(), {
-            debug_assert!(!self.indices[probe].is_none());
+            debug_assert!(self.indices[probe].is_some());
 
             let mut pos = self.indices[probe].unwrap();
 
@@ -667,7 +664,7 @@ fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
 fn hash_header(header: &Header) -> HashValue {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    let mut h = FnvHasher::default();
+    let mut h = FxHasher::default();
     header.name().hash(&mut h);
     HashValue((h.finish() & MASK) as usize)
 }

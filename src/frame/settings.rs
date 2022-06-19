@@ -1,7 +1,7 @@
 use std::fmt;
 
-use crate::frame::{util, Error, Frame, FrameSize, Head, Kind, StreamId};
-use bytes::{BufMut, BytesMut};
+use crate::frame::{util, Frame, FrameError, FrameSize, Head, Kind, StreamId};
+use ntex_bytes::{BufMut, BytesMut};
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct Settings {
@@ -86,11 +86,9 @@ impl Settings {
         self.max_frame_size
     }
 
-    pub fn set_max_frame_size(&mut self, size: Option<u32>) {
-        if let Some(val) = size {
-            assert!(DEFAULT_MAX_FRAME_SIZE <= val && val <= MAX_MAX_FRAME_SIZE);
-        }
-        self.max_frame_size = size;
+    pub fn set_max_frame_size(&mut self, size: u32) {
+        assert!((DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&size));
+        self.max_frame_size = Some(size);
     }
 
     pub fn max_header_list_size(&self) -> Option<u32> {
@@ -127,13 +125,13 @@ impl Settings {
     }
     */
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Settings, FrameError> {
         use self::Setting::*;
 
         debug_assert_eq!(head.kind(), crate::frame::Kind::Settings);
 
         if !head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         // Load the flag
@@ -142,7 +140,7 @@ impl Settings {
         if flag.is_ack() {
             // Ensure that the payload is empty
             if !payload.is_empty() {
-                return Err(Error::InvalidPayloadLength);
+                return Err(FrameError::InvalidPayloadLength);
             }
 
             // Return the ACK frame
@@ -151,8 +149,8 @@ impl Settings {
 
         // Ensure the payload length is correct, each setting is 6 bytes long.
         if payload.len() % 6 != 0 {
-            tracing::debug!("invalid settings payload length; len={:?}", payload.len());
-            return Err(Error::InvalidPayloadAckSettings);
+            log::debug!("invalid settings payload length; len={:?}", payload.len());
+            return Err(FrameError::InvalidPayloadAckSettings);
         }
 
         let mut settings = Settings::default();
@@ -168,7 +166,7 @@ impl Settings {
                         settings.enable_push = Some(val);
                     }
                     _ => {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 },
                 Some(MaxConcurrentStreams(val)) => {
@@ -176,16 +174,16 @@ impl Settings {
                 }
                 Some(InitialWindowSize(val)) => {
                     if val as usize > MAX_INITIAL_WINDOW_SIZE {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     } else {
                         settings.initial_window_size = Some(val);
                     }
                 }
                 Some(MaxFrameSize(val)) => {
-                    if val < DEFAULT_MAX_FRAME_SIZE || val > MAX_MAX_FRAME_SIZE {
-                        return Err(Error::InvalidSettingValue);
-                    } else {
+                    if (DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&val) {
                         settings.max_frame_size = Some(val);
+                    } else {
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 }
                 Some(MaxHeaderListSize(val)) => {
@@ -196,7 +194,7 @@ impl Settings {
                         settings.enable_connect_protocol = Some(val);
                     }
                     _ => {
-                        return Err(Error::InvalidSettingValue);
+                        return Err(FrameError::InvalidSettingValue);
                     }
                 },
                 None => {}
@@ -217,13 +215,13 @@ impl Settings {
         let head = Head::new(Kind::Settings, self.flags.into(), StreamId::zero());
         let payload_len = self.payload_len();
 
-        tracing::trace!("encoding SETTINGS; len={}", payload_len);
+        log::trace!("encoding SETTINGS; len={}", payload_len);
 
         head.encode(payload_len, dst);
 
         // Encode the settings
         self.for_each(|setting| {
-            tracing::trace!("encoding setting; val={:?}", setting);
+            log::trace!("encoding setting; val={:?}", setting);
             setting.encode(dst)
         });
     }
@@ -261,8 +259,8 @@ impl Settings {
     }
 }
 
-impl<T> From<Settings> for Frame<T> {
-    fn from(src: Settings) -> Frame<T> {
+impl From<Settings> for Frame {
+    fn from(src: Settings) -> Frame {
         Frame::Settings(src)
     }
 }

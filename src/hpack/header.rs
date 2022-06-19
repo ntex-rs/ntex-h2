@@ -1,21 +1,21 @@
-use super::{DecoderError, NeedMore};
-use crate::ext::Protocol;
+#![allow(clippy::len_without_is_empty)]
+use std::convert::TryFrom;
 
-use bytes::Bytes;
-use http::header::{HeaderName, HeaderValue};
-use http::{Method, StatusCode};
-use std::fmt;
+use ntex_bytes::{ByteString, Bytes};
+use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
+
+use super::{DecoderError, NeedMore};
 
 /// HTTP/2 Header
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Header<T = HeaderName> {
     Field { name: T, value: HeaderValue },
     // TODO: Change these types to `http::uri` types.
-    Authority(BytesStr),
+    Authority(ByteString),
     Method(Method),
-    Scheme(BytesStr),
-    Path(BytesStr),
-    Protocol(Protocol),
+    Scheme(ByteString),
+    Path(ByteString),
+    Protocol(ByteString),
     Status(StatusCode),
 }
 
@@ -30,10 +30,6 @@ pub enum Name<'a> {
     Protocol,
     Status,
 }
-
-#[doc(hidden)]
-#[derive(Clone, Eq, PartialEq, Default)]
-pub struct BytesStr(Bytes);
 
 pub fn len(name: &HeaderName, value: &HeaderValue) -> usize {
     let n: &str = name.as_ref();
@@ -68,7 +64,7 @@ impl Header {
         if name[0] == b':' {
             match &name[1..] {
                 b"authority" => {
-                    let value = BytesStr::try_from(value)?;
+                    let value = ByteString::try_from(value)?;
                     Ok(Header::Authority(value))
                 }
                 b"method" => {
@@ -76,15 +72,15 @@ impl Header {
                     Ok(Header::Method(method))
                 }
                 b"scheme" => {
-                    let value = BytesStr::try_from(value)?;
+                    let value = ByteString::try_from(value)?;
                     Ok(Header::Scheme(value))
                 }
                 b"path" => {
-                    let value = BytesStr::try_from(value)?;
+                    let value = ByteString::try_from(value)?;
                     Ok(Header::Path(value))
                 }
                 b"protocol" => {
-                    let value = Protocol::try_from(value)?;
+                    let value = ByteString::try_from(value)?;
                     Ok(Header::Protocol(value))
                 }
                 b"status" => {
@@ -112,7 +108,7 @@ impl Header {
             Header::Method(ref v) => 32 + 7 + v.as_ref().len(),
             Header::Scheme(ref v) => 32 + 7 + v.len(),
             Header::Path(ref v) => 32 + 5 + v.len(),
-            Header::Protocol(ref v) => 32 + 9 + v.as_str().len(),
+            Header::Protocol(ref v) => 32 + 9 + v.len(),
             Header::Status(_) => 32 + 7 + 3,
         }
     }
@@ -133,11 +129,11 @@ impl Header {
     pub fn value_slice(&self) -> &[u8] {
         match *self {
             Header::Field { ref value, .. } => value.as_ref(),
-            Header::Authority(ref v) => v.as_ref(),
+            Header::Authority(ref v) => v.as_bytes(),
             Header::Method(ref v) => v.as_ref().as_ref(),
-            Header::Scheme(ref v) => v.as_ref(),
-            Header::Path(ref v) => v.as_ref(),
-            Header::Protocol(ref v) => v.as_ref(),
+            Header::Scheme(ref v) => v.as_bytes(),
+            Header::Path(ref v) => v.as_bytes(),
+            Header::Protocol(ref v) => v.as_bytes(),
             Header::Status(ref v) => v.as_str().as_ref(),
         }
     }
@@ -187,21 +183,21 @@ impl Header {
     }
 
     pub fn skip_value_index(&self) -> bool {
-        use http::header;
+        use ntex_http::header;
 
         match *self {
-            Header::Field { ref name, .. } => match *name {
+            Header::Field { ref name, .. } => matches!(
+                *name,
                 header::AGE
-                | header::AUTHORIZATION
-                | header::CONTENT_LENGTH
-                | header::ETAG
-                | header::IF_MODIFIED_SINCE
-                | header::IF_NONE_MATCH
-                | header::LOCATION
-                | header::COOKIE
-                | header::SET_COOKIE => true,
-                _ => false,
-            },
+                    | header::AUTHORIZATION
+                    | header::CONTENT_LENGTH
+                    | header::ETAG
+                    | header::IF_MODIFIED_SINCE
+                    | header::IF_NONE_MATCH
+                    | header::LOCATION
+                    | header::COOKIE
+                    | header::SET_COOKIE
+            ),
             Header::Path(..) => true,
             _ => false,
         }
@@ -233,11 +229,11 @@ impl<'a> Name<'a> {
                 name: name.clone(),
                 value: HeaderValue::from_bytes(&*value)?,
             }),
-            Name::Authority => Ok(Header::Authority(BytesStr::try_from(value)?)),
+            Name::Authority => Ok(Header::Authority(ByteString::try_from(value)?)),
             Name::Method => Ok(Header::Method(Method::from_bytes(&*value)?)),
-            Name::Scheme => Ok(Header::Scheme(BytesStr::try_from(value)?)),
-            Name::Path => Ok(Header::Path(BytesStr::try_from(value)?)),
-            Name::Protocol => Ok(Header::Protocol(Protocol::try_from(value)?)),
+            Name::Scheme => Ok(Header::Scheme(ByteString::try_from(value)?)),
+            Name::Path => Ok(Header::Path(ByteString::try_from(value)?)),
+            Name::Protocol => Ok(Header::Protocol(ByteString::try_from(value)?)),
             Name::Status => {
                 match StatusCode::from_bytes(&value) {
                     Ok(status) => Ok(Header::Status(status)),
@@ -258,51 +254,5 @@ impl<'a> Name<'a> {
             Name::Protocol => b":protocol",
             Name::Status => b":status",
         }
-    }
-}
-
-// ===== impl BytesStr =====
-
-impl BytesStr {
-    pub(crate) const fn from_static(value: &'static str) -> Self {
-        BytesStr(Bytes::from_static(value.as_bytes()))
-    }
-
-    pub(crate) fn from(value: &str) -> Self {
-        BytesStr(Bytes::copy_from_slice(value.as_bytes()))
-    }
-
-    #[doc(hidden)]
-    pub fn try_from(bytes: Bytes) -> Result<Self, std::str::Utf8Error> {
-        std::str::from_utf8(bytes.as_ref())?;
-        Ok(BytesStr(bytes))
-    }
-
-    pub(crate) fn as_str(&self) -> &str {
-        // Safety: check valid utf-8 in constructor
-        unsafe { std::str::from_utf8_unchecked(self.0.as_ref()) }
-    }
-
-    pub(crate) fn into_inner(self) -> Bytes {
-        self.0
-    }
-}
-
-impl std::ops::Deref for BytesStr {
-    type Target = str;
-    fn deref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl AsRef<[u8]> for BytesStr {
-    fn as_ref(&self) -> &[u8] {
-        self.0.as_ref()
-    }
-}
-
-impl fmt::Debug for BytesStr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
     }
 }

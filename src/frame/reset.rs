@@ -1,6 +1,6 @@
-use crate::frame::{self, Error, Head, Kind, Reason, StreamId};
+use ntex_bytes::BufMut;
 
-use bytes::BufMut;
+use crate::frame::{Frame, FrameError, Head, Kind, Reason, StreamId};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {
@@ -16,6 +16,11 @@ impl Reset {
         }
     }
 
+    pub fn set_reason(mut self, error_code: Reason) -> Self {
+        self.error_code = error_code;
+        self
+    }
+
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
@@ -24,9 +29,9 @@ impl Reset {
         self.error_code
     }
 
-    pub fn load(head: Head, payload: &[u8]) -> Result<Reset, Error> {
+    pub fn load(head: Head, payload: &[u8]) -> Result<Reset, FrameError> {
         if payload.len() != 4 {
-            return Err(Error::InvalidPayloadLength);
+            return Err(FrameError::InvalidPayloadLength);
         }
 
         let error_code = unpack_octets_4!(payload, 0, u32);
@@ -38,7 +43,7 @@ impl Reset {
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
-        tracing::trace!(
+        log::trace!(
             "encoding RESET; id={:?} code={:?}",
             self.stream_id,
             self.error_code
@@ -49,8 +54,8 @@ impl Reset {
     }
 }
 
-impl<B> From<Reset> for frame::Frame<B> {
+impl From<Reset> for Frame {
     fn from(src: Reset) -> Self {
-        frame::Frame::Reset(src)
+        Frame::Reset(src)
     }
 }

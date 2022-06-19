@@ -1,6 +1,6 @@
 use super::StreamId;
 
-use bytes::BufMut;
+use ntex_bytes::BufMut;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Head {
@@ -17,7 +17,6 @@ pub enum Kind {
     Priority = 2,
     Reset = 3,
     Settings = 4,
-    PushPromise = 5,
     Ping = 6,
     GoAway = 7,
     WindowUpdate = 8,
@@ -41,9 +40,9 @@ impl Head {
         let (stream_id, _) = StreamId::parse(&header[5..]);
 
         Head {
+            stream_id,
             kind: Kind::new(header[3]),
             flag: header[4],
-            stream_id,
         }
     }
 
@@ -59,13 +58,7 @@ impl Head {
         self.flag
     }
 
-    pub fn encode_len(&self) -> usize {
-        super::HEADER_LEN
-    }
-
     pub fn encode<T: BufMut>(&self, payload_len: usize, dst: &mut T) {
-        debug_assert!(self.encode_len() <= dst.remaining_mut());
-
         dst.put_uint(payload_len as u64, 3);
         dst.put_u8(self.kind as u8);
         dst.put_u8(self.flag);
@@ -83,7 +76,6 @@ impl Kind {
             2 => Kind::Priority,
             3 => Kind::Reset,
             4 => Kind::Settings,
-            5 => Kind::PushPromise,
             6 => Kind::Ping,
             7 => Kind::GoAway,
             8 => Kind::WindowUpdate,

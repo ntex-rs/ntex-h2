@@ -3,7 +3,7 @@ mod table;
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
 
-use bytes::{BufMut, BytesMut};
+use ntex_bytes::{BufMut, BytesMut};
 
 // Constructed in the generated `table.rs` file
 struct Decoder {

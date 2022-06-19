@@ -1,7 +1,7 @@
 #[cfg(fuzzing)]
 pub mod fuzz_logic {
     use crate::hpack;
-    use bytes::BytesMut;
+    use ntex_bytes::BytesMut;
     use http::header::HeaderName;
     use std::io::Cursor;
 

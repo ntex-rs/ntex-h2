@@ -1,200 +1,165 @@
-use crate::codec::{SendError, UserError};
-use crate::frame::StreamId;
-use crate::proto::{self, Initiator};
+use std::{fmt, rc::Rc};
 
-use bytes::Bytes;
-use std::{error, fmt, io};
+pub use crate::codec::EncoderError;
 
-pub use crate::frame::Reason;
+use crate::frame::{self, GoAway, Reason, StreamId};
+use crate::stream::StreamInner;
 
-/// Represents HTTP/2 operation errors.
-///
-/// `Error` covers error cases raised by protocol errors caused by the
-/// peer, I/O (transport) errors, and errors caused by the user of the library.
-///
-/// If the error was caused by the remote peer, then it will contain a
-/// [`Reason`] which can be obtained with the [`reason`] function.
-///
-/// [`Reason`]: struct.Reason.html
-/// [`reason`]: #method.reason
-#[derive(Debug)]
-pub struct Error {
-    kind: Kind,
-}
-
-#[derive(Debug)]
-enum Kind {
-    /// A RST_STREAM frame was received or sent.
-    Reset(StreamId, Reason, Initiator),
-
-    /// A GO_AWAY frame was received or sent.
-    GoAway(Bytes, Reason, Initiator),
-
-    /// The user created an error from a bare Reason.
+#[derive(Debug, thiserror::Error)]
+pub enum ProtocolError {
+    #[error("Unknown stream {0:?}")]
+    UnknownStream(frame::Frame),
+    #[error("Reason: {0}")]
     Reason(Reason),
-
-    /// An error resulting from an invalid action taken by the user of this
-    /// library.
-    User(UserError),
-
-    /// An `io::Error` occurred while trying to read or write.
-    Io(io::Error),
+    #[error("{0}")]
+    Encoder(#[from] EncoderError),
+    #[error("Stream idle: {0}")]
+    StreamIdle(&'static str),
+    #[error("Unexpected setting ack received")]
+    UnexpectedSettingsAck,
+    /// Window update value is zero
+    #[error("Window update value is zero")]
+    ZeroWindowUpdateValue,
+    #[error("{0}")]
+    Frame(#[from] frame::FrameError),
 }
 
-// ===== impl Error =====
+impl From<Reason> for ProtocolError {
+    fn from(r: Reason) -> Self {
+        ProtocolError::Reason(r)
+    }
+}
 
-impl Error {
-    /// If the error was caused by the remote peer, the error reason.
-    ///
-    /// This is either an error received by the peer or caused by an invalid
-    /// action taken by the peer (i.e. a protocol error).
-    pub fn reason(&self) -> Option<Reason> {
-        match self.kind {
-            Kind::Reset(_, reason, _) | Kind::GoAway(_, reason, _) | Kind::Reason(reason) => {
-                Some(reason)
+impl ProtocolError {
+    pub fn to_goaway(&self) -> GoAway {
+        match self {
+            ProtocolError::Reason(reason) => GoAway::new(*reason),
+            ProtocolError::Encoder(_) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
             }
-            _ => None,
+            ProtocolError::UnknownStream(_) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
+            }
+            ProtocolError::StreamIdle(s) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Stream idle: {}", s))
+            }
+            ProtocolError::UnexpectedSettingsAck => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
+            }
+            ProtocolError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
+                .set_data("zero value for window update frame is not allowed"),
+            ProtocolError::Frame(err) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
+            }
         }
     }
+}
 
-    /// Returns true if the error is an io::Error
-    pub fn is_io(&self) -> bool {
-        matches!(self.kind, Kind::Io(..))
+#[derive(Debug, Clone)]
+pub struct StreamError {
+    kind: StreamErrorKind,
+    stream: Rc<StreamInner>,
+}
+
+impl StreamError {
+    pub(crate) fn new(stream: Rc<StreamInner>, kind: StreamErrorKind) -> Self {
+        Self { kind, stream }
     }
 
-    /// Returns the error if the error is an io::Error
-    pub fn get_io(&self) -> Option<&io::Error> {
+    #[inline]
+    pub fn id(&self) -> StreamId {
+        self.stream.id
+    }
+
+    #[inline]
+    pub fn kind(&self) -> &StreamErrorKind {
+        &self.kind
+    }
+
+    #[inline]
+    pub fn reason(&self) -> Reason {
         match self.kind {
-            Kind::Io(ref e) => Some(e),
-            _ => None,
+            StreamErrorKind::Reset(r) => r,
+            StreamErrorKind::LocalReason(r) => r,
+            StreamErrorKind::ZeroWindowUpdateValue => Reason::PROTOCOL_ERROR,
+            StreamErrorKind::UnexpectedHeadersFrame => Reason::PROTOCOL_ERROR,
+            StreamErrorKind::UnexpectedDataFrame => Reason::PROTOCOL_ERROR,
+            StreamErrorKind::InternalError(_) => Reason::INTERNAL_ERROR,
         }
     }
+}
 
-    /// Returns the error if the error is an io::Error
-    pub fn into_io(self) -> Option<io::Error> {
-        match self.kind {
-            Kind::Io(e) => Some(e),
-            _ => None,
-        }
-    }
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StreamErrorKind {
+    Reset(Reason),
+    LocalReason(Reason),
+    ZeroWindowUpdateValue,
+    UnexpectedHeadersFrame,
+    UnexpectedDataFrame,
+    InternalError(&'static str),
+}
 
-    pub(crate) fn from_io(err: io::Error) -> Self {
-        Error {
-            kind: Kind::Io(err),
-        }
-    }
+/// Errors caused by users of the library
+#[derive(Debug)]
+pub enum UserError {
+    /// The stream ID is no longer accepting frames.
+    InactiveStreamId,
 
-    /// Returns true if the error is from a `GOAWAY`.
-    pub fn is_go_away(&self) -> bool {
-        matches!(self.kind, Kind::GoAway(..))
-    }
+    /// The stream is not currently expecting a frame of this type.
+    UnexpectedFrameType,
 
-    /// Returns true if the error is from a `RST_STREAM`.
-    pub fn is_reset(&self) -> bool {
-        matches!(self.kind, Kind::Reset(..))
-    }
+    /// The payload size is too big
+    PayloadTooBig,
 
-    /// Returns true if the error was received in a frame from the remote.
+    /// The application attempted to initiate too many streams to remote.
+    Rejected,
+
+    /// The released capacity is larger than claimed capacity.
+    ReleaseCapacityTooBig,
+
+    /// The stream ID space is overflowed.
     ///
-    /// Such as from a received `RST_STREAM` or `GOAWAY` frame.
-    pub fn is_remote(&self) -> bool {
-        matches!(
-            self.kind,
-            Kind::GoAway(_, _, Initiator::Remote) | Kind::Reset(_, _, Initiator::Remote)
-        )
-    }
+    /// A new connection is needed.
+    OverflowedStreamId,
+
+    /// Illegal headers, such as connection-specific headers.
+    MalformedHeaders,
+
+    /// Request submitted with relative URI.
+    MissingUriSchemeAndAuthority,
+
+    /// Calls `SendResponse::poll_reset` after having called `send_response`.
+    PollResetAfterSendResponse,
+
+    /// Calls `PingPong::send_ping` before receiving a pong.
+    SendPingWhilePending,
+
+    /// Tries to update local SETTINGS while ACK has not been received.
+    SendSettingsWhilePending,
+
+    /// Tries to send push promise to peer who has disabled server push
+    PeerDisabledServerPush,
 }
 
-impl From<proto::Error> for Error {
-    fn from(src: proto::Error) -> Error {
-        use crate::proto::Error::*;
+impl std::error::Error for UserError {}
 
-        Error {
-            kind: match src {
-                Reset(stream_id, reason, initiator) => Kind::Reset(stream_id, reason, initiator),
-                GoAway(debug_data, reason, initiator) => {
-                    Kind::GoAway(debug_data, reason, initiator)
-                }
-                Io(kind, inner) => {
-                    Kind::Io(inner.map_or_else(|| kind.into(), |inner| io::Error::new(kind, inner)))
-                }
-            },
-        }
-    }
-}
-
-impl From<Reason> for Error {
-    fn from(src: Reason) -> Error {
-        Error {
-            kind: Kind::Reason(src),
-        }
-    }
-}
-
-impl From<SendError> for Error {
-    fn from(src: SendError) -> Error {
-        match src {
-            SendError::User(e) => e.into(),
-            SendError::Connection(e) => e.into(),
-        }
-    }
-}
-
-impl From<UserError> for Error {
-    fn from(src: UserError) -> Error {
-        Error {
-            kind: Kind::User(src),
-        }
-    }
-}
-
-impl fmt::Display for Error {
+impl fmt::Display for UserError {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        let debug_data = match self.kind {
-            Kind::Reset(_, reason, Initiator::User) => {
-                return write!(fmt, "stream error sent by user: {}", reason)
-            }
-            Kind::Reset(_, reason, Initiator::Library) => {
-                return write!(fmt, "stream error detected: {}", reason)
-            }
-            Kind::Reset(_, reason, Initiator::Remote) => {
-                return write!(fmt, "stream error received: {}", reason)
-            }
-            Kind::GoAway(ref debug_data, reason, Initiator::User) => {
-                write!(fmt, "connection error sent by user: {}", reason)?;
-                debug_data
-            }
-            Kind::GoAway(ref debug_data, reason, Initiator::Library) => {
-                write!(fmt, "connection error detected: {}", reason)?;
-                debug_data
-            }
-            Kind::GoAway(ref debug_data, reason, Initiator::Remote) => {
-                write!(fmt, "connection error received: {}", reason)?;
-                debug_data
-            }
-            Kind::Reason(reason) => return write!(fmt, "protocol error: {}", reason),
-            Kind::User(ref e) => return write!(fmt, "user error: {}", e),
-            Kind::Io(ref e) => return e.fmt(fmt),
-        };
+        use self::UserError::*;
 
-        if !debug_data.is_empty() {
-            write!(fmt, " ({:?})", debug_data)?;
-        }
-
-        Ok(())
-    }
-}
-
-impl error::Error for Error {}
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-    use crate::Reason;
-
-    #[test]
-    fn error_from_reason() {
-        let err = Error::from(Reason::HTTP_1_1_REQUIRED);
-        assert_eq!(err.reason(), Some(Reason::HTTP_1_1_REQUIRED));
+        fmt.write_str(match *self {
+            InactiveStreamId => "inactive stream",
+            UnexpectedFrameType => "unexpected frame type",
+            PayloadTooBig => "payload too big",
+            Rejected => "rejected",
+            ReleaseCapacityTooBig => "release capacity too big",
+            OverflowedStreamId => "stream ID overflowed",
+            MalformedHeaders => "malformed headers",
+            MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
+            PollResetAfterSendResponse => "poll_reset after send_response is illegal",
+            SendPingWhilePending => "send_ping before received previous pong",
+            SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
+            PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
+        })
     }
 }

@@ -20,10 +20,14 @@ const STREAM_ID_MASK: u32 = 1 << 31;
 
 impl StreamId {
     /// Stream ID 0.
-    pub const ZERO: StreamId = StreamId(0);
+    pub const CON: StreamId = StreamId(0);
 
     /// The maximum allowed stream ID.
     pub const MAX: StreamId = StreamId(u32::MAX >> 1);
+
+    pub(crate) const fn new(src: u32) -> StreamId {
+        StreamId(src)
+    }
 
     /// Parse the stream ID
     #[inline]
@@ -40,33 +44,33 @@ impl StreamId {
 
     /// Returns true if this stream ID corresponds to a stream that
     /// was initiated by the client.
-    pub fn is_client_initiated(&self) -> bool {
+    pub const fn is_client_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && id % 2 == 1
     }
 
     /// Returns true if this stream ID corresponds to a stream that
     /// was initiated by the server.
-    pub fn is_server_initiated(&self) -> bool {
+    pub const fn is_server_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && id % 2 == 0
     }
 
     /// Return a new `StreamId` for stream 0.
     #[inline]
-    pub fn zero() -> StreamId {
-        StreamId::ZERO
+    pub const fn zero() -> StreamId {
+        StreamId::CON
     }
 
     /// Returns true if this stream ID is zero.
-    pub fn is_zero(&self) -> bool {
+    pub const fn is_zero(&self) -> bool {
         self.0 == 0
     }
 
     /// Returns the next stream ID initiated by the same peer as this stream
     /// ID, or an error if incrementing this stream ID would overflow the
     /// maximum.
-    pub fn next_id(&self) -> Result<StreamId, StreamIdOverflow> {
+    pub const fn next_id(&self) -> Result<StreamId, StreamIdOverflow> {
         let next = self.0 + 2;
         if next > StreamId::MAX.0 {
             Err(StreamIdOverflow)

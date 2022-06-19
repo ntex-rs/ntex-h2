@@ -1,7 +1,7 @@
+use ntex_bytes::Bytes;
 use std::fmt;
 
-use super::Error;
-use bytes::Bytes;
+use super::FrameError;
 
 /// Strip padding from the given payload.
 ///
@@ -16,12 +16,12 @@ use bytes::Bytes;
 ///
 /// If the padded payload is invalid (e.g. the length of the padding is equal
 /// to the total length), returns `None`.
-pub fn strip_padding(payload: &mut Bytes) -> Result<u8, Error> {
+pub fn strip_padding(payload: &mut Bytes) -> Result<u8, FrameError> {
     let payload_len = payload.len();
     if payload_len == 0 {
         // If this is the case, the frame is invalid as no padding length can be
         // extracted, even though the frame should be padded.
-        return Err(Error::TooMuchPadding);
+        return Err(FrameError::TooMuchPadding);
     }
 
     let pad_len = payload[0] as usize;
@@ -29,7 +29,7 @@ pub fn strip_padding(payload: &mut Bytes) -> Result<u8, Error> {
     if pad_len >= payload_len {
         // This is invalid: the padding length MUST be less than the
         // total frame size.
-        return Err(Error::TooMuchPadding);
+        return Err(FrameError::TooMuchPadding);
     }
 
     let _ = payload.split_to(1);

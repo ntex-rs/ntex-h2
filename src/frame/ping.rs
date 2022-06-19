@@ -1,5 +1,6 @@
-use crate::frame::{Error, Frame, Head, Kind, StreamId};
-use bytes::BufMut;
+use ntex_bytes::BufMut;
+
+use crate::frame::{Frame, FrameError, Head, Kind, StreamId};
 
 const ACK_FLAG: u8 = 0x1;
 
@@ -17,17 +18,9 @@ const SHUTDOWN_PAYLOAD: Payload = [0x0b, 0x7b, 0xa2, 0xf0, 0x8b, 0x9b, 0xfe, 0x5
 const USER_PAYLOAD: Payload = [0x3b, 0x7c, 0xdb, 0x7a, 0x0b, 0x87, 0x16, 0xb4];
 
 impl Ping {
-    #[cfg(feature = "unstable")]
     pub const SHUTDOWN: Payload = SHUTDOWN_PAYLOAD;
 
-    #[cfg(not(feature = "unstable"))]
-    pub(crate) const SHUTDOWN: Payload = SHUTDOWN_PAYLOAD;
-
-    #[cfg(feature = "unstable")]
     pub const USER: Payload = USER_PAYLOAD;
-
-    #[cfg(not(feature = "unstable"))]
-    pub(crate) const USER: Payload = USER_PAYLOAD;
 
     pub fn new(payload: Payload) -> Ping {
         Ping {
@@ -53,7 +46,7 @@ impl Ping {
     }
 
     /// Builds a `Ping` frame from a raw frame.
-    pub fn load(head: Head, bytes: &[u8]) -> Result<Ping, Error> {
+    pub fn load(head: Head, bytes: &[u8]) -> Result<Ping, FrameError> {
         debug_assert_eq!(head.kind(), crate::frame::Kind::Ping);
 
         // PING frames are not associated with any individual stream. If a PING
@@ -61,13 +54,13 @@ impl Ping {
         // 0x0, the recipient MUST respond with a connection error
         // (Section 5.4.1) of type PROTOCOL_ERROR.
         if !head.stream_id().is_zero() {
-            return Err(Error::InvalidStreamId);
+            return Err(FrameError::InvalidStreamId);
         }
 
         // In addition to the frame header, PING frames MUST contain 8 octets of opaque
         // data in the payload.
         if bytes.len() != 8 {
-            return Err(Error::BadFrameSize);
+            return Err(FrameError::BadFrameSize);
         }
 
         let mut payload = [0; 8];
@@ -85,7 +78,7 @@ impl Ping {
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
         let sz = self.payload.len();
-        tracing::trace!("encoding PING; ack={} len={}", self.ack, sz);
+        log::trace!("encoding PING; ack={} len={}", self.ack, sz);
 
         let flags = if self.ack { ACK_FLAG } else { 0 };
         let head = Head::new(Kind::Ping, flags, StreamId::zero());
@@ -95,8 +88,8 @@ impl Ping {
     }
 }
 
-impl<T> From<Ping> for Frame<T> {
-    fn from(src: Ping) -> Frame<T> {
+impl From<Ping> for Frame {
+    fn from(src: Ping) -> Frame {
         Frame::Ping(src)
     }
 }
