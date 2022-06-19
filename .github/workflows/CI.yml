@@ -54,16 +54,11 @@ jobs:
 
       - name: Install libssl-dev
         run: sudo apt-get update && sudo apt-get install libssl-dev
-      - name: Build without unstable flag
+
+      - name: Build
         uses: actions-rs/cargo@v1
         with:
           command: build
-
-      - name: Check with unstable flag
-        uses: actions-rs/cargo@v1
-        with:
-          command: check
-          args: --features unstable
 
       - name: Run lib tests and doc tests
         uses: actions-rs/cargo@v1
@@ -90,7 +85,7 @@ jobs:
     strategy:
       matrix:
         rust:
-          - 1.49 # never go past Hyper's own MSRV
+          - 1.56 # never go past ntex's msrv
 
         os:
           - ubuntu-latest

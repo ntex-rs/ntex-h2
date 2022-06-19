@@ -1,4 +1,4 @@
-# H2
+# ntex-h2
 
 HTTP/2 client & server implementation for Rust.
 
@@ -16,25 +16,8 @@ More information about this crate can be found in the [crate documentation][dox]
 * Implements part of HTTP/2 specification (priority and push are not supported).
 * Passes [h2spec](https://github.com/summerwind/h2spec).
 
-## Usage
+### Original
 
-To use `h2`, first add this to your `Cargo.toml`:
-
-```toml
-[dependencies]
-h2 = "0.3"
-```
-
-Next, add this to your crate:
-
-```rust
-extern crate h2;
-
-use h2::server::Connection;
-
-fn main() {
-    // ...
-}
-```
+This is fork of [h2 crate](https://crates.io/crates/h2) optimized for ntex framework
 
 [h2spec]: https://github.com/summerwind/h2spec
