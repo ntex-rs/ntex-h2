@@ -20,14 +20,14 @@ pub struct FlowControl {
 }
 
 impl FlowControl {
-    pub fn new(sz: i32) -> FlowControl {
+    pub const fn new(sz: i32) -> FlowControl {
         FlowControl {
             window_size: Window(sz),
         }
     }
 
     /// Returns the window size as known by the peer
-    pub fn window_size(&self) -> WindowSize {
+    pub const fn window_size(&self) -> WindowSize {
         self.window_size.as_size()
     }
 
@@ -38,8 +38,9 @@ impl FlowControl {
     /// available bytes does not reach the threshold, this returns `None`.
     ///
     /// This represents pending outbound WINDOW_UPDATE frames.
-    pub fn need_update_window(
-        &self,
+    pub fn update_window(
+        &mut self,
+        cap: WindowSize,
         max_size: WindowSize,
         threshold_size: WindowSize,
     ) -> Option<WindowSize> {
@@ -47,18 +48,19 @@ impl FlowControl {
             return None;
         }
 
-        let unclaimed = max_size - (self.window_size.0 as u32);
-        if unclaimed < threshold_size {
+        let available = max_size - (self.window_size.0 as u32) - cap;
+        if available < threshold_size {
             None
         } else {
-            Some(unclaimed as WindowSize)
+            self.window_size = Window(self.window_size.0 + available as i32);
+            Some(available as WindowSize)
         }
     }
 
     /// Increase the window size.
     ///
     /// This is called after receiving a WINDOW_UPDATE frame
-    pub fn inc_window(&mut self, sz: WindowSize) -> Result<(), Reason> {
+    pub fn inc_window(self, sz: WindowSize) -> Result<Self, Reason> {
         let (val, overflow) = self.window_size.0.overflowing_add(sz as i32);
 
         if overflow {
@@ -76,29 +78,16 @@ impl FlowControl {
             val
         );
 
-        self.window_size = Window(val);
-        Ok(())
+        Ok(Self::new(val))
     }
 
     /// Decrement the window size.
     ///
     /// This is called after receiving a SETTINGS frame with a lower
     /// INITIAL_WINDOW_SIZE value.
-    pub fn dec_window(&mut self, sz: WindowSize) {
+    pub fn dec_window(self, sz: WindowSize) -> Self {
         log::trace!("dec_window; sz={}; window={}", sz, self.window_size);
-        self.window_size -= sz;
-    }
-
-    /// Decrements the window reflecting data has actually been sent. The caller
-    /// must ensure that the window has capacity.
-    pub fn send_data(&mut self, sz: WindowSize) {
-        log::trace!("send_data; sz={}; window={}", sz, self.window_size);
-
-        // Ensure that the argument is correct
-        assert!(self.window_size >= sz as usize);
-
-        // Update values
-        self.window_size -= sz;
+        Self::new(self.window_size.0 - (sz as i32))
     }
 }
 
@@ -113,7 +102,7 @@ impl FlowControl {
 pub struct Window(i32);
 
 impl Window {
-    pub fn as_size(&self) -> WindowSize {
+    pub const fn as_size(&self) -> WindowSize {
         if self.0 < 0 {
             0
         } else {

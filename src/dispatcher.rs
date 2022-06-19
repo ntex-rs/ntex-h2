@@ -6,7 +6,7 @@ use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::control::{ControlMessage, ControlResult};
 use crate::error::{ProtocolError, StreamError};
-use crate::frame::{Data, Frame, GoAway, Headers, Reason, StreamId};
+use crate::frame::{Frame, GoAway, Reason, StreamId};
 use crate::{codec::Codec, connection::Connection, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
@@ -54,6 +54,24 @@ where
         }
     }
 
+    fn handle_message(
+        &self,
+        result: Result<Option<(StreamRef, Message)>, ProtocolError>,
+    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
+        match result {
+            Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(
+                self.publish.call(msg),
+                stream,
+                &self.inner,
+            )),
+            Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
+            Err(err) => Either::Right(Either::Right(ControlResponse::new(
+                ControlMessage::proto_error(err),
+                &self.inner,
+            ))),
+        }
+    }
+
     fn handle_proto_error(
         &self,
         result: Result<(), ProtocolError>,
@@ -79,38 +97,6 @@ where
             ))),
             Err(Either::Right(err)) => Either::Right(Either::Right(ControlResponse::new(
                 ControlMessage::stream_error(err),
-                &self.inner,
-            ))),
-        }
-    }
-
-    fn recv_headers(&self, hdrs: Headers) -> ServiceFut<Pub, Ctl, Pub::Error> {
-        let id = hdrs.stream_id();
-        let eos = hdrs.is_end_stream();
-        let stream = self.connection.get(id);
-        match stream.recv_headers(hdrs) {
-            Ok(msg) => Either::Left(PublishResponse::new(
-                self.publish.call(msg),
-                stream,
-                &self.inner,
-            )),
-            Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::stream_error(err),
-                &self.inner,
-            ))),
-        }
-    }
-
-    pub(crate) fn recv_data(&self, frm: Data) -> ServiceFut<Pub, Ctl, Pub::Error> {
-        match self.connection.recv_data(frm) {
-            Ok((stream, Some(msg))) => Either::Left(PublishResponse::new(
-                self.publish.call(msg),
-                stream,
-                &self.inner,
-            )),
-            Ok((_, None)) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(err),
                 &self.inner,
             ))),
         }
@@ -186,8 +172,8 @@ where
     fn call(&self, request: DispatchItem<Rc<Codec>>) -> Self::Future {
         match request {
             DispatchItem::Item(frame) => match frame {
-                Frame::Headers(hdrs) => self.recv_headers(hdrs),
-                Frame::Data(data) => self.recv_data(data),
+                Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)),
+                Frame::Data(data) => self.handle_message(self.connection.recv_data(data)),
                 Frame::Settings(settings) => {
                     self.handle_proto_error(self.connection.recv_settings(settings))
                 }

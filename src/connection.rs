@@ -1,9 +1,9 @@
-use std::{cell::Cell, cell::RefCell, rc::Rc};
+use std::{cell::Cell, cell::RefCell, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
-use ntex_util::{future::Either, time::Seconds, HashMap};
+use ntex_util::{future::Either, task::LocalWaker, time::Seconds, HashMap};
 
 use crate::error::{ProtocolError, StreamError};
 use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
@@ -44,6 +44,8 @@ pub(crate) struct ConnectionInner {
     pub(crate) settings_processed: Cell<bool>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
+    active_streams: Cell<u32>,
+    readiness: LocalWaker,
 
     // Local config
     pub(crate) local_config: Rc<Config>,
@@ -53,22 +55,42 @@ pub(crate) struct ConnectionInner {
     pub(crate) remote_window_sz: Cell<WindowSize>,
 }
 
+impl ConnectionInner {
+    /// added new capacity, update recevice window size
+    pub(crate) fn add_capacity(&self, size: u32) {
+        let mut recv_flow = self.recv_flow.get().dec_window(size);
+
+        // update connection window size
+        if let Some(val) = recv_flow.update_window(
+            0,
+            self.local_config.connection_window_sz,
+            self.local_config.connection_window_sz_threshold,
+        ) {
+            self.io
+                .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec)
+                .unwrap();
+        }
+        self.recv_flow.set(recv_flow);
+    }
+}
+
 impl Connection {
     pub(crate) fn new(io: IoRef, codec: Rc<Codec>, config: Rc<Config>) -> Self {
         // send setting to the peer
         io.encode(config.settings.clone().into(), &codec).unwrap();
 
-        let recv_flow = FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
+        let mut recv_flow = FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
         let send_flow = FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
 
         // update connection window size
-        if let Some(val) = recv_flow.need_update_window(
+        if let Some(val) = recv_flow.update_window(
+            0,
             config.connection_window_sz,
             config.connection_window_sz_threshold,
         ) {
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
-        }
+        };
 
         Connection(Rc::new(ConnectionInner {
             io,
@@ -76,12 +98,27 @@ impl Connection {
             send_flow: Cell::new(send_flow),
             recv_flow: Cell::new(recv_flow),
             streams: RefCell::new(HashMap::default()),
+            active_streams: Cell::new(0),
+            readiness: LocalWaker::new(),
             next_stream_id: Cell::new(StreamId::new(1)),
             settings_processed: Cell::new(false),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
         }))
+    }
+
+    pub(crate) fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(max) = self.0.local_max_concurrent_streams.get() {
+            if self.0.active_streams.get() < max {
+                Poll::Ready(())
+            } else {
+                self.0.readiness.register(cx.waker());
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(())
+        }
     }
 
     pub(crate) fn get(&self, id: StreamId) -> StreamRef {
@@ -122,16 +159,22 @@ impl Connection {
         stream.into_stream()
     }
 
-    pub(crate) fn recv_headers(&self, settings: frame::Headers) -> Result<(), ProtocolError> {
-        Ok(())
+    pub(crate) fn recv_headers(
+        &self,
+        frm: Headers,
+    ) -> Result<Option<(StreamRef, Message)>, ProtocolError> {
+        let stream = self.get(frm.stream_id());
+        Ok(stream.recv_headers(frm).map(move |item| (stream, item)))
     }
 
     pub(crate) fn recv_data(
         &self,
         frm: frame::Data,
-    ) -> Result<(StreamRef, Option<Message>), ProtocolError> {
+    ) -> Result<Option<(StreamRef, Message)>, ProtocolError> {
         if let Some(stream) = self.query(frm.stream_id()) {
-            stream.recv_data(frm).map(move |item| (stream, item))
+            stream
+                .recv_data(frm)
+                .map(|item| item.map(move |item| (stream, item)))
         } else {
             Err(ProtocolError::from(frame::FrameError::InvalidStreamId))
         }
@@ -220,8 +263,11 @@ impl Connection {
             if frm.size_increment() == 0 {
                 Err(Either::Left(ProtocolError::ZeroWindowUpdateValue))
             } else {
-                let mut flow = self.0.send_flow.get();
-                flow.inc_window(frm.size_increment())
+                let flow = self
+                    .0
+                    .send_flow
+                    .get()
+                    .inc_window(frm.size_increment())
                     .map_err(|e| Either::Left(e.into()))?;
                 self.0.send_flow.set(flow);
                 Ok(())

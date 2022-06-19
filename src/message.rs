@@ -4,7 +4,7 @@ use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 
 use crate::frame::{PseudoHeaders, Reason, StreamId};
-use crate::stream::StreamRef;
+use crate::stream::{Capacity, StreamRef};
 
 #[derive(Debug)]
 pub struct Message {
@@ -19,7 +19,7 @@ pub enum MessageKind {
         headers: HeaderMap,
         eof: bool,
     },
-    Data(Bytes),
+    Data(Bytes, Capacity),
     Eof(StreamEof),
     Empty,
 }
@@ -48,17 +48,17 @@ impl Message {
         }
     }
 
-    pub(crate) fn data(data: Bytes, eof: bool, stream: &StreamRef) -> Self {
-        if eof {
-            Message {
-                stream: stream.clone(),
-                kind: MessageKind::Eof(StreamEof::Data(data)),
-            }
-        } else {
-            Message {
-                stream: stream.clone(),
-                kind: MessageKind::Data(data),
-            }
+    pub(crate) fn data(data: Bytes, capacity: Capacity, stream: &StreamRef) -> Self {
+        Message {
+            stream: stream.clone(),
+            kind: MessageKind::Data(data, capacity),
+        }
+    }
+
+    pub(crate) fn eof_data(data: Bytes, stream: &StreamRef) -> Self {
+        Message {
+            stream: stream.clone(),
+            kind: MessageKind::Eof(StreamEof::Data(data)),
         }
     }
 

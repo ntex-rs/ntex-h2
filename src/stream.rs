@@ -1,4 +1,4 @@
-use std::{cell::Cell, cmp::Ordering, fmt, rc::Rc};
+use std::{cell::Cell, cmp::Ordering, fmt, ops, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_http::{HeaderMap, StatusCode};
@@ -8,6 +8,82 @@ use crate::frame::{Data, Headers, PseudoHeaders, Reason, StreamId, WindowSize, W
 use crate::{connection::ConnectionInner, flow::FlowControl, frame, message::Message};
 
 pub struct Stream(Rc<StreamInner>);
+
+#[derive(Debug)]
+pub struct Capacity {
+    size: Cell<u32>,
+    stream: Rc<StreamInner>,
+}
+
+impl Capacity {
+    fn new(size: u32, stream: &Rc<StreamInner>) -> Self {
+        stream.add_capacity(size);
+
+        Self {
+            size: Cell::new(size),
+            stream: stream.clone(),
+        }
+    }
+
+    /// Consume specified amount of capacity.
+    ///
+    /// Panics if provided size larger than capacity.
+    pub fn consume(&self, sz: u32) {
+        if let Some(sz) = self.size.get().checked_sub(sz) {
+            log::trace!(
+                "{:?} capacity consumed from {} to {}",
+                self.stream.id,
+                self.size.get(),
+                sz
+            );
+            self.size.set(sz);
+            self.stream.consume_capacity(sz);
+        } else {
+            panic!("Capacity overflow");
+        }
+    }
+}
+
+/// Panics if capacity belongs to different streams
+impl ops::Add for Capacity {
+    type Output = Self;
+
+    fn add(self, other: Self) -> Self {
+        if Rc::ptr_eq(&self.stream, &other.stream) {
+            let size = Cell::new(self.size.get() + other.size.get());
+            self.size.set(0);
+            other.size.set(0);
+            Self {
+                size,
+                stream: self.stream.clone(),
+            }
+        } else {
+            panic!("Cannot add capacity from different streams");
+        }
+    }
+}
+
+/// Panics if capacity belongs to different streams
+impl ops::AddAssign for Capacity {
+    fn add_assign(&mut self, other: Self) {
+        if Rc::ptr_eq(&self.stream, &other.stream) {
+            let size = self.size.get() + other.size.get();
+            self.size.set(size);
+            other.size.set(0);
+        } else {
+            panic!("Cannot add capacity from different streams");
+        }
+    }
+}
+
+impl Drop for Capacity {
+    fn drop(&mut self) {
+        let size = self.size.get();
+        if size > 0 {
+            self.stream.consume_capacity(size);
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct StreamRef(pub(crate) Rc<StreamInner>);
@@ -19,6 +95,7 @@ pub(crate) struct StreamInner {
     /// Receive part
     recv: Cell<HalfState>,
     recv_flow: Cell<FlowControl>,
+    recv_size: Cell<u32>,
     /// Send part
     send: Cell<HalfState>,
     send_flow: Cell<FlowControl>,
@@ -31,6 +108,47 @@ enum HalfState {
     Headers,
     Payload,
     Closed,
+}
+
+impl StreamInner {
+    /// added new capacity, update recevice window size
+    fn add_capacity(&self, size: u32) {
+        let cap = self.recv_size.get();
+        self.recv_size.set(cap + size);
+        self.recv_flow.set(self.recv_flow.get().dec_window(size));
+        log::trace!("{:?} capacity incresed from {} to {}", self.id, cap, size);
+
+        // connection level recv flow
+        self.con.add_capacity(size);
+    }
+
+    /// check and update recevice window size
+    fn consume_capacity(&self, size: u32) {
+        let cap = self.recv_size.get();
+        let size = cap - size;
+        log::trace!("{:?} capacity decresed from {} to {}", self.id, cap, size);
+        self.recv_size.set(size);
+
+        let mut flow = self.recv_flow.get();
+        if let Some(val) = flow.update_window(
+            size,
+            self.con.local_config.window_sz,
+            self.con.local_config.window_sz_threshold,
+        ) {
+            log::trace!(
+                "{:?} capacity decresed below threshold {} increase by {} ({})",
+                self.id,
+                self.con.local_config.window_sz_threshold,
+                val,
+                self.con.local_config.window_sz,
+            );
+            self.recv_flow.set(flow);
+            self.con
+                .io
+                .encode(WindowUpdate::new(self.id, val).into(), &self.con.codec)
+                .unwrap();
+        }
+    }
 }
 
 impl StreamRef {
@@ -49,6 +167,7 @@ impl StreamRef {
             con,
             recv: Cell::new(HalfState::Headers),
             recv_flow: Cell::new(recv_flow),
+            recv_size: Cell::new(0),
             send: Cell::new(HalfState::Headers),
             send_flow: Cell::new(send_flow),
         }))
@@ -74,7 +193,7 @@ impl StreamRef {
             .unwrap();
     }
 
-    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Message, StreamError> {
+    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Option<Message> {
         log::trace!(
             "processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.0.id,
@@ -92,21 +211,19 @@ impl StreamRef {
                     self.0.recv.set(HalfState::Payload);
                 }
                 let (pseudo, headers) = hdrs.into_parts();
-                Ok(Message::new(pseudo, headers, eof, self))
+                Some(Message::new(pseudo, headers, eof, self))
             }
             HalfState::Payload => {
                 // trailers
                 self.0.recv.set(HalfState::Closed);
-                Ok(Message::trailers(hdrs.into_fields(), self))
+                Some(Message::trailers(hdrs.into_fields(), self))
             }
-            HalfState::Closed => Err(StreamError::new(
-                self.0.clone(),
-                StreamErrorKind::UnexpectedHeadersFrame,
-            )),
+            HalfState::Closed => None,
         }
     }
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, ProtocolError> {
+        let cap = Capacity::new(data.payload().len() as u32, &self.0);
         log::trace!(
             "processing DATA frame for {:?}: {:?}",
             self.0.id,
@@ -118,8 +235,10 @@ impl StreamRef {
                 let eof = data.is_end_stream();
                 if eof {
                     self.0.recv.set(HalfState::Closed);
+                    Ok(Some(Message::eof_data(data.into_payload(), self)))
+                } else {
+                    Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
-                Ok(Some(Message::data(data.into_payload(), eof, self)))
             }
             HalfState::Headers => Err(ProtocolError::StreamIdle("DATA framed received")),
             HalfState::Closed => Ok(None),
@@ -133,8 +252,11 @@ impl StreamRef {
                 StreamErrorKind::ZeroWindowUpdateValue,
             ))
         } else {
-            let mut flow = self.0.send_flow.get();
-            flow.inc_window(frm.size_increment())
+            let flow = self
+                .0
+                .send_flow
+                .get()
+                .inc_window(frm.size_increment())
                 .map_err(|e| StreamError::new(self.0.clone(), StreamErrorKind::LocalReason(e)))?;
             self.0.send_flow.set(flow);
             Ok(())
@@ -142,32 +264,37 @@ impl StreamRef {
     }
 
     pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), ProtocolError> {
-        let mut flow = self.0.send_flow.get();
-        match upd.cmp(&0) {
-            Ordering::Less => flow.dec_window(upd.abs() as u32), // We must decrease the (remote) window
-            Ordering::Greater => flow
+        let flow = match upd.cmp(&0) {
+            Ordering::Less => self.0.send_flow.get().dec_window(upd.abs() as u32), // We must decrease the (remote) window
+            Ordering::Greater => self
+                .0
+                .send_flow
+                .get()
                 .inc_window(upd as u32)
                 .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
             Ordering::Equal => return Ok(()),
-        }
+        };
         self.0.send_flow.set(flow);
         Ok(())
     }
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, ProtocolError> {
-        let mut flow = self.0.recv_flow.get();
-        match upd.cmp(&0) {
-            Ordering::Less => flow.dec_window(upd.abs() as u32), // We must decrease the (local) window
-            Ordering::Greater => flow
+        let mut flow = match upd.cmp(&0) {
+            Ordering::Less => self.0.recv_flow.get().dec_window(upd.abs() as u32), // We must decrease the (local) window
+            Ordering::Greater => self
+                .0
+                .recv_flow
+                .get()
                 .inc_window(upd as u32)
                 .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
             Ordering::Equal => return Ok(None),
-        }
-        if let Some(val) = flow.need_update_window(
+        };
+        if let Some(val) = flow.update_window(
+            self.0.recv_size.get(),
             self.0.con.local_config.window_sz,
             self.0.con.local_config.window_sz_threshold,
         ) {
-            let _ = flow.inc_window(val);
+            self.0.recv_flow.set(flow);
             Ok(Some(val))
         } else {
             self.0.recv_flow.set(flow);

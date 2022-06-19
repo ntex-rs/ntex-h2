@@ -44,7 +44,11 @@ impl WindowUpdate {
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
-        log::trace!("encoding WINDOW_UPDATE; id={:?}", self.stream_id);
+        log::trace!(
+            "encoding WINDOW_UPDATE; id={:?}, inc={}",
+            self.stream_id,
+            self.size_increment
+        );
         let head = Head::new(Kind::WindowUpdate, 0, self.stream_id);
         head.encode(4, dst);
         dst.put_u32(self.size_increment);
