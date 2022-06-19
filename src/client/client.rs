@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc};
+use std::fmt;
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
@@ -8,7 +8,7 @@ use ntex_util::time::{sleep, Millis, Seconds};
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{codec::Codec, connection::Connection, Message, Stream};
+use crate::{connection::Connection, consts, Message, Stream};
 
 /// Http2 client
 #[derive(Clone)]
@@ -18,7 +18,6 @@ pub struct Client(Connection);
 pub struct ClientConnection {
     io: IoBoxed,
     con: Connection,
-    codec: Rc<Codec>,
     keepalive: Seconds,
     disconnect_timeout: Seconds,
 }
@@ -54,20 +53,37 @@ impl fmt::Debug for ClientConnection {
 
 impl ClientConnection {
     /// Construct new `ClientConnection` instance.
-    pub(super) fn new(
-        io: IoBoxed,
-        con: Connection,
-        codec: Rc<Codec>,
-        keepalive: Seconds,
-        disconnect_timeout: Seconds,
-    ) -> Self {
+    pub(super) fn new(io: IoBoxed, con: Connection) -> Self {
+        // send preface
+        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+
         ClientConnection {
             io,
             con,
-            codec,
-            keepalive,
-            disconnect_timeout,
+            keepalive: Seconds(120),
+            disconnect_timeout: Seconds(3),
         }
+    }
+
+    /// Set server connection disconnect timeout.
+    ///
+    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
+    /// within this time, the connection get dropped.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default disconnect timeout is set to 3 seconds.
+    pub fn disconnect_timeout(mut self, val: Seconds) -> Self {
+        self.disconnect_timeout = val;
+        self
+    }
+
+    /// Set keep-alive timeout.
+    ///
+    /// By default keep-alive time-out is set to 120 seconds.
+    pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
+        self.keepalive = timeout;
+        self
     }
 
     #[inline]
@@ -93,7 +109,7 @@ impl ClientConnection {
             service.into_service(),
         );
 
-        IoDispatcher::new(self.io, self.codec, disp)
+        IoDispatcher::new(self.io, self.con.inner().codec.clone(), disp)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await

@@ -108,6 +108,10 @@ impl Connection {
         }))
     }
 
+    pub(crate) fn inner(&self) -> &ConnectionInner {
+        self.0.as_ref()
+    }
+
     pub(crate) fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<()> {
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             if self.0.active_streams.get() < max {

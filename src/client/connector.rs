@@ -307,19 +307,11 @@ where
                 reset_duration: slf.reset_stream_duration,
                 reset_max: slf.reset_stream_max,
             };
+            let con = Connection::new(io.get_ref(), codec, Rc::new(cfg));
 
-            // send preface
-            let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
-
-            let con = Connection::new(io.get_ref(), codec.clone(), Rc::new(cfg));
-
-            Ok(ClientConnection::new(
-                io,
-                con,
-                codec,
-                slf.keepalive_timeout,
-                slf.disconnect_timeout,
-            ))
+            Ok(ClientConnection::new(io, con)
+                .idle_timeout(slf.keepalive_timeout)
+                .disconnect_timeout(slf.disconnect_timeout))
         }
     }
 }
