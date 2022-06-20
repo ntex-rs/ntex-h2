@@ -33,7 +33,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                         headers,
                         eof,
                     } => {
-                        println!("Got response: {:#?}\nheaders: {:#?}", pseudo, headers);
+                        println!(
+                            "Got response: {:#?}\nheaders: {:#?}\neof: {}",
+                            pseudo, headers, eof
+                        );
                     }
                     MessageKind::Data(data, _cap) => {
                         println!("Got data: {:?}", data);
@@ -53,8 +56,13 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         header::CONTENT_TYPE,
         header::HeaderValue::try_from("text/plain").unwrap(),
     );
-    let stream = client.send_request(Method::GET, "/test/index.html".into(), hdrs);
-    stream.send_payload(Bytes::from_static(b"testing"), true).await;
+    let stream = client
+        .send_request(Method::GET, "/test/index.html".into(), hdrs)
+        .await
+        .unwrap();
+    stream
+        .send_payload(Bytes::from_static(b"testing"), true)
+        .await;
 
     sleep(Seconds(10)).await;
     Ok(())

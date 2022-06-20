@@ -79,7 +79,7 @@
 // #![deny(missing_debug_implementations, missing_docs)]
 //#![cfg_attr(test, deny(warnings))]
 //#![deny(dead_code)]
-#![allow(dead_code, unused_variables)]
+//#![allow(dead_code, unused_variables)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {
@@ -109,7 +109,7 @@ pub mod server;
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{EncoderError, ProtocolError, UserError};
+pub use crate::error::{EncoderError, OperationError, ProtocolError};
 
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};

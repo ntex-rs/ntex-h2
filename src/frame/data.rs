@@ -7,7 +7,7 @@ use crate::frame::{util, Frame, FrameError, Head, Kind, StreamId};
 /// Data frames convey arbitrary, variable-length sequences of octets associated
 /// with a stream. One or more DATA frames are used, for instance, to carry HTTP
 /// request or response payloads.
-#[derive(Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct Data {
     stream_id: StreamId,
     data: Bytes,

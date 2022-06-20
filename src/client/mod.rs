@@ -14,7 +14,7 @@ pub use self::connector::Connector;
 pub enum ClientError {
     /// Protocol error
     #[error("Protocol error: {0}")]
-    Protocol(#[from] ProtocolError),
+    Protocol(Box<ProtocolError>),
     /// Handshake timeout
     #[error("Handshake timeout")]
     HandshakeTimeout,
@@ -23,5 +23,17 @@ pub enum ClientError {
     Disconnected(Option<std::io::Error>),
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(#[from] ntex::connect::ConnectError),
+    Connect(Box<ntex::connect::ConnectError>),
+}
+
+impl From<ProtocolError> for ClientError {
+    fn from(err: ProtocolError) -> Self {
+        Self::Protocol(Box::new(err))
+    }
+}
+
+impl From<ntex::connect::ConnectError> for ClientError {
+    fn from(err: ntex::connect::ConnectError) -> Self {
+        Self::Connect(Box::new(err))
+    }
 }

@@ -1,17 +1,17 @@
-use std::fmt;
+use std::{fmt, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed};
 use ntex_service::{IntoService, Service};
+use ntex_util::future::poll_fn;
 use ntex_util::time::{sleep, Millis, Seconds};
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{connection::Connection, consts, Message, Stream};
+use crate::{connection::Connection, Message, OperationError, Stream};
 
 /// Http2 client
-#[derive(Clone)]
 pub struct Client(Connection);
 
 /// Http2 client connection
@@ -35,8 +35,24 @@ impl Client {
         Self(con)
     }
 
-    pub fn send_request(&self, method: Method, path: ByteString, headers: HeaderMap) -> Stream {
-        self.0.send_request(method, path, headers)
+    /// Check client readiness.
+    ///
+    /// Client is ready when it is possible to start new stream.
+    pub async fn ready(&self) -> Result<(), OperationError> {
+        poll_fn(|cx| self.poll_ready(cx)).await
+    }
+
+    pub async fn send_request(
+        &self,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+    ) -> Result<Stream, OperationError> {
+        self.0.send_request(method, path, headers).await
+    }
+
+    pub fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
+        self.0.poll_ready(cx)
     }
 
     pub fn close(&self) {}
@@ -54,9 +70,6 @@ impl fmt::Debug for ClientConnection {
 impl ClientConnection {
     /// Construct new `ClientConnection` instance.
     pub(super) fn new(io: IoBoxed, con: Connection) -> Self {
-        // send preface
-        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
-
         ClientConnection {
             io,
             con,
@@ -109,7 +122,7 @@ impl ClientConnection {
             service.into_service(),
         );
 
-        IoDispatcher::new(self.io, self.con.inner().codec.clone(), disp)
+        IoDispatcher::new(self.io, self.con.state().codec.clone(), disp)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.disconnect_timeout)
             .await

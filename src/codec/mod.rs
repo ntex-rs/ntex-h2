@@ -5,11 +5,10 @@ use ntex_codec::{Decoder, Encoder};
 
 mod error;
 mod length_delimited;
-mod partial;
 
 pub use self::error::EncoderError;
 
-use self::{length_delimited::LengthDelimitedCodec, partial::Partial};
+use self::length_delimited::LengthDelimitedCodec;
 use crate::{frame, frame::Frame, frame::Kind, hpack};
 
 // 16 MB "sane default" taken from golang http2
@@ -20,6 +19,15 @@ const PUSH_PROMISE: u8 = 5;
 
 #[derive(Debug)]
 pub struct Codec(RefCell<CodecInner>);
+
+/// Partially loaded headers frame
+#[derive(Debug)]
+pub(crate) struct Partial {
+    /// Empty frame
+    pub(crate) frame: frame::Headers,
+    /// Partial header payload
+    pub(crate) buf: BytesMut,
+}
 
 #[derive(Debug)]
 struct CodecInner {
@@ -91,6 +99,11 @@ impl Codec {
     pub fn set_send_header_list_size(&self, val: usize) {
         self.0.borrow_mut().encoder_hpack.update_max_size(val);
     }
+
+    /// Remote max frame size.
+    pub fn send_frame_size(&self) -> u32 {
+        self.0.borrow_mut().encoder_max_frame_size
+    }
 }
 
 macro_rules! header_block {
@@ -153,7 +166,7 @@ impl Decoder for Codec {
     ///
     /// This method is intentionally de-generified and outlined because it is very large.
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::FrameError> {
-        log::trace!("decoding frame from {}B", src.len());
+        log::trace!("decoding frame from {}", src.len());
 
         let mut inner = self.0.borrow_mut();
         let mut bytes = if let Some(bytes) = inner.decoder.decode(src)? {

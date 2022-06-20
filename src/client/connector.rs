@@ -278,10 +278,7 @@ where
 
     fn _connect(&self, address: A) -> impl Future<Output = Result<ClientConnection, ClientError>> {
         let inner = self.0.clone();
-        let fut = {
-            let slf = inner.borrow();
-            slf.connector.call(Connect::new(address))
-        };
+        let fut = inner.borrow().connector.call(Connect::new(address));
 
         async move {
             let io = IoBoxed::from(fut.await?);
@@ -297,6 +294,9 @@ where
             let connection_window_sz_threshold = ((connection_window_sz as f32) / 4.0) as u32;
             let remote_max_concurrent_streams = settings.max_concurrent_streams();
 
+            // send preface
+            let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+
             let cfg = Config {
                 settings,
                 window_sz,
@@ -304,8 +304,8 @@ where
                 connection_window_sz,
                 connection_window_sz_threshold,
                 remote_max_concurrent_streams,
-                reset_duration: slf.reset_stream_duration,
                 reset_max: slf.reset_stream_max,
+                reset_duration: slf.reset_stream_duration.into(),
             };
             let con = Connection::new(io.get_ref(), codec, Rc::new(cfg));
 
