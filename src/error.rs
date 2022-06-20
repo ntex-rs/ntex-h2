@@ -18,6 +18,9 @@ pub enum ProtocolError {
     /// Window update value is zero
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
+    /// Keep-alive timeout
+    #[error("Keep-alive timeout")]
+    KeepaliveTimeout,
     #[error("{0}")]
     Frame(#[from] frame::FrameError),
 }
@@ -46,6 +49,9 @@ impl ProtocolError {
             }
             ProtocolError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("zero value for window update frame is not allowed"),
+            ProtocolError::KeepaliveTimeout => {
+                GoAway::new(Reason::NO_ERROR).set_data("keep-alive timeout")
+            }
             ProtocolError::Frame(err) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
             }

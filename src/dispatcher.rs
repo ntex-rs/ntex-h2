@@ -215,11 +215,13 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             },
-            DispatchItem::EncoderError(_err) => {
-                // let frame = ControlMessage::new_kind(ControlFrameKind::ProtocolError(err.into()));
-                //*self.ctl_fut.borrow_mut() =
-                //    Some((Some(frame.clone()), Box::pin(self.inner.control.call(frame))));
-                Either::Right(Either::Left(Ready::Ok(None)))
+            DispatchItem::EncoderError(err) => {
+                let err = ProtocolError::from(err);
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
             }
             DispatchItem::DecoderError(err) => {
                 let err = ProtocolError::from(err);
@@ -230,12 +232,12 @@ where
                 )))
             }
             DispatchItem::KeepAliveTimeout => {
-                // let frame = ControlMessage::new_kind(ControlFrameKind::ProtocolError(
-                //     AmqpProtocolError::KeepAliveTimeout,
-                // ));
-                //*self.ctl_fut.borrow_mut() =
-                //    Some((Some(frame.clone()), Box::pin(self.inner.control.call(frame))));
-                Either::Right(Either::Left(Ready::Ok(None)))
+                self.connection
+                    .proto_error(&ProtocolError::KeepaliveTimeout);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::KeepaliveTimeout),
+                    &self.inner,
+                )))
             }
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(ControlResponse::new(
                 ControlMessage::peer_gone(err),
@@ -357,6 +359,9 @@ where
                             .connection
                             .rst_stream(rst.stream_id(), rst.reason());
                     }
+                }
+                if res.disconnect {
+                    this.inner.connection.io.close();
                 }
                 Poll::Ready(Ok(res.frame))
             }

@@ -4,6 +4,7 @@ use std::{collections::VecDeque, time::Duration, time::Instant};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
+use ntex_rt::spawn;
 use ntex_util::future::{poll_fn, Either};
 use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 
@@ -122,7 +123,7 @@ impl ConnectionState {
         ids.insert(id);
         queue.push_back((id, now() + self.local_config.reset_duration));
         if !self.local_reset_task.get() {
-            ntex::rt::spawn(delay_drop_task(state.clone()));
+            spawn(delay_drop_task(state.clone()));
         }
     }
 

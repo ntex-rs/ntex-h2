@@ -3,6 +3,7 @@ use std::{fmt, task::Context, task::Poll};
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed};
+use ntex_rt::spawn;
 use ntex_service::{IntoService, Service};
 use ntex_util::future::poll_fn;
 use ntex_util::time::{sleep, Millis, Seconds};
@@ -113,7 +114,7 @@ impl ClientConnection {
         S::Error: fmt::Debug,
     {
         if self.keepalive.non_zero() {
-            ntex::rt::spawn(keepalive(self.con.clone(), self.keepalive));
+            spawn(keepalive(self.con.clone(), self.keepalive));
         }
 
         let disp = Dispatcher::new(
