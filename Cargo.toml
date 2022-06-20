@@ -22,8 +22,7 @@ members = [
 ]
 
 [dependencies]
-ntex = "0.5"
-
+ntex-connect = "0.1.0"
 ntex-io = "0.1.8"
 ntex-http = "0.1.0"
 ntex-bytes = "0.1.14"
@@ -54,6 +53,4 @@ env_logger = { version = "0.9", default-features = false }
 openssl = "0.10"
 ntex = { version = "0.5", features = ["openssl", "tokio"] }
 ntex-tls = { version = "0.1", features = ["openssl"] }
-
-[patch.crates-io]
-ntex-http = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex-connect = { version = "0.1", features = ["openssl"] }

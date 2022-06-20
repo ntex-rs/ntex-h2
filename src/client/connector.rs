@@ -1,7 +1,7 @@
 use std::{cell::Cell, cell::RefCell, future::Future, marker::PhantomData, rc::Rc};
 
-use ntex::connect::{self, Address, Connect, Connector as DefaultConnector};
 use ntex_bytes::{PoolId, PoolRef};
+use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Service};
 use ntex_util::time::{timeout_checked, Seconds};

@@ -23,7 +23,7 @@ pub enum ClientError {
     Disconnected(Option<std::io::Error>),
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(Box<ntex::connect::ConnectError>),
+    Connect(Box<ntex_connect::ConnectError>),
 }
 
 impl From<ProtocolError> for ClientError {
@@ -32,8 +32,8 @@ impl From<ProtocolError> for ClientError {
     }
 }
 
-impl From<ntex::connect::ConnectError> for ClientError {
-    fn from(err: ntex::connect::ConnectError) -> Self {
+impl From<ntex_connect::ConnectError> for ClientError {
+    fn from(err: ntex_connect::ConnectError) -> Self {
         Self::Connect(Box::new(err))
     }
 }
