@@ -185,6 +185,18 @@ impl Connection {
         self.0.clone()
     }
 
+    fn can_create_new_stream(&self) -> bool {
+        if let Some(max) = self.0.local_max_concurrent_streams.get() {
+            if self.0.active_local_streams.get() < max {
+                true
+            } else {
+                false
+            }
+        } else {
+            true
+        }
+    }
+
     pub(crate) fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             if self.0.active_local_streams.get() < max {
@@ -208,7 +220,10 @@ impl Connection {
         path: ByteString,
         headers: HeaderMap,
     ) -> Result<Stream, OperationError> {
-        poll_fn(|cx| self.poll_ready(cx)).await?;
+        if !self.can_create_new_stream() {
+            log::warn!("Cannot create new stream, waiting for available streams");
+            poll_fn(|cx| self.poll_ready(cx)).await?;
+        }
 
         let stream = {
             let id = self.0.next_stream_id.get();
