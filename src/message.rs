@@ -79,10 +79,10 @@ impl Message {
         &mut self.kind
     }
 
-    //#[inline]
-    //pub fn stream(&self) -> &Stream {
-    //    &self.stream
-    //}
+    #[inline]
+    pub fn stream(&self) -> &StreamRef {
+        &self.stream
+    }
 }
 
 impl MessageKind {

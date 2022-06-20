@@ -1,9 +1,9 @@
-use std::{fmt, rc::Rc};
+use std::fmt;
 
 pub use crate::codec::EncoderError;
 
 use crate::frame::{self, GoAway, Reason, StreamId};
-use crate::stream::StreamInner;
+use crate::stream::StreamRef;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {
@@ -58,17 +58,17 @@ impl ProtocolError {
 #[derive(Debug, Clone)]
 pub struct StreamError {
     kind: StreamErrorKind,
-    stream: Rc<StreamInner>,
+    stream: StreamRef,
 }
 
 impl StreamError {
-    pub(crate) fn new(stream: Rc<StreamInner>, kind: StreamErrorKind) -> Self {
+    pub(crate) fn new(stream: StreamRef, kind: StreamErrorKind) -> Self {
         Self { kind, stream }
     }
 
     #[inline]
     pub fn id(&self) -> StreamId {
-        self.stream.id
+        self.stream.id()
     }
 
     #[inline]

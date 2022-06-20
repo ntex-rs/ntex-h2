@@ -114,4 +114,4 @@ pub use crate::error::{EncoderError, ProtocolError, UserError};
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};
 pub use self::message::{Message, MessageKind, StreamEof};
-pub use self::stream::Stream;
+pub use self::stream::{Stream, StreamRef};

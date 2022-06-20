@@ -1,4 +1,4 @@
-use std::{cell::Cell, cmp::Ordering, fmt, ops, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, cmp::Ordering, fmt, ops, mem, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
 use ntex_http::{HeaderMap, StatusCode};
@@ -10,7 +10,7 @@ use crate::frame::{
 };
 use crate::{connection::ConnectionInner, flow::FlowControl, frame, message::Message};
 
-pub struct Stream(Rc<StreamInner>);
+pub struct Stream(StreamRef);
 
 #[derive(Debug)]
 pub struct Capacity {
@@ -89,12 +89,12 @@ impl Drop for Capacity {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct StreamRef(pub(crate) Rc<StreamInner>);
+pub struct StreamRef(pub(crate) Rc<StreamInner>);
 
 #[derive(Debug)]
 pub(crate) struct StreamInner {
     /// The h2 stream identifier
-    pub id: StreamId,
+    id: StreamId,
     /// Receive part
     recv: Cell<HalfState>,
     recv_flow: Cell<FlowControl>,
@@ -181,7 +181,7 @@ impl StreamRef {
         }))
     }
 
-    pub(crate) fn id(&self) -> StreamId {
+    pub fn id(&self) -> StreamId {
         self.0.id
     }
 
@@ -263,7 +263,7 @@ impl StreamRef {
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
         if frm.size_increment() == 0 {
             Err(StreamError::new(
-                self.0.clone(),
+                self.clone(),
                 StreamErrorKind::ZeroWindowUpdateValue,
             ))
         } else {
@@ -272,7 +272,7 @@ impl StreamRef {
                 .send_flow
                 .get()
                 .inc_window(frm.size_increment())
-                .map_err(|e| StreamError::new(self.0.clone(), StreamErrorKind::LocalReason(e)))?;
+                .map_err(|e| StreamError::new(self.clone(), StreamErrorKind::LocalReason(e)))?;
             self.0.send_flow.set(flow);
 
             if flow.window_size() > 0 {
@@ -322,13 +322,7 @@ impl StreamRef {
     }
 
     pub(crate) fn into_stream(self) -> Stream {
-        Stream(self.0)
-    }
-}
-
-impl Stream {
-    pub fn id(&self) -> StreamId {
-        self.0.id
+        Stream(self)
     }
 
     pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
@@ -360,7 +354,11 @@ impl Stream {
             HalfState::Payload => loop {
                 let win = self.available_send_capacity();
                 if win > 0 {
-                    let mut data = Data::new(self.0.id, res.split_to(win as usize));
+                    let mut data = if (win as usize) >= res.len() {
+                        Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
+                    } else {
+                        Data::new(self.0.id, res.split_to(win as usize))
+                    };
                     if eof && res.is_empty() {
                         data.set_end_stream();
                         self.0.send.set(HalfState::Closed);
@@ -409,7 +407,7 @@ impl Stream {
         cx: &mut Context<'_>,
     ) -> Poll<Result<WindowSize, StreamError>> {
         if let Some(kind) = self.0.error.get() {
-            Poll::Ready(Err(StreamError::new(self.0.clone(), kind)))
+            Poll::Ready(Err(StreamError::new(self.clone(), kind)))
         } else {
             let win = self.0.send_flow.get().window_size();
             if win > 0 {
@@ -421,13 +419,22 @@ impl Stream {
     }
 }
 
+impl ops::Deref for Stream {
+    type Target = StreamRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Stream");
         builder
-            .field("stream_id", &self.0.id)
-            .field("recv_state", &self.0.recv.get())
-            .field("send_state", &self.0.send.get())
+            .field("stream_id", &self.0.0.id)
+            .field("recv_state", &self.0.0.recv.get())
+            .field("send_state", &self.0.0.send.get())
             .finish()
     }
 }
