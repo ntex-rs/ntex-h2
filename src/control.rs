@@ -21,20 +21,12 @@ pub enum ControlMessage<E> {
     Terminated(Terminated),
 }
 
-#[derive(Debug)]
 pub struct ControlResult {
     pub(crate) frame: Option<Frame>,
     pub(crate) disconnect: bool,
 }
 
 impl<E> ControlMessage<E> {
-    // pub(crate) fn new(session: Cell<SessionInner>, kind: ControlFrameKind) -> Self {
-    //     ControlFrame(Cell::new(FrameInner {
-    //         session: Some(session),
-    //         kind,
-    //     }))
-    // }
-
     /// Create a new `ControlMessage` for app level errors
     pub(super) fn app_error(err: E, stream: StreamRef) -> Self {
         ControlMessage::AppError(AppError::new(err, stream))

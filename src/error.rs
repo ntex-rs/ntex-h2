@@ -1,11 +1,9 @@
-use std::{fmt, rc::Rc};
-
 pub use crate::codec::EncoderError;
 
 use crate::frame::{self, GoAway, Reason, StreamId};
-use crate::stream::StreamInner;
+use crate::stream::StreamRef;
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ProtocolError {
     #[error("Unknown stream {0:?}")]
     UnknownStream(frame::Frame),
@@ -20,6 +18,9 @@ pub enum ProtocolError {
     /// Window update value is zero
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
+    /// Keep-alive timeout
+    #[error("Keep-alive timeout")]
+    KeepaliveTimeout,
     #[error("{0}")]
     Frame(#[from] frame::FrameError),
 }
@@ -48,6 +49,9 @@ impl ProtocolError {
             }
             ProtocolError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("zero value for window update frame is not allowed"),
+            ProtocolError::KeepaliveTimeout => {
+                GoAway::new(Reason::NO_ERROR).set_data("keep-alive timeout")
+            }
             ProtocolError::Frame(err) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
             }
@@ -55,20 +59,26 @@ impl ProtocolError {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("Stream error: {kind:?}")]
 pub struct StreamError {
     kind: StreamErrorKind,
-    stream: Rc<StreamInner>,
+    stream: StreamRef,
 }
 
 impl StreamError {
-    pub(crate) fn new(stream: Rc<StreamInner>, kind: StreamErrorKind) -> Self {
+    pub(crate) fn new(stream: StreamRef, kind: StreamErrorKind) -> Self {
         Self { kind, stream }
     }
 
     #[inline]
     pub fn id(&self) -> StreamId {
-        self.stream.id
+        self.stream.id()
+    }
+
+    #[inline]
+    pub fn stream(&self) -> &StreamRef {
+        &self.stream
     }
 
     #[inline]
@@ -79,7 +89,6 @@ impl StreamError {
     #[inline]
     pub fn reason(&self) -> Reason {
         match self.kind {
-            StreamErrorKind::Reset(r) => r,
             StreamErrorKind::LocalReason(r) => r,
             StreamErrorKind::ZeroWindowUpdateValue => Reason::PROTOCOL_ERROR,
             StreamErrorKind::UnexpectedHeadersFrame => Reason::PROTOCOL_ERROR,
@@ -91,7 +100,6 @@ impl StreamError {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum StreamErrorKind {
-    Reset(Reason),
     LocalReason(Reason),
     ZeroWindowUpdateValue,
     UnexpectedHeadersFrame,
@@ -99,67 +107,92 @@ pub enum StreamErrorKind {
     InternalError(&'static str),
 }
 
-/// Errors caused by users of the library
-#[derive(Debug)]
-pub enum UserError {
-    /// The stream ID is no longer accepting frames.
-    InactiveStreamId,
+/// Operation errors
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum OperationError {
+    #[error("{0:?}")]
+    Stream(StreamErrorKind),
+    #[error("{0}")]
+    Protocol(ProtocolError),
 
-    /// The stream is not currently expecting a frame of this type.
-    UnexpectedFrameType,
+    /// Cannot process operation for idle stream
+    #[error("Cannot process operation for idle stream")]
+    Idle,
 
-    /// The payload size is too big
-    PayloadTooBig,
+    /// Cannot process operation for stream in payload state
+    #[error("Cannot process operation for stream in payload state")]
+    Payload,
 
-    /// The application attempted to initiate too many streams to remote.
-    Rejected,
+    /// Stream is closed
+    #[error("Stream is closed {0:?}")]
+    Closed(Option<Reason>),
 
-    /// The released capacity is larger than claimed capacity.
-    ReleaseCapacityTooBig,
+    /// Stream has been reset from the peer
+    #[error("Stream has been reset from the peer with {0}")]
+    RemoteReset(Reason),
 
-    /// The stream ID space is overflowed.
+    /// The stream ID space is overflowed
     ///
     /// A new connection is needed.
+    #[error("The stream ID space is overflowed")]
     OverflowedStreamId,
-
-    /// Illegal headers, such as connection-specific headers.
-    MalformedHeaders,
-
-    /// Request submitted with relative URI.
-    MissingUriSchemeAndAuthority,
-
-    /// Calls `SendResponse::poll_reset` after having called `send_response`.
-    PollResetAfterSendResponse,
-
-    /// Calls `PingPong::send_ping` before receiving a pong.
-    SendPingWhilePending,
-
-    /// Tries to update local SETTINGS while ACK has not been received.
-    SendSettingsWhilePending,
-
-    /// Tries to send push promise to peer who has disabled server push
-    PeerDisabledServerPush,
 }
 
-impl std::error::Error for UserError {}
+// /// Errors caused by users of the library
+// #[derive(Debug)]
+// pub enum UserError2 {
+//     /// The stream ID is no longer accepting frames.
+//     InactiveStreamId,
 
-impl fmt::Display for UserError {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-        use self::UserError::*;
+//     /// The stream is not currently expecting a frame of this type.
+//     UnexpectedFrameType,
 
-        fmt.write_str(match *self {
-            InactiveStreamId => "inactive stream",
-            UnexpectedFrameType => "unexpected frame type",
-            PayloadTooBig => "payload too big",
-            Rejected => "rejected",
-            ReleaseCapacityTooBig => "release capacity too big",
-            OverflowedStreamId => "stream ID overflowed",
-            MalformedHeaders => "malformed headers",
-            MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
-            PollResetAfterSendResponse => "poll_reset after send_response is illegal",
-            SendPingWhilePending => "send_ping before received previous pong",
-            SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
-            PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
-        })
-    }
-}
+//     /// The payload size is too big
+//     PayloadTooBig,
+
+//     /// The application attempted to initiate too many streams to remote.
+//     Rejected,
+
+//     /// The released capacity is larger than claimed capacity.
+//     ReleaseCapacityTooBig,
+
+//     /// Illegal headers, such as connection-specific headers.
+//     MalformedHeaders,
+
+//     /// Request submitted with relative URI.
+//     MissingUriSchemeAndAuthority,
+
+//     /// Calls `SendResponse::poll_reset` after having called `send_response`.
+//     PollResetAfterSendResponse,
+
+//     /// Calls `PingPong::send_ping` before receiving a pong.
+//     SendPingWhilePending,
+
+//     /// Tries to update local SETTINGS while ACK has not been received.
+//     SendSettingsWhilePending,
+
+//     /// Tries to send push promise to peer who has disabled server push
+//     PeerDisabledServerPush,
+// }
+
+// impl std::error::Error for UserError2 {}
+
+// impl fmt::Display for UserError2 {
+//     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+//         use self::UserError2::*;
+
+//         fmt.write_str(match *self {
+//             InactiveStreamId => "inactive stream",
+//             UnexpectedFrameType => "unexpected frame type",
+//             PayloadTooBig => "payload too big",
+//             Rejected => "rejected",
+//             ReleaseCapacityTooBig => "release capacity too big",
+//             MalformedHeaders => "malformed headers",
+//             MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
+//             PollResetAfterSendResponse => "poll_reset after send_response is illegal",
+//             SendPingWhilePending => "send_ping before received previous pong",
+//             SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
+//             PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
+//         })
+//     }
+// }

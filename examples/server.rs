@@ -49,13 +49,14 @@ async fn main() -> std::io::Result<()> {
                                     eof,
                                 } => {
                                     println!("Got request: {:#?}\nheaders: {:#?}", pseudo, headers);
+                                    // return Err(());
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(
                                         header::CONTENT_TYPE,
                                         header::HeaderValue::try_from("text/plain").unwrap(),
                                     );
                                     msg.stream().send_response(StatusCode::OK, hdrs, false);
-                                    msg.stream().send_payload("hello world".into(), false);
+                                    msg.stream().send_payload("hello world".into(), false).await;
 
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(

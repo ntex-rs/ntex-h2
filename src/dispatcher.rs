@@ -4,10 +4,11 @@ use ntex_io::DispatchItem;
 use ntex_service::Service;
 use ntex_util::{future::Either, future::Ready, ready};
 
+use crate::connection::{Connection, ConnectionState};
 use crate::control::{ControlMessage, ControlResult};
 use crate::error::{ProtocolError, StreamError};
 use crate::frame::{Frame, GoAway, Reason, StreamId};
-use crate::{codec::Codec, connection::Connection, message::Message, stream::StreamRef};
+use crate::{codec::Codec, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Ctl, Pub>
@@ -29,6 +30,7 @@ enum Shutdown<F> {
 
 struct Inner<Ctl> {
     control: Ctl,
+    connection: Rc<ConnectionState>,
     last_stream_id: StreamId,
 }
 
@@ -44,13 +46,14 @@ where
 {
     pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
         Dispatcher {
-            publish,
-            connection,
+            shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
                 control,
                 last_stream_id: 0.into(),
+                connection: connection.get_state(),
             }),
-            shutdown: cell::RefCell::new(Shutdown::NotSet),
+            publish,
+            connection,
         }
     }
 
@@ -65,10 +68,13 @@ where
                 &self.inner,
             )),
             Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(err),
-                &self.inner,
-            ))),
+            Err(err) => {
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
+            }
         }
     }
 
@@ -78,10 +84,13 @@ where
     ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(err),
-                &self.inner,
-            ))),
+            Err(err) => {
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
+            }
         }
     }
 
@@ -91,14 +100,20 @@ where
     ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(Either::Left(err)) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::proto_error(err),
-                &self.inner,
-            ))),
-            Err(Either::Right(err)) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::stream_error(err),
-                &self.inner,
-            ))),
+            Err(Either::Left(err)) => {
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
+            }
+            Err(Either::Right(err)) => {
+                err.stream().set_failed_stream(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::stream_error(err),
+                    &self.inner,
+                )))
+            }
         }
     }
 }
@@ -181,8 +196,7 @@ where
                     self.handle_mixed_error(self.connection.recv_window_update(update))
                 }
                 Frame::Reset(reset) => {
-                    log::trace!("processing RESET: {:#?}", reset);
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    self.handle_mixed_error(self.connection.recv_rst_stream(reset))
                 }
                 Frame::Ping(ping) => {
                     log::trace!("processing PING: {:#?}", ping);
@@ -190,6 +204,7 @@ where
                 }
                 Frame::GoAway(frm) => {
                     log::trace!("processing GoAway: {:#?}", frm);
+                    self.connection.recv_go_away(frm.reason(), frm.data());
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::go_away(frm),
                         &self.inner,
@@ -200,25 +215,29 @@ where
                     Either::Right(Either::Left(Ready::Ok(None)))
                 }
             },
-            DispatchItem::EncoderError(_err) => {
-                // let frame = ControlMessage::new_kind(ControlFrameKind::ProtocolError(err.into()));
-                // *self.ctl_fut.borrow_mut() =
-                // Some((Some(frame.clone()), Box::pin(self.inner.control.call(frame))));
-                Either::Right(Either::Left(Ready::Ok(None)))
+            DispatchItem::EncoderError(err) => {
+                let err = ProtocolError::from(err);
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
             }
-            DispatchItem::DecoderError(_err) => {
-                // let frame = ControlMessage::new_kind(ControlFrameKind::ProtocolError(err.into()));
-                // *self.ctl_fut.borrow_mut() =
-                // Some((Some(frame.clone()), Box::pin(self.inner.control.call(frame))));
-                Either::Right(Either::Left(Ready::Ok(None)))
+            DispatchItem::DecoderError(err) => {
+                let err = ProtocolError::from(err);
+                self.connection.proto_error(&err);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(err),
+                    &self.inner,
+                )))
             }
             DispatchItem::KeepAliveTimeout => {
-                // let frame = ControlMessage::new_kind(ControlFrameKind::ProtocolError(
-                //     AmqpProtocolError::KeepAliveTimeout,
-                // ));
-                //*self.ctl_fut.borrow_mut() =
-                //    Some((Some(frame.clone()), Box::pin(self.inner.control.call(frame))));
-                Either::Right(Either::Left(Ready::Ok(None)))
+                self.connection
+                    .proto_error(&ProtocolError::KeepaliveTimeout);
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::proto_error(ProtocolError::KeepaliveTimeout),
+                    &self.inner,
+                )))
             }
             DispatchItem::Disconnect(err) => Either::Right(Either::Right(ControlResponse::new(
                 ControlMessage::peer_gone(err),
@@ -310,6 +329,7 @@ impl<E, Ctl> ControlResponse<E, Ctl>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,
+    Ctl::Error: fmt::Debug,
 {
     fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<Ctl>>) -> Self {
         Self {
@@ -324,6 +344,7 @@ impl<E, Ctl> Future for ControlResponse<E, Ctl>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,
+    Ctl::Error: fmt::Debug,
 {
     type Output = Result<Option<Frame>, ()>;
 
@@ -331,8 +352,21 @@ where
         let this = self.as_mut().project();
 
         match ready!(this.fut.poll(cx)) {
-            Ok(item) => Poll::Ready(Ok(item.frame)),
+            Ok(res) => {
+                if let Some(Frame::Reset(ref rst)) = res.frame {
+                    if !rst.stream_id().is_zero() {
+                        this.inner
+                            .connection
+                            .rst_stream(rst.stream_id(), rst.reason());
+                    }
+                }
+                if res.disconnect {
+                    this.inner.connection.io.close();
+                }
+                Poll::Ready(Ok(res.frame))
+            }
             Err(err) => {
+                log::error!("control service has failed with {:?}", err);
                 // we cannot handle control service errors, close connection
                 Poll::Ready(Ok(Some(
                     GoAway::new(Reason::INTERNAL_ERROR)

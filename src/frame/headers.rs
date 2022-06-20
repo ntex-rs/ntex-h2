@@ -9,6 +9,7 @@ use crate::hpack;
 /// Header frame
 ///
 /// This could be either a request or a response.
+#[derive(Clone)]
 pub struct Headers {
     /// The ID of the stream with which this frame is associated.
     stream_id: StreamId,
@@ -23,7 +24,7 @@ pub struct Headers {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct PseudoHeaders {
     // Request
     pub method: Option<Method>,
@@ -44,7 +45,7 @@ pub struct Iter<'a> {
     fields: header::Iter<'a>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
@@ -237,27 +238,6 @@ impl fmt::Debug for Headers {
         // `fields` and `pseudo` purposefully not included
         builder.finish()
     }
-}
-
-// ===== util =====
-
-pub fn parse_u64(src: &[u8]) -> Result<u64, ()> {
-    if src.len() > 19 {
-        // At danger for overflow...
-        return Err(());
-    }
-
-    let mut ret = 0;
-    for &d in src {
-        if !(b'0'..=b'9').contains(&d) {
-            return Err(());
-        }
-
-        ret *= 10;
-        ret += (d - b'0') as u64;
-    }
-
-    Ok(ret)
 }
 
 // ===== impl Pseudo =====

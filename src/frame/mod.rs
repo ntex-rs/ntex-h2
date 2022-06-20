@@ -48,7 +48,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
-pub use self::headers::{parse_u64, Headers, PseudoHeaders};
+pub use self::headers::{Headers, PseudoHeaders};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
 pub use self::protocol::Protocol;
@@ -71,6 +71,7 @@ pub type WindowSize = u32;
 
 pub const HEADER_LEN: usize = 9;
 
+#[derive(Clone)]
 pub enum Frame {
     Data(Data),
     Headers(Headers),

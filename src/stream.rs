@@ -1,25 +1,25 @@
-use std::{cell::Cell, cmp::Ordering, fmt, ops, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, cmp, cmp::Ordering, fmt, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
 use ntex_http::{HeaderMap, StatusCode};
 use ntex_util::{future::poll_fn, task::LocalWaker};
 
-use crate::error::{ProtocolError, StreamError, StreamErrorKind};
+use crate::error::{OperationError, ProtocolError, StreamError, StreamErrorKind};
 use crate::frame::{
     Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
-use crate::{connection::ConnectionInner, flow::FlowControl, frame, message::Message};
+use crate::{connection::ConnectionState, flow::FlowControl, frame, message::Message};
 
-pub struct Stream(Rc<StreamInner>);
+pub struct Stream(StreamRef);
 
 #[derive(Debug)]
 pub struct Capacity {
     size: Cell<u32>,
-    stream: Rc<StreamInner>,
+    stream: Rc<StreamState>,
 }
 
 impl Capacity {
-    fn new(size: u32, stream: &Rc<StreamInner>) -> Self {
+    fn new(size: u32, stream: &Rc<StreamState>) -> Self {
         stream.add_capacity(size);
 
         Self {
@@ -89,12 +89,12 @@ impl Drop for Capacity {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct StreamRef(pub(crate) Rc<StreamInner>);
+pub struct StreamRef(pub(crate) Rc<StreamState>);
 
-#[derive(Debug)]
-pub(crate) struct StreamInner {
+pub(crate) struct StreamState {
     /// The h2 stream identifier
-    pub id: StreamId,
+    id: StreamId,
+    remote: bool,
     /// Receive part
     recv: Cell<HalfState>,
     recv_flow: Cell<FlowControl>,
@@ -104,19 +104,87 @@ pub(crate) struct StreamInner {
     send_flow: Cell<FlowControl>,
     send_waker: LocalWaker,
     /// Connection config
-    con: Rc<ConnectionInner>,
+    con: Rc<ConnectionState>,
     /// error state
-    error: Cell<Option<StreamErrorKind>>,
+    error: Cell<Option<OperationError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HalfState {
-    Headers,
+    Idle,
     Payload,
-    Closed,
+    Closed(Option<Reason>),
 }
 
-impl StreamInner {
+impl HalfState {
+    fn is_closed(&self) -> bool {
+        matches!(self, HalfState::Closed(_))
+    }
+}
+
+impl StreamState {
+    fn state_send_payload(&self) {
+        self.send.set(HalfState::Payload);
+    }
+
+    fn state_send_close(&self, reason: Option<Reason>) {
+        log::trace!("{:?} send half is closed with reason {:?}", self.id, reason);
+        self.send.set(HalfState::Closed(reason));
+        self.review_state();
+    }
+
+    fn state_recv_payload(&self) {
+        self.recv.set(HalfState::Payload);
+    }
+
+    fn state_recv_close(&self, reason: Option<Reason>) {
+        log::trace!("{:?} receive half is closed", self.id);
+        self.recv.set(HalfState::Closed(reason));
+        self.send_waker.wake();
+        self.review_state();
+    }
+
+    fn reset_stream(&self, reason: Option<Reason>) {
+        self.recv.set(HalfState::Closed(None));
+        self.send.set(HalfState::Closed(reason));
+        if let Some(reason) = reason {
+            self.error.set(Some(OperationError::RemoteReset(reason)));
+        }
+        self.send_waker.wake();
+        self.review_state();
+    }
+
+    fn remote_reset_stream(&self, reason: Reason) {
+        self.recv.set(HalfState::Closed(Some(reason)));
+        self.send.set(HalfState::Closed(None));
+        self.error.set(Some(OperationError::RemoteReset(reason)));
+        self.send_waker.wake();
+        self.review_state();
+    }
+
+    fn failed(&self, err: OperationError) {
+        self.recv.set(HalfState::Closed(None));
+        self.send.set(HalfState::Closed(None));
+        self.error.set(Some(err));
+        self.send_waker.wake();
+        self.review_state();
+    }
+
+    fn review_state(&self) {
+        if self.recv.get().is_closed() {
+            if let HalfState::Closed(reason) = self.send.get() {
+                // stream is closed
+                if reason.is_some() {
+                    log::trace!("{:?} is closed with local reset, dropping stream", self.id);
+                    self.con.delayed_drop_stream(self.id, &self.con);
+                } else {
+                    log::trace!("{:?} both halfs are closed, dropping stream", self.id);
+                    self.con.drop_stream(self.id);
+                }
+            }
+        }
+    }
+
     /// added new capacity, update recevice window size
     fn add_capacity(&self, size: u32) {
         let cap = self.recv_size.get();
@@ -158,7 +226,7 @@ impl StreamInner {
 }
 
 impl StreamRef {
-    pub(crate) fn new(id: StreamId, con: Rc<ConnectionInner>) -> Self {
+    pub(crate) fn new(id: StreamId, remote: bool, con: Rc<ConnectionState>) -> Self {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_flow = if con.settings_processed.get() {
@@ -168,29 +236,42 @@ impl StreamRef {
         };
         let send_flow = FlowControl::new(con.remote_window_sz.get() as i32);
 
-        StreamRef(Rc::new(StreamInner {
+        StreamRef(Rc::new(StreamState {
             id,
             con,
-            recv: Cell::new(HalfState::Headers),
+            remote,
+            recv: Cell::new(HalfState::Idle),
             recv_flow: Cell::new(recv_flow),
             recv_size: Cell::new(0),
-            send: Cell::new(HalfState::Headers),
+            send: Cell::new(HalfState::Idle),
             send_flow: Cell::new(send_flow),
             send_waker: LocalWaker::new(),
             error: Cell::new(None),
         }))
     }
 
-    pub(crate) fn id(&self) -> StreamId {
+    #[inline]
+    pub fn id(&self) -> StreamId {
         self.0.id
+    }
+
+    /// Check if stream has been opened from remote side
+    #[inline]
+    pub fn is_remote(&self) -> bool {
+        self.0.remote
+    }
+
+    #[inline]
+    pub(crate) fn into_stream(self) -> Stream {
+        Stream(self)
     }
 
     pub(crate) fn send_headers(&self, mut hdrs: Headers) {
         hdrs.set_end_headers();
         if hdrs.is_end_stream() {
-            self.0.send.set(HalfState::Closed)
+            self.0.state_send_close(None);
         } else {
-            self.0.send.set(HalfState::Payload)
+            self.0.state_send_payload();
         }
         log::trace!("send headers {:#?}", hdrs);
 
@@ -199,6 +280,18 @@ impl StreamRef {
             .io
             .encode(hdrs.into(), &self.0.con.codec)
             .unwrap();
+    }
+
+    pub(crate) fn set_failed(&self, reason: Option<Reason>) {
+        self.0.reset_stream(reason);
+    }
+
+    pub(crate) fn set_go_away(&self, reason: Reason) {
+        self.0.remote_reset_stream(reason)
+    }
+
+    pub(crate) fn set_failed_stream(&self, err: &StreamError) {
+        self.0.failed(OperationError::Stream(*err.kind()));
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Option<Message> {
@@ -211,29 +304,29 @@ impl StreamRef {
         );
 
         match self.0.recv.get() {
-            HalfState::Headers => {
+            HalfState::Idle => {
                 let eof = hdrs.is_end_stream();
                 if eof {
-                    self.0.recv.set(HalfState::Closed);
+                    self.0.state_recv_close(None);
                 } else {
-                    self.0.recv.set(HalfState::Payload);
+                    self.0.state_recv_payload();
                 }
                 let (pseudo, headers) = hdrs.into_parts();
                 Some(Message::new(pseudo, headers, eof, self))
             }
             HalfState::Payload => {
                 // trailers
-                self.0.recv.set(HalfState::Closed);
+                self.0.state_recv_close(None);
                 Some(Message::trailers(hdrs.into_fields(), self))
             }
-            HalfState::Closed => None,
+            HalfState::Closed(_) => None,
         }
     }
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, ProtocolError> {
         let cap = Capacity::new(data.payload().len() as u32, &self.0);
         log::trace!(
-            "processing DATA frame for {:?}: {:?}",
+            "processing DATA frame for {:?}, len: {:?}",
             self.0.id,
             data.payload().len()
         );
@@ -242,28 +335,25 @@ impl StreamRef {
             HalfState::Payload => {
                 let eof = data.is_end_stream();
                 if eof {
-                    self.0.recv.set(HalfState::Closed);
+                    self.0.state_recv_close(None);
                     Ok(Some(Message::eof_data(data.into_payload(), self)))
                 } else {
                     Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
             }
-            HalfState::Headers => Err(ProtocolError::StreamIdle("DATA framed received")),
-            HalfState::Closed => Ok(None),
+            HalfState::Idle => Err(ProtocolError::StreamIdle("DATA framed received")),
+            HalfState::Closed(_) => Ok(None),
         }
     }
 
     pub(crate) fn recv_rst_stream(&self, frm: Reset) {
-        self.0.recv.set(HalfState::Closed);
-        self.0.send.set(HalfState::Closed);
-        self.0.error.set(Some(StreamErrorKind::Reset(frm.reason())));
-        self.0.send_waker.wake();
+        self.0.remote_reset_stream(frm.reason())
     }
 
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
         if frm.size_increment() == 0 {
             Err(StreamError::new(
-                self.0.clone(),
+                self.clone(),
                 StreamErrorKind::ZeroWindowUpdateValue,
             ))
         } else {
@@ -272,7 +362,7 @@ impl StreamRef {
                 .send_flow
                 .get()
                 .inc_window(frm.size_increment())
-                .map_err(|e| StreamError::new(self.0.clone(), StreamErrorKind::LocalReason(e)))?;
+                .map_err(|e| StreamError::new(self.clone(), StreamErrorKind::LocalReason(e)))?;
             self.0.send_flow.set(flow);
 
             if flow.window_size() > 0 {
@@ -321,49 +411,58 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn into_stream(self) -> Stream {
-        Stream(self.0)
-    }
-}
-
-impl Stream {
-    pub fn id(&self) -> StreamId {
-        self.0.id
-    }
-
-    pub fn send_response(&self, status: StatusCode, headers: HeaderMap, eof: bool) {
+    pub fn send_response(
+        &self,
+        status: StatusCode,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<(), OperationError> {
         match self.0.send.get() {
-            HalfState::Headers => {
+            HalfState::Idle => {
                 let pseudo = PseudoHeaders::response(status);
                 let mut hdrs = Headers::new(self.0.id, pseudo, headers);
                 hdrs.set_end_headers();
 
                 if eof {
                     hdrs.set_end_stream();
-                    self.0.send.set(HalfState::Closed)
+                    self.0.state_send_close(None);
                 } else {
-                    self.0.send.set(HalfState::Payload)
+                    self.0.state_send_payload();
                 }
-
                 self.0
                     .con
                     .io
                     .encode(hdrs.into(), &self.0.con.codec)
                     .unwrap();
+                Ok(())
             }
-            _ => (),
+            HalfState::Payload => Err(OperationError::Payload),
+            HalfState::Closed(r) => Err(OperationError::Closed(r)),
         }
     }
 
-    pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), StreamError> {
+    pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
+        log::trace!(
+            "{:?} sending {} bytes, eof: {}, send: {:?}",
+            self.0.id,
+            res.len(),
+            eof,
+            self.0.send.get()
+        );
         match self.0.send.get() {
             HalfState::Payload => loop {
-                let win = self.available_send_capacity();
+                let win = self.available_send_capacity() as usize;
                 if win > 0 {
-                    let mut data = Data::new(self.0.id, res.split_to(win as usize));
+                    let min = cmp::min(win, cmp::min(res.len(), self.0.con.remote_frame_size()));
+                    let mut data = if min >= res.len() {
+                        Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
+                    } else {
+                        log::trace!("{:?} sending {} out of {} bytes", self.0.id, min, res.len());
+                        Data::new(self.0.id, res.split_to(min))
+                    };
                     if eof && res.is_empty() {
                         data.set_end_stream();
-                        self.0.send.set(HalfState::Closed);
+                        self.0.state_send_close(None);
                     }
 
                     self.0
@@ -377,14 +476,13 @@ impl Stream {
                 }
                 self.send_capacity().await?;
             },
-            _ => Ok(()),
+            HalfState::Idle => Err(OperationError::Idle),
+            HalfState::Closed(reason) => Err(OperationError::Closed(reason)),
         }
     }
 
     pub fn send_trailers(&self, map: HeaderMap) {
         if self.0.send.get() == HalfState::Payload {
-            self.0.send.set(HalfState::Closed);
-
             let mut hdrs = Headers::trailers(self.0.id, map);
             hdrs.set_end_headers();
             hdrs.set_end_stream();
@@ -393,6 +491,7 @@ impl Stream {
                 .io
                 .encode(hdrs.into(), &self.0.con.codec)
                 .unwrap();
+            self.0.state_send_close(None);
         }
     }
 
@@ -400,24 +499,38 @@ impl Stream {
         self.0.send_flow.get().window_size()
     }
 
-    pub async fn send_capacity(&self) -> Result<WindowSize, StreamError> {
+    pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
     pub fn poll_send_capacity(
         &self,
         cx: &mut Context<'_>,
-    ) -> Poll<Result<WindowSize, StreamError>> {
-        if let Some(kind) = self.0.error.get() {
-            Poll::Ready(Err(StreamError::new(self.0.clone(), kind)))
+    ) -> Poll<Result<WindowSize, OperationError>> {
+        if let Some(err) = self.0.error.take() {
+            self.0.error.set(Some(err.clone()));
+            Poll::Ready(Err(err))
+        } else if let Some(err) = self.0.con.error.take() {
+            self.0.con.error.set(Some(err.clone()));
+            Poll::Ready(Err(OperationError::Protocol(err)))
         } else {
             let win = self.0.send_flow.get().window_size();
             if win > 0 {
                 Poll::Ready(Ok(win))
             } else {
+                self.0.send_waker.register(cx.waker());
                 Poll::Pending
             }
         }
+    }
+}
+
+impl ops::Deref for Stream {
+    type Target = StreamRef;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.0
     }
 }
 
@@ -425,9 +538,23 @@ impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Stream");
         builder
-            .field("stream_id", &self.0.id)
-            .field("recv_state", &self.0.recv.get())
-            .field("send_state", &self.0.send.get())
+            .field("stream_id", &self.0 .0.id)
+            .field("recv_state", &self.0 .0.recv.get())
+            .field("send_state", &self.0 .0.send.get())
+            .finish()
+    }
+}
+
+impl fmt::Debug for StreamState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let mut builder = f.debug_struct("StreamState");
+        builder
+            .field("id", &self.id)
+            .field("recv", &self.recv.get())
+            .field("recv_flow", &self.recv_flow.get())
+            .field("recv_size", &self.recv_size.get())
+            .field("send", &self.send.get())
+            .field("send_flow", &self.send_flow.get())
             .finish()
     }
 }
