@@ -1,6 +1,7 @@
 use std::{convert::TryFrom, error::Error};
 
 use ntex_bytes::Bytes;
+use ntex_connect as connect;
 use ntex_h2::{client, Message, MessageKind};
 use ntex_http::{header, HeaderMap, Method};
 use ntex_service::fn_service;
@@ -19,7 +20,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
     let connector =
-        client::Connector::new().connector(ntex::connect::openssl::Connector::new(builder.build()));
+        client::Connector::new().connector(connect::openssl::Connector::new(builder.build()));
 
     let connection = connector.connect("127.0.0.1:8443").await.unwrap();
 

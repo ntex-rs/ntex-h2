@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 
 use ntex::service::{fn_service, pipeline_factory};
-use ntex_h2::{server, ControlMessage, Message, MessageKind};
+use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_tls::openssl::Acceptor;
 use openssl::ssl::{AlpnError, SslAcceptor, SslFiletype, SslMethod};
@@ -37,7 +37,7 @@ async fn main() -> std::io::Result<()> {
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
                     server::Server::build()
-                        .control(|msg: ControlMessage<()>| async move {
+                        .control(|msg: ControlMessage<_>| async move {
                             println!("T: {:?}", msg);
                             Ok::<_, ()>(msg.ack())
                         })
@@ -48,15 +48,20 @@ async fn main() -> std::io::Result<()> {
                                     headers,
                                     eof,
                                 } => {
-                                    println!("Got request: {:#?}\nheaders: {:#?}", pseudo, headers);
+                                    println!(
+                                        "Got request (eof: {}): {:#?}\nheaders: {:#?}",
+                                        eof, pseudo, headers
+                                    );
                                     // return Err(());
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(
                                         header::CONTENT_TYPE,
                                         header::HeaderValue::try_from("text/plain").unwrap(),
                                     );
-                                    msg.stream().send_response(StatusCode::OK, hdrs, false);
-                                    msg.stream().send_payload("hello world".into(), false).await;
+                                    msg.stream().send_response(StatusCode::OK, hdrs, false)?;
+                                    msg.stream()
+                                        .send_payload("hello world".into(), false)
+                                        .await?;
 
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(
@@ -65,7 +70,7 @@ async fn main() -> std::io::Result<()> {
                                     );
                                     msg.stream().send_trailers(hdrs);
                                 }
-                                MessageKind::Data(data, cap) => {
+                                MessageKind::Data(data, _cap) => {
                                     println!("Got data: {:?}", data.len());
                                 }
                                 MessageKind::Eof(data) => {
@@ -73,7 +78,7 @@ async fn main() -> std::io::Result<()> {
                                 }
                                 MessageKind::Empty => {}
                             }
-                            Ok::<_, ()>(())
+                            Ok::<_, OperationError>(())
                         })),
                 )
         })?

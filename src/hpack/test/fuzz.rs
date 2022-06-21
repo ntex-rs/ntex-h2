@@ -1,14 +1,11 @@
-use crate::hpack::{Decoder, Encoder, Header};
-
-use http::header::{HeaderName, HeaderValue};
+use std::io::Cursor;
 
 use ntex_bytes::{ByteString, BytesMut};
+use ntex_http::{HeaderName, HeaderValue};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
-use rand::distributions::Slice;
-use rand::rngs::StdRng;
-use rand::{thread_rng, Rng, SeedableRng};
+use rand::{distributions::Slice, rngs::StdRng, thread_rng, Rng, SeedableRng};
 
-use std::io::Cursor;
+use crate::hpack::{Decoder, Encoder, Header};
 
 const MAX_CHUNK: usize = 2 * 1024;
 
@@ -185,7 +182,7 @@ impl Arbitrary for FuzzHpack {
 }
 
 fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
-    use http::{Method, StatusCode};
+    use ntex_http::{Method, StatusCode};
 
     if g.gen_ratio(1, 10) {
         match g.gen_range(0u32..5) {
@@ -255,7 +252,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
 }
 
 fn gen_header_name(g: &mut StdRng) -> HeaderName {
-    use http::header;
+    use ntex_http::header;
 
     if g.gen_ratio(1, 2) {
         g.sample(
