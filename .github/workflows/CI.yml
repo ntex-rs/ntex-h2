@@ -75,9 +75,9 @@ jobs:
         run: ./tests/h2spec.sh
         if: matrix.rust == 'stable'
 
-      - name: Check minimal versions
-        run: cargo clean; cargo update -Zminimal-versions; cargo check
-        if: matrix.rust == 'nightly'
+      # - name: Check minimal versions
+      #   run: cargo clean; cargo update -Zminimal-versions; cargo check
+      #   if: matrix.rust == 'nightly'
 
   msrv:
     name: Check MSRV (${{ matrix.rust }})

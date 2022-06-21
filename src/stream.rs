@@ -392,7 +392,7 @@ impl StreamRef {
                         }
                     }
                     ContentLength::Head => {
-                        if data.payload().len() != 0 {
+                        if !data.payload().is_empty() {
                             return Err(StreamError::NonEmptyPayload);
                         }
                     }
@@ -509,6 +509,7 @@ impl StreamRef {
     pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
         match self.0.send.get() {
             HalfState::Payload => {
+                // check is stream is disconnected
                 if let Some(e) = self.0.error.take() {
                     let res = e.clone();
                     self.0.error.set(Some(e));
@@ -523,6 +524,7 @@ impl StreamRef {
                 );
 
                 loop {
+                    // calaculate available send window size
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
                         let size =
@@ -543,9 +545,11 @@ impl StreamRef {
                             self.0.state_send_close(None);
                         }
 
+                        // update send window
                         self.0
                             .send_flow
                             .set(self.0.send_flow.get().dec_window(size as u32));
+                        // write to io buffer
                         self.0
                             .con
                             .io
@@ -555,6 +559,7 @@ impl StreamRef {
                             return Ok(());
                         }
                     }
+                    // wait for available send window
                     self.send_capacity().await?;
                 }
             }
@@ -650,7 +655,7 @@ pub fn parse_u64(src: &[u8]) -> Option<u64> {
     let mut ret = 0;
 
     for &d in src {
-        if d < b'0' || d > b'9' {
+        if !(b'0'..=b'9').contains(&d) {
             return None;
         }
 

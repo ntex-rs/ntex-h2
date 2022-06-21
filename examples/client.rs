@@ -26,7 +26,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     let client = connection.client();
     ntex::rt::spawn(async move {
-        connection
+        let _ = connection
             .start(fn_service(|mut msg: Message| async move {
                 match msg.kind().take() {
                     MessageKind::Headers {
@@ -35,8 +35,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                         eof,
                     } => {
                         println!(
-                            "Got response: {:#?}\nheaders: {:#?}\neof: {}",
-                            pseudo, headers, eof
+                            "Got response (eof: {}): {:#?}\nheaders: {:#?}",
+                            eof, pseudo, headers
                         );
                     }
                     MessageKind::Data(data, _cap) => {
@@ -44,6 +44,9 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     MessageKind::Eof(data) => {
                         println!("Got eof: {:?}", data);
+                    }
+                    MessageKind::Error(e) => {
+                        println!("{:?} failed with: {}", msg.id(), e);
                     }
                     MessageKind::Empty => {}
                 }
@@ -63,7 +66,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
     stream
         .send_payload(Bytes::from_static(b"testing"), true)
-        .await;
+        .await
+        .unwrap();
 
     sleep(Seconds(10)).await;
     Ok(())

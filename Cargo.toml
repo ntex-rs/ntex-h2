@@ -14,11 +14,11 @@ edition = "2018"
 
 [workspace]
 members = [
-    "tests/h2-fuzz",
-    "tests/h2-tests",
-    "tests/h2-support",
-    "util/genfixture",
-    "util/genhuff",
+    #"tests/h2-fuzz",
+    #"tests/h2-tests",
+    #"tests/h2-support",
+    #"util/genfixture",
+    #"util/genhuff",
 ]
 
 [dependencies]

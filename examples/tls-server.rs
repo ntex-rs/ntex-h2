@@ -38,7 +38,7 @@ async fn main() -> std::io::Result<()> {
                 .and_then(
                     server::Server::build()
                         .control(|msg: ControlMessage<_>| async move {
-                            println!("T: {:?}", msg);
+                            println!("Control message: {:?}", msg);
                             Ok::<_, ()>(msg.ack())
                         })
                         .finish(fn_service(|mut msg: Message| async move {
@@ -75,6 +75,9 @@ async fn main() -> std::io::Result<()> {
                                 }
                                 MessageKind::Eof(data) => {
                                     println!("Got eof: {:?}", data);
+                                }
+                                MessageKind::Error(e) => {
+                                    println!("{:?} failed with: {}", msg.id(), e);
                                 }
                                 MessageKind::Empty => {}
                             }

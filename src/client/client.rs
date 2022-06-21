@@ -136,7 +136,7 @@ async fn keepalive(con: Connection, timeout: Seconds) {
     let keepalive = Millis::from(timeout);
     loop {
         if con.state().is_disconnected() {
-            break
+            break;
         }
         sleep(keepalive).await;
 

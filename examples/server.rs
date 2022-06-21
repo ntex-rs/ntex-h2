@@ -7,10 +7,8 @@ use ntex_util::time::{sleep, Millis};
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var(
-        "RUST_LOG",
-        "trace,polling=info,mio=info,ntex_tokio=info,ntex_io=info",
-    );
+    std::env::set_var("RUST_LOG", "trace,polling=info,mio=info");
+    std::env::set_var("RUST_BACKTRACE", "1");
     env_logger::init();
 
     ntex::server::Server::build()
@@ -18,7 +16,7 @@ async fn main() -> std::io::Result<()> {
             server::Server::build()
                 .max_concurrent_streams(10)
                 .control(|msg: ControlMessage<_>| async move {
-                    println!("Control message: {:?}", msg);
+                    log::trace!("Control message: {:?}", msg);
                     Ok::<_, ()>(msg.ack())
                 })
                 .finish(fn_service(|mut msg: Message| async move {
@@ -28,7 +26,7 @@ async fn main() -> std::io::Result<()> {
                             headers,
                             eof,
                         } => {
-                            println!(
+                            log::trace!(
                                 "{:?} got request (eof: {}): {:#?}\nheaders: {:#?}",
                                 msg.id(),
                                 eof,
@@ -41,36 +39,34 @@ async fn main() -> std::io::Result<()> {
                                 header::CONTENT_TYPE,
                                 header::HeaderValue::try_from("text/plain").unwrap(),
                             );
-                            msg.stream()
-                                .send_response(StatusCode::OK, hdrs, false)
-                                .unwrap();
+                            msg.stream().send_response(StatusCode::OK, hdrs, false)?;
 
                             if eof {
                                 sleep(Millis(150)).await;
-                                println!("Sending payload for {:?}", msg.id(),);
+                                log::trace!("Sending payload for {:?}", msg.id(),);
                                 msg.stream()
                                     .send_payload("hello world".into(), true)
                                     .await?;
                             }
                         }
                         MessageKind::Data(data, _cap) => {
-                            println!("Got data: {:?}", data.len());
+                            log::trace!("Got data: {:?}", data.len());
                         }
                         MessageKind::Eof(data) => {
-                            println!("Got eof: {:?}", data);
+                            log::trace!("Got eof: {:?}", data);
                             msg.stream()
                                 .send_payload("hello world".into(), true)
                                 .await?;
                         }
                         MessageKind::Error(e) => {
-                            println!("{:?} failed with: {}", msg.id(), e);
+                            log::trace!("{:?} failed with: {}", msg.id(), e);
                         }
                         MessageKind::Empty => {}
                     }
                     Ok::<_, OperationError>(())
                 }))
         })?
-        .workers(1)
+        // .workers(1)
         .run()
         .await
 }
