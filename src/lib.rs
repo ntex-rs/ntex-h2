@@ -109,7 +109,7 @@ pub mod server;
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{EncoderError, OperationError, ProtocolError};
+pub use crate::error::{EncoderError, OperationError, ProtocolError, StreamError};
 
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};
