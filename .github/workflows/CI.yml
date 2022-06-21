@@ -51,9 +51,13 @@ jobs:
           profile: minimal
           toolchain: ${{ matrix.rust }}
           override: true
+          components: llvm-tools-preview
 
       - name: Install libssl-dev
         run: sudo apt-get update && sudo apt-get install libssl-dev
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Build
         uses: actions-rs/cargo@v1
@@ -64,6 +68,10 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
+
+      - name: Generate code coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+        if: matrix.rust == 'stable'
 
       #- name: Run integration tests
       #  uses: actions-rs/cargo@v1
@@ -78,6 +86,13 @@ jobs:
       # - name: Check minimal versions
       #   run: cargo clean; cargo update -Zminimal-versions; cargo check
       #   if: matrix.rust == 'nightly'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        if: matrix.rust == 'stable'
+        with:
+          files: lcov.info
+          fail_ci_if_error: true
 
   msrv:
     name: Check MSRV (${{ matrix.rust }})
