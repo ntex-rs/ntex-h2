@@ -1,20 +1,14 @@
-use crate::SendFrame;
+use std::task::{Context, Poll, Waker};
+use std::{cmp, io, pin::Pin, sync::Arc, sync::Mutex, time::Duration};
 
-use h2::frame::{self, Frame};
-use h2::proto::Error;
-use h2::{self, SendError};
+use ntex_h2::{frame, frame::Frame, ProtocolError};
+use ntex_util::future::poll_fn;
 
-use futures::future::poll_fn;
 use futures::{ready, Stream, StreamExt};
-
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
 use super::assert::assert_frame_eq;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
-use std::time::Duration;
-use std::{cmp, io, usize};
+use crate::SendFrame;
 
 /// A mock I/O
 #[derive(Debug)]
@@ -139,7 +133,7 @@ impl Handle {
     }
 
     pub async fn send_bytes(&mut self, data: &[u8]) {
-        use bytes::Buf;
+        use ntex_bytes::Buf;
         use std::io::Cursor;
 
         let buf: Vec<_> = data.into();

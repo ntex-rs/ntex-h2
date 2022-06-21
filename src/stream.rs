@@ -1,10 +1,10 @@
 use std::{cell::Cell, cmp, cmp::Ordering, fmt, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
-use ntex_http::{HeaderMap, StatusCode};
+use ntex_http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
 use ntex_util::{future::poll_fn, task::LocalWaker};
 
-use crate::error::{OperationError, ProtocolError, StreamError, StreamErrorKind};
+use crate::error::{OperationError, StreamError};
 use crate::frame::{
     Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
@@ -88,6 +88,14 @@ impl Drop for Capacity {
     }
 }
 
+/// State related to validating a stream's content-length
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ContentLength {
+    Omitted,
+    Head,
+    Remaining(u64),
+}
+
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
@@ -95,6 +103,7 @@ pub(crate) struct StreamState {
     /// The h2 stream identifier
     id: StreamId,
     remote: bool,
+    content_length: Cell<ContentLength>,
     /// Receive part
     recv: Cell<HalfState>,
     recv_flow: Cell<FlowControl>,
@@ -176,10 +185,10 @@ impl StreamState {
                 // stream is closed
                 if reason.is_some() {
                     log::trace!("{:?} is closed with local reset, dropping stream", self.id);
-                    self.con.delayed_drop_stream(self.id, &self.con);
+                    self.con.drop_stream(self.id, &self.con);
                 } else {
                     log::trace!("{:?} both halfs are closed, dropping stream", self.id);
-                    self.con.drop_stream(self.id);
+                    self.con.drop_stream(self.id, &self.con);
                 }
             }
         }
@@ -247,6 +256,7 @@ impl StreamRef {
             send_flow: Cell::new(send_flow),
             send_waker: LocalWaker::new(),
             error: Cell::new(None),
+            content_length: Cell::new(ContentLength::Omitted),
         }))
     }
 
@@ -259,6 +269,17 @@ impl StreamRef {
     #[inline]
     pub fn is_remote(&self) -> bool {
         self.0.remote
+    }
+
+    /// Check if stream has failed
+    #[inline]
+    pub fn is_failed(&self) -> bool {
+        if let Some(e) = self.0.error.take() {
+            self.0.error.set(Some(e));
+            true
+        } else {
+            false
+        }
     }
 
     #[inline]
@@ -275,6 +296,13 @@ impl StreamRef {
         }
         log::trace!("send headers {:#?}", hdrs);
 
+        if hdrs
+            .pseudo()
+            .status
+            .map_or(false, |status| status.is_informational())
+        {
+            self.0.content_length.set(ContentLength::Head)
+        }
         self.0
             .con
             .io
@@ -290,11 +318,11 @@ impl StreamRef {
         self.0.remote_reset_stream(reason)
     }
 
-    pub(crate) fn set_failed_stream(&self, err: &StreamError) {
-        self.0.failed(OperationError::Stream(*err.kind()));
+    pub(crate) fn set_failed_stream(&self, err: OperationError) {
+        self.0.failed(err);
     }
 
-    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Option<Message> {
+    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, StreamError> {
         log::trace!(
             "processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.0.id,
@@ -312,18 +340,33 @@ impl StreamRef {
                     self.0.state_recv_payload();
                 }
                 let (pseudo, headers) = hdrs.into_parts();
-                Some(Message::new(pseudo, headers, eof, self))
+
+                if self.0.content_length.get() != ContentLength::Head {
+                    if let Some(content_length) = headers.get(CONTENT_LENGTH) {
+                        if let Some(v) = parse_u64(content_length.as_bytes()) {
+                            self.0.content_length.set(ContentLength::Remaining(v));
+                        } else {
+                            proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
+                            return Err(StreamError::InvalidContentLength);
+                        }
+                    }
+                }
+                Ok(Some(Message::new(pseudo, headers, eof, self)))
             }
             HalfState::Payload => {
                 // trailers
-                self.0.state_recv_close(None);
-                Some(Message::trailers(hdrs.into_fields(), self))
+                if !hdrs.is_end_stream() {
+                    Err(StreamError::TrailersWithoutEos)
+                } else {
+                    self.0.state_recv_close(None);
+                    Ok(Some(Message::trailers(hdrs.into_fields(), self)))
+                }
             }
-            HalfState::Closed(_) => None,
+            HalfState::Closed(_) => Err(StreamError::Closed),
         }
     }
 
-    pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, ProtocolError> {
+    pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, StreamError> {
         let cap = Capacity::new(data.payload().len() as u32, &self.0);
         log::trace!(
             "processing DATA frame for {:?}, len: {:?}",
@@ -334,6 +377,28 @@ impl StreamRef {
         match self.0.recv.get() {
             HalfState::Payload => {
                 let eof = data.is_end_stream();
+
+                // Returns `Err` when the decrement cannot be completed due to overflow
+                match self.0.content_length.get() {
+                    ContentLength::Remaining(rem) => {
+                        match rem.checked_sub(data.payload().len() as u64) {
+                            Some(val) => {
+                                self.0.content_length.set(ContentLength::Remaining(val));
+                                if eof && val != 0 {
+                                    return Err(StreamError::WrongPayloadLength);
+                                }
+                            }
+                            None => return Err(StreamError::WrongPayloadLength),
+                        }
+                    }
+                    ContentLength::Head => {
+                        if data.payload().len() != 0 {
+                            return Err(StreamError::NonEmptyPayload);
+                        }
+                    }
+                    _ => (),
+                }
+
                 if eof {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::eof_data(data.into_payload(), self)))
@@ -341,8 +406,8 @@ impl StreamRef {
                     Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
             }
-            HalfState::Idle => Err(ProtocolError::StreamIdle("DATA framed received")),
-            HalfState::Closed(_) => Ok(None),
+            HalfState::Idle => Err(StreamError::Idle("DATA framed received")),
+            HalfState::Closed(_) => Err(StreamError::Closed),
         }
     }
 
@@ -352,17 +417,14 @@ impl StreamRef {
 
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
         if frm.size_increment() == 0 {
-            Err(StreamError::new(
-                self.clone(),
-                StreamErrorKind::ZeroWindowUpdateValue,
-            ))
+            Err(StreamError::WindowZeroUpdateValue)
         } else {
             let flow = self
                 .0
                 .send_flow
                 .get()
                 .inc_window(frm.size_increment())
-                .map_err(|e| StreamError::new(self.clone(), StreamErrorKind::LocalReason(e)))?;
+                .map_err(|_| StreamError::WindowOverflowed)?;
             self.0.send_flow.set(flow);
 
             if flow.window_size() > 0 {
@@ -372,22 +434,25 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), ProtocolError> {
+    pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), StreamError> {
+        let orig = self.0.send_flow.get();
         let flow = match upd.cmp(&0) {
-            Ordering::Less => self.0.send_flow.get().dec_window(upd.abs() as u32), // We must decrease the (remote) window
-            Ordering::Greater => self
-                .0
-                .send_flow
-                .get()
+            Ordering::Less => orig.dec_window(upd.abs() as u32), // We must decrease the (remote) window
+            Ordering::Greater => orig
                 .inc_window(upd as u32)
-                .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
+                .map_err(|_| StreamError::WindowOverflowed)?,
             Ordering::Equal => return Ok(()),
         };
+        log::trace!(
+            "Updating send window size from {} to {}",
+            orig.window_size,
+            flow.window_size
+        );
         self.0.send_flow.set(flow);
         Ok(())
     }
 
-    pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, ProtocolError> {
+    pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, StreamError> {
         let mut flow = match upd.cmp(&0) {
             Ordering::Less => self.0.recv_flow.get().dec_window(upd.abs() as u32), // We must decrease the (local) window
             Ordering::Greater => self
@@ -395,7 +460,7 @@ impl StreamRef {
                 .recv_flow
                 .get()
                 .inc_window(upd as u32)
-                .map_err(|_| ProtocolError::Reason(Reason::FLOW_CONTROL_ERROR))?,
+                .map_err(|_| StreamError::WindowOverflowed)?,
             Ordering::Equal => return Ok(None),
         };
         if let Some(val) = flow.update_window(
@@ -442,40 +507,57 @@ impl StreamRef {
     }
 
     pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
-        log::trace!(
-            "{:?} sending {} bytes, eof: {}, send: {:?}",
-            self.0.id,
-            res.len(),
-            eof,
-            self.0.send.get()
-        );
         match self.0.send.get() {
-            HalfState::Payload => loop {
-                let win = self.available_send_capacity() as usize;
-                if win > 0 {
-                    let min = cmp::min(win, cmp::min(res.len(), self.0.con.remote_frame_size()));
-                    let mut data = if min >= res.len() {
-                        Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
-                    } else {
-                        log::trace!("{:?} sending {} out of {} bytes", self.0.id, min, res.len());
-                        Data::new(self.0.id, res.split_to(min))
-                    };
-                    if eof && res.is_empty() {
-                        data.set_end_stream();
-                        self.0.state_send_close(None);
-                    }
-
-                    self.0
-                        .con
-                        .io
-                        .encode(data.into(), &self.0.con.codec)
-                        .unwrap();
-                    if res.is_empty() {
-                        return Ok(());
-                    }
+            HalfState::Payload => {
+                if let Some(e) = self.0.error.take() {
+                    let res = e.clone();
+                    self.0.error.set(Some(e));
+                    return Err(res);
                 }
-                self.send_capacity().await?;
-            },
+                log::trace!(
+                    "{:?} sending {} bytes, eof: {}, send: {:?}",
+                    self.0.id,
+                    res.len(),
+                    eof,
+                    self.0.send.get()
+                );
+
+                loop {
+                    let win = self.available_send_capacity() as usize;
+                    if win > 0 {
+                        let size =
+                            cmp::min(win, cmp::min(res.len(), self.0.con.remote_frame_size()));
+                        let mut data = if size >= res.len() {
+                            Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
+                        } else {
+                            log::trace!(
+                                "{:?} sending {} out of {} bytes",
+                                self.0.id,
+                                size,
+                                res.len()
+                            );
+                            Data::new(self.0.id, res.split_to(size))
+                        };
+                        if eof && res.is_empty() {
+                            data.set_end_stream();
+                            self.0.state_send_close(None);
+                        }
+
+                        self.0
+                            .send_flow
+                            .set(self.0.send_flow.get().dec_window(size as u32));
+                        self.0
+                            .con
+                            .io
+                            .encode(data.into(), &self.0.con.codec)
+                            .unwrap();
+                        if res.is_empty() {
+                            return Ok(());
+                        }
+                    }
+                    self.send_capacity().await?;
+                }
+            }
             HalfState::Idle => Err(OperationError::Idle),
             HalfState::Closed(reason) => Err(OperationError::Closed(reason)),
         }
@@ -512,7 +594,7 @@ impl StreamRef {
             Poll::Ready(Err(err))
         } else if let Some(err) = self.0.con.error.take() {
             self.0.con.error.set(Some(err.clone()));
-            Poll::Ready(Err(OperationError::Protocol(err)))
+            Poll::Ready(Err(err))
         } else {
             let win = self.0.send_flow.get().window_size();
             if win > 0 {
@@ -557,4 +639,24 @@ impl fmt::Debug for StreamState {
             .field("send_flow", &self.send_flow.get())
             .finish()
     }
+}
+
+pub fn parse_u64(src: &[u8]) -> Option<u64> {
+    if src.len() > 19 {
+        // At danger for overflow...
+        return None;
+    }
+
+    let mut ret = 0;
+
+    for &d in src {
+        if d < b'0' || d > b'9' {
+            return None;
+        }
+
+        ret *= 10;
+        ret += (d - b'0') as u64;
+    }
+
+    Some(ret)
 }

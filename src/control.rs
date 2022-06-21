@@ -9,8 +9,6 @@ pub enum ControlMessage<E> {
     // Ping(frame::Ping),
     /// Application level error from publish service
     AppError(AppError<E>),
-    /// Stream level error
-    StreamError(StreamError),
     /// Protocol level error
     ProtocolError(ProtocolError),
     /// Remote GoAway is received
@@ -46,11 +44,6 @@ impl<E> ControlMessage<E> {
         ControlMessage::Terminated(Terminated::new(is_error))
     }
 
-    /// Create a new `ControlMessage` for stream level errors
-    pub(super) fn stream_error(err: error::StreamError) -> Self {
-        ControlMessage::StreamError(StreamError::new(err))
-    }
-
     /// Create a new `ControlMessage` for protocol level errors
     pub(super) fn proto_error(err: error::ProtocolError) -> Self {
         ControlMessage::ProtocolError(ProtocolError::new(err))
@@ -60,7 +53,6 @@ impl<E> ControlMessage<E> {
     pub fn ack(self) -> ControlResult {
         match self {
             ControlMessage::AppError(item) => item.ack(),
-            ControlMessage::StreamError(item) => item.ack(),
             ControlMessage::ProtocolError(item) => item.ack(),
             ControlMessage::GoAway(item) => item.ack(),
             ControlMessage::PeerGone(item) => item.ack(),
@@ -109,18 +101,6 @@ impl<E> AppError<E> {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct Disconnect;
-
-impl Disconnect {
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
-            frame: None,
-            disconnect: true,
-        }
-    }
-}
-
 /// Dispatcher has been terminated
 #[derive(Debug)]
 pub struct Terminated {
@@ -143,50 +123,6 @@ impl Terminated {
         ControlResult {
             frame: None,
             disconnect: true,
-        }
-    }
-}
-
-/// Stream level error
-#[derive(Debug)]
-pub struct StreamError {
-    err: error::StreamError,
-    frm: frame::Reset,
-}
-
-impl StreamError {
-    fn new(err: error::StreamError) -> Self {
-        Self {
-            frm: frame::Reset::new(err.id(), err.reason()),
-            err,
-        }
-    }
-
-    #[inline]
-    /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::StreamError {
-        &self.err
-    }
-
-    #[inline]
-    /// Returns stream error kind reference
-    pub fn kind(&self) -> &error::StreamErrorKind {
-        self.err.kind()
-    }
-
-    #[inline]
-    /// Set reason code for go away packet
-    pub fn reason(mut self, reason: Reason) -> Self {
-        self.frm = self.frm.set_reason(reason);
-        self
-    }
-
-    #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
-            frame: Some(self.frm.into()),
-            disconnect: false,
         }
     }
 }

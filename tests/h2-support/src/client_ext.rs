@@ -1,6 +1,6 @@
-use bytes::Buf;
-use h2::client::{ResponseFuture, SendRequest};
-use http::Request;
+// use http::Request;
+use ntex_bytes::Buf;
+use ntex_h2::client::{ResponseFuture, SendRequest};
 
 /// Extend the `h2::client::SendRequest` type with convenience methods.
 pub trait SendRequestExt {

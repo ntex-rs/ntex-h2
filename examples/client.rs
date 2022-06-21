@@ -22,7 +22,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let connector =
         client::Connector::new().connector(connect::openssl::Connector::new(builder.build()));
 
-    let connection = connector.connect("127.0.0.1:8443").await.unwrap();
+    let connection = connector.connect("127.0.0.1:5928").await.unwrap();
 
     let client = connection.client();
     ntex::rt::spawn(async move {

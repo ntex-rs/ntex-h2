@@ -3,8 +3,10 @@ use std::{fmt, io::Cursor};
 use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
 
-use super::{util, Frame, FrameError, Head, Kind, Protocol, StreamId};
 use crate::hpack;
+
+use super::priority::StreamDependency;
+use super::{util, Frame, FrameError, Head, Kind, Protocol, StreamId};
 
 /// Header frame
 ///
@@ -105,7 +107,6 @@ impl Headers {
     /// HPACK decoding is done in the `load_hpack` step.
     pub fn load(head: Head, src: &mut BytesMut) -> Result<Self, FrameError> {
         let flags = HeadersFlag(head.flag());
-        log::trace!("loading headers; flags={:?}", flags);
 
         if head.stream_id().is_zero() {
             return Err(FrameError::InvalidStreamId);
@@ -130,6 +131,13 @@ impl Headers {
             if src.len() < 5 {
                 return Err(FrameError::MalformedMessage);
             }
+            let stream_dep = StreamDependency::load(&src[..5])?;
+
+            if stream_dep.dependency_id() == head.stream_id() {
+                return Err(FrameError::InvalidDependencyId);
+            }
+
+            // Drop the next 5 bytes
             let _ = src.split_to(5);
         }
 

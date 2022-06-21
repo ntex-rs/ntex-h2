@@ -1,10 +1,8 @@
-use h2;
+use std::{future::Future, pin::Pin, task::Context, task::Poll};
 
-use bytes::{BufMut, Bytes};
 use futures::ready;
-use std::future::Future;
-use std::pin::Pin;
-use std::task::{Context, Poll};
+use ntex_bytes::{BufMut, Bytes};
+use ntex_h2;
 
 pub fn byte_str(s: &str) -> ntex_bytes::ByteString {
     ntex_bytes::ByteString::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()

@@ -13,8 +13,19 @@ pub enum ProtocolError {
     Encoder(#[from] EncoderError),
     #[error("Stream idle: {0}")]
     StreamIdle(&'static str),
+    #[error("{0:?} is closed")]
+    StreamClosed(StreamId),
+    /// An invalid stream identifier was provided
+    #[error("An invalid stream identifier was provided")]
+    InvalidStreamId,
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
+    /// Missing pseudo header
+    #[error("Missing pseudo header {0:?}")]
+    MissingPseudo(&'static str),
+    /// Missing pseudo header
+    #[error("Unexpected pseudo header {0:?}")]
+    UnexpectedPseudo(&'static str),
     /// Window update value is zero
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
@@ -38,11 +49,20 @@ impl ProtocolError {
             ProtocolError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
             }
+            ProtocolError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
+                .set_data(format!("Missing pseudo header {:?}", s)),
+            ProtocolError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
+                .set_data(format!("Unexpected pseudo header {:?}", s)),
             ProtocolError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
             }
+            ProtocolError::InvalidStreamId => GoAway::new(Reason::PROTOCOL_ERROR)
+                .set_data("An invalid stream identifier was provided"),
             ProtocolError::StreamIdle(s) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Stream idle: {}", s))
+            }
+            ProtocolError::StreamClosed(s) => {
+                GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{:?} is closed", s))
             }
             ProtocolError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
@@ -61,59 +81,64 @@ impl ProtocolError {
 
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Stream error: {kind:?}")]
-pub struct StreamError {
-    kind: StreamErrorKind,
+pub(crate) struct StreamErrorInner {
+    kind: StreamError,
     stream: StreamRef,
 }
 
-impl StreamError {
-    pub(crate) fn new(stream: StreamRef, kind: StreamErrorKind) -> Self {
+impl StreamErrorInner {
+    pub(crate) fn new(stream: StreamRef, kind: StreamError) -> Self {
         Self { kind, stream }
     }
 
-    #[inline]
-    pub fn id(&self) -> StreamId {
-        self.stream.id()
-    }
-
-    #[inline]
-    pub fn stream(&self) -> &StreamRef {
-        &self.stream
-    }
-
-    #[inline]
-    pub fn kind(&self) -> &StreamErrorKind {
-        &self.kind
-    }
-
-    #[inline]
-    pub fn reason(&self) -> Reason {
-        match self.kind {
-            StreamErrorKind::LocalReason(r) => r,
-            StreamErrorKind::ZeroWindowUpdateValue => Reason::PROTOCOL_ERROR,
-            StreamErrorKind::UnexpectedHeadersFrame => Reason::PROTOCOL_ERROR,
-            StreamErrorKind::UnexpectedDataFrame => Reason::PROTOCOL_ERROR,
-            StreamErrorKind::InternalError(_) => Reason::INTERNAL_ERROR,
-        }
+    pub(crate) fn into_inner(self) -> (StreamRef, StreamError) {
+        (self.stream, self.kind)
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum StreamErrorKind {
-    LocalReason(Reason),
-    ZeroWindowUpdateValue,
-    UnexpectedHeadersFrame,
-    UnexpectedDataFrame,
-    InternalError(&'static str),
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StreamError {
+    #[error("Stream in idle state: {0}")]
+    Idle(&'static str),
+    #[error("Stream is closed")]
+    Closed,
+    #[error("Window value is overflowed")]
+    WindowOverflowed,
+    #[error("Zero value for window")]
+    WindowZeroUpdateValue,
+    #[error("Trailers headers without end of stream flags")]
+    TrailersWithoutEos,
+    #[error("Invalid content length")]
+    InvalidContentLength,
+    #[error("Payload length does not match content-length header")]
+    WrongPayloadLength,
+    #[error("Non-empty payload for HEAD response")]
+    NonEmptyPayload,
+}
+
+impl StreamError {
+    #[inline]
+    pub(crate) fn reason(&self) -> Reason {
+        match self {
+            StreamError::Idle(_) => Reason::PROTOCOL_ERROR,
+            StreamError::Closed => Reason::STREAM_CLOSED,
+            StreamError::WindowOverflowed => Reason::FLOW_CONTROL_ERROR,
+            StreamError::WindowZeroUpdateValue => Reason::PROTOCOL_ERROR,
+            StreamError::TrailersWithoutEos => Reason::PROTOCOL_ERROR,
+            StreamError::InvalidContentLength => Reason::PROTOCOL_ERROR,
+            StreamError::WrongPayloadLength => Reason::PROTOCOL_ERROR,
+            StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
+        }
+    }
 }
 
 /// Operation errors
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum OperationError {
     #[error("{0:?}")]
-    Stream(StreamErrorKind),
+    Stream(#[from] StreamError),
     #[error("{0}")]
-    Protocol(ProtocolError),
+    Protocol(#[from] ProtocolError),
 
     /// Cannot process operation for idle stream
     #[error("Cannot process operation for idle stream")]
@@ -136,63 +161,8 @@ pub enum OperationError {
     /// A new connection is needed.
     #[error("The stream ID space is overflowed")]
     OverflowedStreamId,
+
+    /// Disconnected
+    #[error("Connection is closed")]
+    Disconnected,
 }
-
-// /// Errors caused by users of the library
-// #[derive(Debug)]
-// pub enum UserError2 {
-//     /// The stream ID is no longer accepting frames.
-//     InactiveStreamId,
-
-//     /// The stream is not currently expecting a frame of this type.
-//     UnexpectedFrameType,
-
-//     /// The payload size is too big
-//     PayloadTooBig,
-
-//     /// The application attempted to initiate too many streams to remote.
-//     Rejected,
-
-//     /// The released capacity is larger than claimed capacity.
-//     ReleaseCapacityTooBig,
-
-//     /// Illegal headers, such as connection-specific headers.
-//     MalformedHeaders,
-
-//     /// Request submitted with relative URI.
-//     MissingUriSchemeAndAuthority,
-
-//     /// Calls `SendResponse::poll_reset` after having called `send_response`.
-//     PollResetAfterSendResponse,
-
-//     /// Calls `PingPong::send_ping` before receiving a pong.
-//     SendPingWhilePending,
-
-//     /// Tries to update local SETTINGS while ACK has not been received.
-//     SendSettingsWhilePending,
-
-//     /// Tries to send push promise to peer who has disabled server push
-//     PeerDisabledServerPush,
-// }
-
-// impl std::error::Error for UserError2 {}
-
-// impl fmt::Display for UserError2 {
-//     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-//         use self::UserError2::*;
-
-//         fmt.write_str(match *self {
-//             InactiveStreamId => "inactive stream",
-//             UnexpectedFrameType => "unexpected frame type",
-//             PayloadTooBig => "payload too big",
-//             Rejected => "rejected",
-//             ReleaseCapacityTooBig => "release capacity too big",
-//             MalformedHeaders => "malformed headers",
-//             MissingUriSchemeAndAuthority => "request URI missing scheme and authority",
-//             PollResetAfterSendResponse => "poll_reset after send_response is illegal",
-//             SendPingWhilePending => "send_ping before received previous pong",
-//             SendSettingsWhilePending => "sending SETTINGS before received previous ACK",
-//             PeerDisabledServerPush => "sending PUSH_PROMISE to peer who disabled server push",
-//         })
-//     }
-// }

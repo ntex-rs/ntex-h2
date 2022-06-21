@@ -1,13 +1,8 @@
-use std::convert::TryInto;
-use std::fmt;
+use std::{convert::TryInto, fmt};
 
-use bytes::Bytes;
-use http::{self, HeaderMap, StatusCode};
-
-use h2::{
-    ext::Protocol,
-    frame::{self, Frame, StreamId},
-};
+use ntex_bytes::Bytes;
+use ntex_h2::frame::{self, Frame, Protocol, StreamId};
+use ntex_http::{self as http, HeaderMap, StatusCode};
 
 pub const SETTINGS: &'static [u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
 pub const SETTINGS_ACK: &'static [u8] = &[0, 0, 0, 4, 1, 0, 0, 0, 0];

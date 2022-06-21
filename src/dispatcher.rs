@@ -6,8 +6,8 @@ use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::connection::{Connection, ConnectionState};
 use crate::control::{ControlMessage, ControlResult};
-use crate::error::{ProtocolError, StreamError};
-use crate::frame::{Frame, GoAway, Reason, StreamId};
+use crate::error::{ProtocolError, StreamErrorInner};
+use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
@@ -59,7 +59,7 @@ where
 
     fn handle_message(
         &self,
-        result: Result<Option<(StreamRef, Message)>, ProtocolError>,
+        result: Result<Option<(StreamRef, Message)>, Either<ProtocolError, StreamErrorInner>>,
     ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(
@@ -68,38 +68,6 @@ where
                 &self.inner,
             )),
             Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(err) => {
-                self.connection.proto_error(&err);
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(err),
-                    &self.inner,
-                )))
-            }
-        }
-    }
-
-    fn handle_proto_error(
-        &self,
-        result: Result<(), ProtocolError>,
-    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
-        match result {
-            Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
-            Err(err) => {
-                self.connection.proto_error(&err);
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(err),
-                    &self.inner,
-                )))
-            }
-        }
-    }
-
-    fn handle_mixed_error(
-        &self,
-        result: Result<(), Either<ProtocolError, StreamError>>,
-    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
-        match result {
-            Ok(()) => Either::Right(Either::Left(Ready::Ok(None))),
             Err(Either::Left(err)) => {
                 self.connection.proto_error(&err);
                 Either::Right(Either::Right(ControlResponse::new(
@@ -108,11 +76,18 @@ where
                 )))
             }
             Err(Either::Right(err)) => {
-                err.stream().set_failed_stream(&err);
-                Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::stream_error(err),
+                let (stream, kind) = err.into_inner();
+                stream.set_failed_stream(kind.into());
+
+                let st = self.connection.state();
+                let _ = st
+                    .io
+                    .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
+                Either::Left(PublishResponse::new(
+                    self.publish.call(Message::error(kind, &stream)),
+                    stream,
                     &self.inner,
-                )))
+                ))
             }
         }
     }
@@ -122,7 +97,7 @@ impl<Ctl, Pub> Service<DispatchItem<Rc<Codec>>> for Dispatcher<Ctl, Pub>
 where
     Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
     Ctl::Error: fmt::Debug,
-    Pub: Service<Message, Response = ()>,
+    Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
     type Response = Option<Frame>;
@@ -149,7 +124,6 @@ where
     fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
         let mut shutdown = self.shutdown.borrow_mut();
         if matches!(&*shutdown, &Shutdown::NotSet) {
-            // self.inner.sink.drop_sink();
             *shutdown = Shutdown::InProcess(Box::pin(
                 self.inner
                     .control
@@ -177,6 +151,7 @@ where
             if res1.is_pending() || res2.is_pending() {
                 Poll::Pending
             } else {
+                self.connection.disconnect();
                 Poll::Ready(())
             }
         } else {
@@ -189,18 +164,52 @@ where
             DispatchItem::Item(frame) => match frame {
                 Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)),
                 Frame::Data(data) => self.handle_message(self.connection.recv_data(data)),
-                Frame::Settings(settings) => {
-                    self.handle_proto_error(self.connection.recv_settings(settings))
-                }
+                Frame::Settings(settings) => match self.connection.recv_settings(settings) {
+                    Err(Either::Left(err)) => {
+                        self.connection.proto_error(&err);
+                        Either::Right(Either::Right(ControlResponse::new(
+                            ControlMessage::proto_error(err),
+                            &self.inner,
+                        )))
+                    }
+                    Err(Either::Right(errs)) => {
+                        // handle stream errors
+                        for err in errs {
+                            let (stream, kind) = err.into_inner();
+                            stream.set_failed_stream(kind.into());
+
+                            let st = self.connection.state();
+                            let _ = st
+                                .io
+                                .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
+                            let fut = PublishResponse::<Pub, Ctl>::new(
+                                self.publish.call(Message::error(kind, &stream)),
+                                stream,
+                                &self.inner,
+                            );
+                            ntex_rt::spawn(async move {
+                                let _ = fut.await;
+                            });
+                        }
+                        Either::Right(Either::Left(Ready::Ok(None)))
+                    }
+                    Ok(_) => Either::Right(Either::Left(Ready::Ok(None))),
+                },
                 Frame::WindowUpdate(update) => {
-                    self.handle_mixed_error(self.connection.recv_window_update(update))
+                    self.handle_message(self.connection.recv_window_update(update).map(|_| None))
                 }
                 Frame::Reset(reset) => {
-                    self.handle_mixed_error(self.connection.recv_rst_stream(reset))
+                    self.handle_message(self.connection.recv_rst_stream(reset).map(|_| None))
                 }
                 Frame::Ping(ping) => {
                     log::trace!("processing PING: {:#?}", ping);
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    if ping.is_ack() {
+                        Either::Right(Either::Left(Ready::Ok(None)))
+                    } else {
+                        Either::Right(Either::Left(Ready::Ok(Some(
+                            Ping::pong(ping.into_payload()).into(),
+                        ))))
+                    }
                 }
                 Frame::GoAway(frm) => {
                     log::trace!("processing GoAway: {:#?}", frm);
@@ -239,10 +248,13 @@ where
                     &self.inner,
                 )))
             }
-            DispatchItem::Disconnect(err) => Either::Right(Either::Right(ControlResponse::new(
-                ControlMessage::peer_gone(err),
-                &self.inner,
-            ))),
+            DispatchItem::Disconnect(err) => {
+                self.connection.disconnect();
+                Either::Right(Either::Right(ControlResponse::new(
+                    ControlMessage::peer_gone(err),
+                    &self.inner,
+                )))
+            }
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
                 Either::Right(Either::Left(Ready::Ok(None)))
             }
@@ -300,13 +312,17 @@ where
             PublishResponseStateProject::Publish { fut } => match fut.poll(cx) {
                 Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
                 Poll::Ready(Err(e)) => {
-                    this.state.set(PublishResponseState::Control {
-                        fut: ControlResponse::new(
-                            ControlMessage::app_error(e, this.stream.clone()),
-                            this.inner,
-                        ),
-                    });
-                    self.poll(cx)
+                    if this.inner.connection.is_disconnected() {
+                        Poll::Ready(Ok(None))
+                    } else {
+                        this.state.set(PublishResponseState::Control {
+                            fut: ControlResponse::new(
+                                ControlMessage::app_error(e, this.stream.clone()),
+                                this.inner,
+                            ),
+                        });
+                        self.poll(cx)
+                    }
                 }
                 Poll::Pending => Poll::Pending,
             },
@@ -360,20 +376,29 @@ where
                             .rst_stream(rst.stream_id(), rst.reason());
                     }
                 }
+                if let Some(frm) = res.frame {
+                    let _ = this
+                        .inner
+                        .connection
+                        .io
+                        .encode(frm, &this.inner.connection.codec);
+                }
                 if res.disconnect {
                     this.inner.connection.io.close();
                 }
-                Poll::Ready(Ok(res.frame))
             }
             Err(err) => {
                 log::error!("control service has failed with {:?}", err);
                 // we cannot handle control service errors, close connection
-                Poll::Ready(Ok(Some(
+                let _ = this.inner.connection.io.encode(
                     GoAway::new(Reason::INTERNAL_ERROR)
                         .set_last_stream_id(this.inner.last_stream_id)
                         .into(),
-                )))
+                    &this.inner.connection.codec,
+                );
+                this.inner.connection.io.close();
             }
         }
+        Poll::Ready(Ok(None))
     }
 }

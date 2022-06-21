@@ -153,7 +153,7 @@ macro_rules! header_block {
                 buf: $bytes.split(),
             });
 
-            return Ok(None);
+            continue
         }
     });
 }
@@ -166,175 +166,177 @@ impl Decoder for Codec {
     ///
     /// This method is intentionally de-generified and outlined because it is very large.
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::FrameError> {
-        log::trace!("decoding frame from {}", src.len());
-
         let mut inner = self.0.borrow_mut();
-        let mut bytes = if let Some(bytes) = inner.decoder.decode(src)? {
-            bytes
-        } else {
-            return Ok(None);
-        };
+        loop {
+            let mut bytes = if let Some(bytes) = inner.decoder.decode(src)? {
+                bytes
+            } else {
+                return Ok(None);
+            };
 
-        // check push promise, we do not support push
-        if bytes[3] == PUSH_PROMISE {
-            return Err(frame::FrameError::UnexpectedPushPromise);
-        }
+            // check push promise, we do not support push
+            if bytes[3] == PUSH_PROMISE {
+                return Err(frame::FrameError::UnexpectedPushPromise);
+            }
 
-        // Parse the head
-        let head = frame::Head::parse(&bytes);
-        let kind = head.kind();
+            // Parse the head
+            let head = frame::Head::parse(&bytes);
+            let kind = head.kind();
 
-        if inner.partial.is_some() && kind != Kind::Continuation {
-            proto_err!(conn: "expected CONTINUATION, got {:?}", kind);
-            return Err(frame::FrameError::Continuation(
-                frame::FrameContinuationError::Expected,
-            ));
-        }
+            if inner.partial.is_some() && kind != Kind::Continuation {
+                proto_err!(conn: "expected CONTINUATION, got {:?}", kind);
+                return Err(frame::FrameError::Continuation(
+                    frame::FrameContinuationError::Expected,
+                ));
+            }
 
-        // log::trace!(frame.kind = ?kind);
-        let frame = match kind {
-            Kind::Settings => frame::Settings::load(head, &bytes[frame::HEADER_LEN..])
-                .map_err(|e| {
-                    proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
-                    e
-                })?
-                .into(),
-            Kind::Ping => frame::Ping::load(head, &bytes[frame::HEADER_LEN..])
-                .map_err(|e| {
-                    proto_err!(conn: "failed to load PING frame; err={:?}", e);
-                    e
-                })?
-                .into(),
-            Kind::WindowUpdate => frame::WindowUpdate::load(head, &bytes[frame::HEADER_LEN..])
-                .map_err(|e| {
-                    proto_err!(conn: "failed to load WINDOW_UPDATE frame; err={:?}", e);
-                    e
-                })?
-                .into(),
-            Kind::Data => {
-                let _ = bytes.split_to(frame::HEADER_LEN);
+            log::trace!("decoding {:?} frame, frame buf len {}", kind, bytes.len());
 
-                frame::Data::load(head, bytes.freeze())
-                    // TODO: Should this always be connection level? Probably not...
+            let frame = match kind {
+                Kind::Settings => frame::Settings::load(head, &bytes[frame::HEADER_LEN..])
                     .map_err(|e| {
-                        proto_err!(conn: "failed to load DATA frame; err={:?}", e);
+                        proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
                         e
                     })?
-                    .into()
-            }
-            Kind::Headers => header_block!(inner, Headers, head, bytes),
-            Kind::Reset => frame::Reset::load(head, &bytes[frame::HEADER_LEN..])
-                .map_err(|e| {
-                    proto_err!(conn: "failed to load RESET frame; err={:?}", e);
-                    e
-                })?
-                .into(),
-            Kind::GoAway => frame::GoAway::load(&bytes[frame::HEADER_LEN..])
-                .map_err(|e| {
-                    proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
-                    e
-                })?
-                .into(),
-            Kind::Priority => {
-                if head.stream_id() == 0 {
-                    // Invalid stream identifier
-                    proto_err!(conn: "invalid stream ID 0");
-                    return Err(frame::FrameError::InvalidStreamId);
-                }
+                    .into(),
+                Kind::Ping => frame::Ping::load(head, &bytes[frame::HEADER_LEN..])
+                    .map_err(|e| {
+                        proto_err!(conn: "failed to load PING frame; err={:?}", e);
+                        e
+                    })?
+                    .into(),
+                Kind::WindowUpdate => frame::WindowUpdate::load(head, &bytes[frame::HEADER_LEN..])
+                    .map_err(|e| {
+                        proto_err!(conn: "failed to load WINDOW_UPDATE frame; err={:?}", e);
+                        e
+                    })?
+                    .into(),
+                Kind::Data => {
+                    let _ = bytes.split_to(frame::HEADER_LEN);
 
-                match frame::Priority::load(head, &bytes[frame::HEADER_LEN..]) {
-                    Ok(frame) => frame.into(),
-                    Err(frame::FrameError::InvalidDependencyId) => {
-                        // A stream cannot depend on itself. An endpoint MUST
-                        // treat this as a stream error (Section 5.4.2) of type
-                        // `PROTOCOL_ERROR`.
-                        let id = head.stream_id();
-                        proto_err!(stream: "PRIORITY invalid dependency ID; stream={:?}", id);
-                        return Err(frame::FrameError::InvalidDependencyId);
+                    frame::Data::load(head, bytes.freeze())
+                        // TODO: Should this always be connection level? Probably not...
+                        .map_err(|e| {
+                            proto_err!(conn: "failed to load DATA frame; err={:?}", e);
+                            e
+                        })?
+                        .into()
+                }
+                Kind::Headers => header_block!(inner, Headers, head, bytes),
+                Kind::Reset => frame::Reset::load(head, &bytes[frame::HEADER_LEN..])
+                    .map_err(|e| {
+                        proto_err!(conn: "failed to load RESET frame; err={:?}", e);
+                        e
+                    })?
+                    .into(),
+                Kind::GoAway => frame::GoAway::load(&bytes[frame::HEADER_LEN..])
+                    .map_err(|e| {
+                        proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
+                        e
+                    })?
+                    .into(),
+                Kind::Priority => {
+                    if head.stream_id() == 0 {
+                        // Invalid stream identifier
+                        proto_err!(conn: "invalid stream ID 0");
+                        return Err(frame::FrameError::InvalidStreamId);
                     }
-                    Err(e) => {
-                        proto_err!(conn: "failed to load PRIORITY frame; err={:?};", e);
-                        return Err(e);
-                    }
-                }
-            }
-            Kind::Continuation => {
-                let is_end_headers = (head.flag() & 0x4) == 0x4;
 
-                // get partial frame
-                let mut partial = inner.partial.take().ok_or_else(|| {
-                    proto_err!(conn: "received unexpected CONTINUATION frame");
-                    frame::FrameError::Continuation(frame::FrameContinuationError::Unexpected)
-                })?;
-
-                // The stream identifiers must match
-                if partial.frame.stream_id() != head.stream_id() {
-                    proto_err!(conn: "CONTINUATION frame stream ID does not match previous frame stream ID");
-                    return Err(frame::FrameError::Continuation(
-                        frame::FrameContinuationError::UnknownStreamId,
-                    ));
-                }
-
-                // Extend the buf
-                if partial.buf.is_empty() {
-                    partial.buf = bytes.split_off(frame::HEADER_LEN);
-                } else {
-                    if partial.frame.is_over_size() {
-                        // If there was left over bytes previously, they may be
-                        // needed to continue decoding, even though we will
-                        // be ignoring this frame. This is done to keep the HPACK
-                        // decoder state up-to-date.
-                        //
-                        // Still, we need to be careful, because if a malicious
-                        // attacker were to try to send a gigantic string, such
-                        // that it fits over multiple header blocks.
-                        //
-                        // Instead, we use a simple heuristic to determine if
-                        // we should continue to ignore decoding, or to tell
-                        // the attacker to go away.
-                        if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size {
-                            proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
-                            return Err(frame::FrameError::Continuation(
-                                frame::FrameContinuationError::MaxLeftoverSize,
-                            ));
+                    match frame::Priority::load(head, &bytes[frame::HEADER_LEN..]) {
+                        Ok(frame) => frame.into(),
+                        Err(frame::FrameError::InvalidDependencyId) => {
+                            // A stream cannot depend on itself. An endpoint MUST
+                            // treat this as a stream error (Section 5.4.2) of type
+                            // `PROTOCOL_ERROR`.
+                            let id = head.stream_id();
+                            proto_err!(stream: "PRIORITY invalid dependency ID; stream={:?}", id);
+                            return Err(frame::FrameError::InvalidDependencyId);
+                        }
+                        Err(e) => {
+                            proto_err!(conn: "failed to load PRIORITY frame; err={:?};", e);
+                            return Err(e);
                         }
                     }
-                    partial.buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
                 }
+                Kind::Continuation => {
+                    let is_end_headers = (head.flag() & 0x4) == 0x4;
 
-                match partial.frame.load_hpack(
-                    &mut partial.buf,
-                    inner.decoder_max_header_list_size,
-                    &mut inner.decoder_hpack,
-                ) {
-                    Ok(_) => {}
-                    Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_)))
-                        if !is_end_headers => {}
-                    Err(frame::FrameError::MalformedMessage) => {
-                        let id = head.stream_id();
-                        proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);
-                        return Err(frame::FrameContinuationError::Malformed.into());
+                    // get partial frame
+                    let mut partial = inner.partial.take().ok_or_else(|| {
+                        proto_err!(conn: "received unexpected CONTINUATION frame");
+                        frame::FrameError::Continuation(frame::FrameContinuationError::Unexpected)
+                    })?;
+
+                    // The stream identifiers must match
+                    if partial.frame.stream_id() != head.stream_id() {
+                        proto_err!(conn: "CONTINUATION frame stream ID does not match previous frame stream ID");
+                        return Err(frame::FrameError::Continuation(
+                            frame::FrameContinuationError::UnknownStreamId,
+                        ));
                     }
-                    Err(e) => {
-                        proto_err!(conn: "failed HPACK decoding; err={:?}", e);
-                        return Err(e);
+
+                    // Extend the buf
+                    if partial.buf.is_empty() {
+                        partial.buf = bytes.split_off(frame::HEADER_LEN);
+                    } else {
+                        if partial.frame.is_over_size() {
+                            // If there was left over bytes previously, they may be
+                            // needed to continue decoding, even though we will
+                            // be ignoring this frame. This is done to keep the HPACK
+                            // decoder state up-to-date.
+                            //
+                            // Still, we need to be careful, because if a malicious
+                            // attacker were to try to send a gigantic string, such
+                            // that it fits over multiple header blocks.
+                            //
+                            // Instead, we use a simple heuristic to determine if
+                            // we should continue to ignore decoding, or to tell
+                            // the attacker to go away.
+                            if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size
+                            {
+                                proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
+                                return Err(frame::FrameError::Continuation(
+                                    frame::FrameContinuationError::MaxLeftoverSize,
+                                ));
+                            }
+                        }
+                        partial.buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
+                    }
+
+                    match partial.frame.load_hpack(
+                        &mut partial.buf,
+                        inner.decoder_max_header_list_size,
+                        &mut inner.decoder_hpack,
+                    ) {
+                        Ok(_) => {}
+                        Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_)))
+                            if !is_end_headers => {}
+                        Err(frame::FrameError::MalformedMessage) => {
+                            let id = head.stream_id();
+                            proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);
+                            return Err(frame::FrameContinuationError::Malformed.into());
+                        }
+                        Err(e) => {
+                            proto_err!(conn: "failed HPACK decoding; err={:?}", e);
+                            return Err(e);
+                        }
+                    }
+
+                    if is_end_headers {
+                        partial.frame.into()
+                    } else {
+                        inner.partial = Some(partial);
+                        continue;
                     }
                 }
-
-                if is_end_headers {
-                    partial.frame.into()
-                } else {
-                    inner.partial = Some(partial);
-                    return Ok(None);
+                Kind::Unknown => {
+                    // Unknown frames are ignored
+                    continue;
                 }
-            }
-            Kind::Unknown => {
-                // Unknown frames are ignored
-                return Ok(None);
-            }
-        };
+            };
 
-        Ok(Some(frame))
+            return Ok(Some(frame));
+        }
     }
 }
 

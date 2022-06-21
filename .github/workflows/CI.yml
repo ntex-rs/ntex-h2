@@ -65,14 +65,14 @@ jobs:
         with:
           command: test
 
-      - name: Run integration tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: -p h2-tests
+      #- name: Run integration tests
+      #  uses: actions-rs/cargo@v1
+      #  with:
+      #    command: test
+      #    args: -p h2-tests
 
       - name: Run h2spec
-        run: ./ci/h2spec.sh
+        run: ./tests/h2spec.sh
         if: matrix.rust == 'stable'
 
       - name: Check minimal versions

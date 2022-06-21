@@ -304,6 +304,7 @@ where
                 connection_window_sz,
                 connection_window_sz_threshold,
                 remote_max_concurrent_streams,
+                client: true,
                 reset_max: slf.reset_stream_max,
                 reset_duration: slf.reset_stream_duration.into(),
             };
