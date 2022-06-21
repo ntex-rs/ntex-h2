@@ -5,6 +5,7 @@ HTTP/2 client & server implementation for Rust.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/ntex-h2.svg)](https://crates.io/crates/ntex-h2)
 [![Documentation](https://docs.rs/ntex-h2/badge.svg)][dox]
+[![CI](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml/badge.svg)](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml)
 
 More information about this crate can be found in the [crate documentation][dox].
 

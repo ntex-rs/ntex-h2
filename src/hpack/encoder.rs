@@ -435,7 +435,7 @@ mod test {
 
     #[test]
     fn test_sensitive_headers_are_never_indexed() {
-        use http::header::HeaderValue;
+        use ntex_http::HeaderValue;
 
         let name = "my-password".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();

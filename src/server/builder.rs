@@ -66,7 +66,7 @@ impl<E> ServerBuilder<E> {
 
 impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// Service to call with control frames
-    pub fn control<S, F>(self, service: F) -> ServerBuilder<E, S>
+    pub fn control<S, F>(&self, service: F) -> ServerBuilder<E, S>
     where
         F: IntoServiceFactory<S, ControlMessage<E>>,
         S: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
@@ -77,7 +77,7 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
             control: service.into_factory(),
             reset_stream_duration: self.reset_stream_duration,
             reset_stream_max: self.reset_stream_max,
-            settings: self.settings,
+            settings: self.settings.clone(),
             initial_target_connection_window_size: self.initial_target_connection_window_size,
             handshake_timeout: self.handshake_timeout,
             disconnect_timeout: self.disconnect_timeout,
@@ -195,7 +195,7 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// received for that stream will result in a connection level protocol
     /// error, forcing the connection to terminate.
     ///
-    /// The default value is 10.
+    /// The default value is 30.
     pub fn max_concurrent_reset_streams(&mut self, max: usize) -> &mut Self {
         self.reset_stream_max = max;
         self
@@ -297,6 +297,7 @@ where
             connection_window_sz,
             connection_window_sz_threshold,
             remote_max_concurrent_streams,
+            client: false,
             reset_max: self.reset_stream_max,
             reset_duration: self.reset_stream_duration.into(),
         };

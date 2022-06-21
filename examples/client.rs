@@ -1,6 +1,7 @@
 use std::{convert::TryFrom, error::Error};
 
 use ntex_bytes::Bytes;
+use ntex_connect as connect;
 use ntex_h2::{client, Message, MessageKind};
 use ntex_http::{header, HeaderMap, Method};
 use ntex_service::fn_service;
@@ -19,13 +20,13 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
     let connector =
-        client::Connector::new().connector(ntex::connect::openssl::Connector::new(builder.build()));
+        client::Connector::new().connector(connect::openssl::Connector::new(builder.build()));
 
-    let connection = connector.connect("127.0.0.1:8443").await.unwrap();
+    let connection = connector.connect("127.0.0.1:5928").await.unwrap();
 
     let client = connection.client();
     ntex::rt::spawn(async move {
-        connection
+        let _ = connection
             .start(fn_service(|mut msg: Message| async move {
                 match msg.kind().take() {
                     MessageKind::Headers {
@@ -34,8 +35,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                         eof,
                     } => {
                         println!(
-                            "Got response: {:#?}\nheaders: {:#?}\neof: {}",
-                            pseudo, headers, eof
+                            "Got response (eof: {}): {:#?}\nheaders: {:#?}",
+                            eof, pseudo, headers
                         );
                     }
                     MessageKind::Data(data, _cap) => {
@@ -43,6 +44,9 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     MessageKind::Eof(data) => {
                         println!("Got eof: {:?}", data);
+                    }
+                    MessageKind::Error(e) => {
+                        println!("{:?} failed with: {}", msg.id(), e);
                     }
                     MessageKind::Empty => {}
                 }
@@ -62,7 +66,8 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap();
     stream
         .send_payload(Bytes::from_static(b"testing"), true)
-        .await;
+        .await
+        .unwrap();
 
     sleep(Seconds(10)).await;
     Ok(())

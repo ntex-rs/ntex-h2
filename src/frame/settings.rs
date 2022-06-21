@@ -215,7 +215,8 @@ impl Settings {
         let head = Head::new(Kind::Settings, self.flags.into(), StreamId::zero());
         let payload_len = self.payload_len();
 
-        log::trace!("encoding SETTINGS; len={}", payload_len);
+        //log::trace!("encoding SETTINGS; len={}", payload_len);
+        log::trace!("encoding SETTINGS; len={:?}", self);
 
         head.encode(payload_len, dst);
 

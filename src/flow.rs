@@ -1,7 +1,6 @@
 use std::{cmp, fmt, ops};
 
-use crate::consts::MAX_WINDOW_SIZE;
-use crate::frame::{Reason, WindowSize};
+use crate::{consts::MAX_WINDOW_SIZE, frame::WindowSize};
 
 #[derive(Copy, Clone, Debug)]
 pub struct FlowControl {
@@ -16,7 +15,7 @@ pub struct FlowControl {
     /// ```notrust
     /// default (64kb) - used (32kb) - settings_diff (64kb - 16kb): -16kb
     /// ```
-    window_size: Window,
+    pub(crate) window_size: Window,
 }
 
 impl FlowControl {
@@ -60,15 +59,15 @@ impl FlowControl {
     /// Increase the window size.
     ///
     /// This is called after receiving a WINDOW_UPDATE frame
-    pub fn inc_window(self, sz: WindowSize) -> Result<Self, Reason> {
+    pub fn inc_window(self, sz: WindowSize) -> Result<Self, ()> {
         let (val, overflow) = self.window_size.0.overflowing_add(sz as i32);
 
         if overflow {
-            return Err(Reason::FLOW_CONTROL_ERROR);
+            return Err(());
         }
 
         if val > MAX_WINDOW_SIZE as i32 {
-            return Err(Reason::FLOW_CONTROL_ERROR);
+            return Err(());
         }
 
         log::trace!(

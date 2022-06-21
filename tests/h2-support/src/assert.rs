@@ -88,7 +88,7 @@ macro_rules! assert_default_settings {
     }};
 }
 
-use h2::frame::Frame;
+use ntex_h2::frame::Frame;
 
 #[track_caller]
 pub fn assert_frame_eq<T: Into<Frame>, U: Into<Frame>>(t: T, u: U) {

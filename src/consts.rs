@@ -4,7 +4,7 @@ use crate::frame::WindowSize;
 
 // Constants
 pub(crate) const MAX_WINDOW_SIZE: WindowSize = (1 << 31) - 1;
-pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 10;
+pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 30;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(10);
 pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: WindowSize = 1_048_576;
 

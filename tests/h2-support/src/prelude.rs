@@ -1,11 +1,10 @@
 // Re-export H2 crate
-pub use h2;
+pub use ntex_h2;
 
-pub use h2::client;
-pub use h2::ext::Protocol;
-pub use h2::frame::StreamId;
-pub use h2::server;
-pub use h2::*;
+pub use ntex_h2::client;
+pub use ntex_h2::frame::{Protocol, StreamId};
+pub use ntex_h2::server;
+pub use ntex_h2::*;
 
 // Re-export mock
 pub use super::mock::{self, idle_ms};
@@ -29,7 +28,7 @@ pub use super::assert::assert_frame_eq;
 
 // Re-export useful crates
 pub use tokio_test::io as mock_io;
-pub use {bytes, futures, http, tokio::io as tokio_io, tracing, tracing_subscriber};
+pub use {futures, ntex_bytes as bytes, ntex_http as http, tokio::io as tokio_io};
 
 // Re-export primary future types
 pub use futures::{Future, Sink, Stream};
