@@ -8,7 +8,7 @@ use crate::error::{OperationError, StreamError};
 use crate::frame::{
     Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
-use crate::{connection::ConnectionState, flow::FlowControl, frame, message::Message};
+use crate::{connection::ConnectionState, frame, message::Message, window::Window};
 
 pub struct Stream(StreamRef);
 
@@ -106,11 +106,11 @@ pub(crate) struct StreamState {
     content_length: Cell<ContentLength>,
     /// Receive part
     recv: Cell<HalfState>,
-    recv_flow: Cell<FlowControl>,
+    recv_window: Cell<Window>,
     recv_size: Cell<u32>,
     /// Send part
     send: Cell<HalfState>,
-    send_flow: Cell<FlowControl>,
+    send_window: Cell<Window>,
     send_waker: LocalWaker,
     /// Connection config
     con: Rc<ConnectionState>,
@@ -198,10 +198,10 @@ impl StreamState {
     fn add_capacity(&self, size: u32) {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
-        self.recv_flow.set(self.recv_flow.get().dec_window(size));
+        self.recv_window.set(self.recv_window.get().dec(size));
         log::trace!("{:?} capacity incresed from {} to {}", self.id, cap, size);
 
-        // connection level recv flow
+        // connection level recv window
         self.con.add_capacity(size);
     }
 
@@ -210,10 +210,10 @@ impl StreamState {
         let cap = self.recv_size.get();
         let size = cap - size;
         log::trace!("{:?} capacity decresed from {} to {}", self.id, cap, size);
-        self.recv_size.set(size);
 
-        let mut flow = self.recv_flow.get();
-        if let Some(val) = flow.update_window(
+        self.recv_size.set(size);
+        let mut window = self.recv_window.get();
+        if let Some(val) = window.update(
             size,
             self.con.local_config.window_sz,
             self.con.local_config.window_sz_threshold,
@@ -225,7 +225,7 @@ impl StreamState {
                 val,
                 self.con.local_config.window_sz,
             );
-            self.recv_flow.set(flow);
+            self.recv_window.set(window);
             self.con
                 .io
                 .encode(WindowUpdate::new(self.id, val).into(), &self.con.codec)
@@ -238,22 +238,22 @@ impl StreamRef {
     pub(crate) fn new(id: StreamId, remote: bool, con: Rc<ConnectionState>) -> Self {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
-        let recv_flow = if con.settings_processed.get() {
-            FlowControl::new(con.local_config.window_sz as i32)
+        let recv_window = if con.settings_processed.get() {
+            Window::new(con.local_config.window_sz as i32)
         } else {
-            FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
+            Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
         };
-        let send_flow = FlowControl::new(con.remote_window_sz.get() as i32);
+        let send_window = Window::new(con.remote_window_sz.get() as i32);
 
         StreamRef(Rc::new(StreamState {
             id,
             con,
             remote,
             recv: Cell::new(HalfState::Idle),
-            recv_flow: Cell::new(recv_flow),
+            recv_window: Cell::new(recv_window),
             recv_size: Cell::new(0),
             send: Cell::new(HalfState::Idle),
-            send_flow: Cell::new(send_flow),
+            send_window: Cell::new(send_window),
             send_waker: LocalWaker::new(),
             error: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
@@ -419,15 +419,15 @@ impl StreamRef {
         if frm.size_increment() == 0 {
             Err(StreamError::WindowZeroUpdateValue)
         } else {
-            let flow = self
+            let window = self
                 .0
-                .send_flow
+                .send_window
                 .get()
-                .inc_window(frm.size_increment())
+                .inc(frm.size_increment())
                 .map_err(|_| StreamError::WindowOverflowed)?;
-            self.0.send_flow.set(flow);
+            self.0.send_window.set(window);
 
-            if flow.window_size() > 0 {
+            if window.window_size() > 0 {
                 self.0.send_waker.wake();
             }
             Ok(())
@@ -435,43 +435,43 @@ impl StreamRef {
     }
 
     pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), StreamError> {
-        let orig = self.0.send_flow.get();
-        let flow = match upd.cmp(&0) {
-            Ordering::Less => orig.dec_window(upd.abs() as u32), // We must decrease the (remote) window
+        let orig = self.0.send_window.get();
+        let window = match upd.cmp(&0) {
+            Ordering::Less => orig.dec(upd.abs() as u32), // We must decrease the (remote) window
             Ordering::Greater => orig
-                .inc_window(upd as u32)
+                .inc(upd as u32)
                 .map_err(|_| StreamError::WindowOverflowed)?,
             Ordering::Equal => return Ok(()),
         };
         log::trace!(
             "Updating send window size from {} to {}",
             orig.window_size,
-            flow.window_size
+            window.window_size
         );
-        self.0.send_flow.set(flow);
+        self.0.send_window.set(window);
         Ok(())
     }
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, StreamError> {
-        let mut flow = match upd.cmp(&0) {
-            Ordering::Less => self.0.recv_flow.get().dec_window(upd.abs() as u32), // We must decrease the (local) window
+        let mut window = match upd.cmp(&0) {
+            Ordering::Less => self.0.recv_window.get().dec(upd.abs() as u32), // We must decrease the (local) window
             Ordering::Greater => self
                 .0
-                .recv_flow
+                .recv_window
                 .get()
-                .inc_window(upd as u32)
+                .inc(upd as u32)
                 .map_err(|_| StreamError::WindowOverflowed)?,
             Ordering::Equal => return Ok(None),
         };
-        if let Some(val) = flow.update_window(
+        if let Some(val) = window.update(
             self.0.recv_size.get(),
             self.0.con.local_config.window_sz,
             self.0.con.local_config.window_sz_threshold,
         ) {
-            self.0.recv_flow.set(flow);
+            self.0.recv_window.set(window);
             Ok(Some(val))
         } else {
-            self.0.recv_flow.set(flow);
+            self.0.recv_window.set(window);
             Ok(None)
         }
     }
@@ -547,8 +547,8 @@ impl StreamRef {
 
                         // update send window
                         self.0
-                            .send_flow
-                            .set(self.0.send_flow.get().dec_window(size as u32));
+                            .send_window
+                            .set(self.0.send_window.get().dec(size as u32));
                         // write to io buffer
                         self.0
                             .con
@@ -583,7 +583,7 @@ impl StreamRef {
     }
 
     pub fn available_send_capacity(&self) -> WindowSize {
-        self.0.send_flow.get().window_size()
+        self.0.send_window.get().window_size()
     }
 
     pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
@@ -601,7 +601,7 @@ impl StreamRef {
             self.0.con.error.set(Some(err.clone()));
             Poll::Ready(Err(err))
         } else {
-            let win = self.0.send_flow.get().window_size();
+            let win = self.0.send_window.get().window_size();
             if win > 0 {
                 Poll::Ready(Ok(win))
             } else {
@@ -638,10 +638,10 @@ impl fmt::Debug for StreamState {
         builder
             .field("id", &self.id)
             .field("recv", &self.recv.get())
-            .field("recv_flow", &self.recv_flow.get())
+            .field("recv_window", &self.recv_window.get())
             .field("recv_size", &self.recv_size.get())
             .field("send", &self.send.get())
-            .field("send_flow", &self.send_flow.get())
+            .field("send_window", &self.send_window.get())
             .finish()
     }
 }

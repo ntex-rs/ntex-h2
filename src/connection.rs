@@ -11,7 +11,7 @@ use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 use crate::error::{ConnectionError, OperationError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, flow::FlowControl, message::Message};
+use crate::{codec::Codec, message::Message, window::Window};
 
 #[derive(Debug)]
 pub(crate) struct Config {
@@ -43,8 +43,8 @@ pub struct Connection(Rc<ConnectionState>);
 pub(crate) struct ConnectionState {
     pub(crate) io: IoRef,
     pub(crate) codec: Rc<Codec>,
-    pub(crate) send_flow: Cell<FlowControl>,
-    pub(crate) recv_flow: Cell<FlowControl>,
+    pub(crate) send_window: Cell<Window>,
+    pub(crate) recv_window: Cell<Window>,
     pub(crate) settings_processed: Cell<bool>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
@@ -71,10 +71,10 @@ pub(crate) struct ConnectionState {
 impl ConnectionState {
     /// added new capacity, update recevice window size
     pub(crate) fn add_capacity(&self, size: u32) {
-        let mut recv_flow = self.recv_flow.get().dec_window(size);
+        let mut recv_window = self.recv_window.get().dec(size);
 
         // update connection window size
-        if let Some(val) = recv_flow.update_window(
+        if let Some(val) = recv_window.update(
             0,
             self.local_config.connection_window_sz,
             self.local_config.connection_window_sz_threshold,
@@ -83,7 +83,7 @@ impl ConnectionState {
                 .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec)
                 .unwrap();
         }
-        self.recv_flow.set(recv_flow);
+        self.recv_window.set(recv_window);
     }
 
     #[inline]
@@ -148,11 +148,11 @@ impl Connection {
         // send setting to the peer
         io.encode(config.settings.clone().into(), &codec).unwrap();
 
-        let mut recv_flow = FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
-        let send_flow = FlowControl::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
+        let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
+        let send_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
 
         // update connection window size
-        if let Some(val) = recv_flow.update_window(
+        if let Some(val) = recv_window.update(
             0,
             config.connection_window_sz,
             config.connection_window_sz_threshold,
@@ -166,8 +166,8 @@ impl Connection {
             io,
             codec,
             remote_frame_size,
-            send_flow: Cell::new(send_flow),
-            recv_flow: Cell::new(recv_flow),
+            send_window: Cell::new(send_window),
+            recv_window: Cell::new(recv_window),
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
@@ -469,15 +469,15 @@ impl Connection {
             if frm.size_increment() == 0 {
                 Err(Either::Left(ConnectionError::ZeroWindowUpdateValue))
             } else {
-                let flow = self
+                let window = self
                     .0
-                    .send_flow
+                    .send_window
                     .get()
-                    .inc_window(frm.size_increment())
+                    .inc(frm.size_increment())
                     .map_err(|_| {
                         Either::Left(ConnectionError::Reason(frame::Reason::FLOW_CONTROL_ERROR))
                     })?;
-                self.0.send_flow.set(flow);
+                self.0.send_window.set(window);
                 Ok(())
             }
         } else if let Some(stream) = self.query(frm.stream_id()) {
@@ -553,8 +553,8 @@ impl fmt::Debug for ConnectionState {
         builder
             .field("io", &self.io)
             .field("codec", &self.codec)
-            .field("recv_flow", &self.recv_flow.get())
-            .field("send_flow", &self.send_flow.get())
+            .field("recv_window", &self.recv_window.get())
+            .field("send_window", &self.send_window.get())
             .field("settings_processed", &self.settings_processed.get())
             .field("next_stream_id", &self.next_stream_id.get())
             .field("local_config", &self.local_config)

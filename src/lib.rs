@@ -91,9 +91,9 @@ mod control;
 mod default;
 mod dispatcher;
 mod error;
-mod flow;
 mod message;
 mod stream;
+mod window;
 
 pub mod client;
 pub mod frame;
