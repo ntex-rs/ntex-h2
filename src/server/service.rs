@@ -2,24 +2,23 @@ use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceFactory};
-use ntex_util::{future::Ready, time::timeout_checked, time::Seconds};
+use ntex_util::{future::Ready, time::timeout_checked};
 
-use crate::connection::{Config, Connection};
+use crate::connection::Connection;
 use crate::control::{ControlMessage, ControlResult};
-use crate::{codec::Codec, consts, dispatcher::Dispatcher, frame, message::Message};
+use crate::{
+    codec::Codec, config::Config, consts, dispatcher::Dispatcher, frame, message::Message,
+};
 
 use super::{ServerBuilder, ServerError};
 
 /// Http/2 server factory
 pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 
-pub(crate) struct ServerInner<Ctl, Pub> {
-    pub(super) control: Ctl,
-    pub(super) publish: Pub,
-    pub(super) config: Rc<Config>,
-    pub(super) keepalive_timeout: Seconds,
-    pub(super) handshake_timeout: Seconds,
-    pub(super) disconnect_timeout: Seconds,
+struct ServerInner<Ctl, Pub> {
+    control: Ctl,
+    publish: Pub,
+    config: Rc<Config>,
 }
 
 impl Server<(), ()> {
@@ -39,8 +38,19 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    pub(super) fn new(inner: ServerInner<Ctl, Pub>) -> Server<Ctl, Pub> {
-        Self(Rc::new(inner))
+    /// Create new instance of Server factory
+    pub fn new(config: Config, control: Ctl, publish: Pub) -> Server<Ctl, Pub> {
+        config.server();
+        Self(Rc::new(ServerInner {
+            control,
+            publish,
+            config: Rc::new(config),
+        }))
+    }
+
+    /// Construct service handler
+    pub fn handler(&self) -> ServerHandler<Ctl, Pub> {
+        ServerHandler(self.0.clone())
     }
 }
 
@@ -97,64 +107,62 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    fn create(&self, req: IoBoxed) -> Pin<Box<dyn Future<Output = Result<(), ServerError<()>>>>> {
-        let inner = self.0.clone();
+    pub async fn run(&self, req: IoBoxed) -> Result<(), ServerError<()>> {
+        let inner = &self.0;
 
-        Box::pin(async move {
-            let (ctl_srv, pub_srv) = timeout_checked(inner.handshake_timeout, async {
-                // read preface
-                loop {
-                    let ready = req.with_read_buf(|buf| {
-                        if buf.len() >= consts::PREFACE.len() {
-                            if buf[..consts::PREFACE.len()] == consts::PREFACE {
-                                buf.split_to(consts::PREFACE.len());
-                                Ok(true)
-                            } else {
-                                log::trace!("read_preface: invalid preface");
-                                Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
-                            }
+        let (ctl_srv, pub_srv) = timeout_checked(inner.config.handshake_timeout.get(), async {
+            // read preface
+            loop {
+                let ready = req.with_read_buf(|buf| {
+                    if buf.len() >= consts::PREFACE.len() {
+                        if buf[..consts::PREFACE.len()] == consts::PREFACE {
+                            buf.split_to(consts::PREFACE.len());
+                            Ok(true)
                         } else {
-                            Ok(false)
+                            log::trace!("read_preface: invalid preface");
+                            Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
                         }
-                    })?;
-
-                    if ready {
-                        break;
                     } else {
-                        req.read_ready()
-                            .await?
-                            .ok_or(ServerError::Disconnected(None))?;
+                        Ok(false)
                     }
+                })?;
+
+                if ready {
+                    break;
+                } else {
+                    req.read_ready()
+                        .await?
+                        .ok_or(ServerError::Disconnected(None))?;
                 }
+            }
 
-                // create publish service
-                let pub_srv = inner.publish.new_service(()).await.map_err(|e| {
-                    log::error!("Publish service init error: {:?}", e);
-                    ServerError::PublishServiceError
-                })?;
+            // create publish service
+            let pub_srv = inner.publish.new_service(()).await.map_err(|e| {
+                log::error!("Publish service init error: {:?}", e);
+                ServerError::PublishServiceError
+            })?;
 
-                // create control service
-                let ctl_srv = inner.control.new_service(()).await.map_err(|e| {
-                    log::error!("Control service init error: {:?}", e);
-                    ServerError::ControlServiceError
-                })?;
+            // create control service
+            let ctl_srv = inner.control.new_service(()).await.map_err(|e| {
+                log::error!("Control service init error: {:?}", e);
+                ServerError::ControlServiceError
+            })?;
 
-                Ok::<_, ServerError<()>>((ctl_srv, pub_srv))
-            })
-            .await
-            .map_err(|_| ServerError::HandshakeTimeout)??;
-
-            // create h2 codec
-            let codec = Rc::new(Codec::default());
-            let con = Connection::new(req.get_ref(), codec.clone(), inner.config.clone());
-
-            // start protocol dispatcher
-            IoDispatcher::new(req, codec, Dispatcher::new(con, ctl_srv, pub_srv))
-                .keepalive_timeout(inner.keepalive_timeout)
-                .disconnect_timeout(inner.disconnect_timeout)
-                .await
-                .map_err(|_| ServerError::Dispatcher)
+            Ok::<_, ServerError<()>>((ctl_srv, pub_srv))
         })
+        .await
+        .map_err(|_| ServerError::HandshakeTimeout)??;
+
+        // create h2 codec
+        let codec = Rc::new(Codec::default());
+        let con = Connection::new(req.get_ref(), codec.clone(), inner.config.clone());
+
+        // start protocol dispatcher
+        IoDispatcher::new(req, codec, Dispatcher::new(con, ctl_srv, pub_srv))
+            .keepalive_timeout(inner.config.keepalive_timeout.get())
+            .disconnect_timeout(inner.config.disconnect_timeout.get())
+            .await
+            .map_err(|_| ServerError::Dispatcher)
     }
 }
 
@@ -182,7 +190,8 @@ where
     }
 
     fn call(&self, req: IoBoxed) -> Self::Future {
-        self.create(req)
+        let slf = ServerHandler(self.0.clone());
+        Box::pin(async move { slf.run(req).await })
     }
 }
 
@@ -211,6 +220,7 @@ where
     }
 
     fn call(&self, req: Io<F>) -> Self::Future {
-        self.create(req.into())
+        let slf = ServerHandler(self.0.clone());
+        Box::pin(async move { slf.run(req.into()).await })
     }
 }

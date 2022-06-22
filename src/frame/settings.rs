@@ -3,7 +3,7 @@ use std::fmt;
 use crate::frame::{util, Frame, FrameError, FrameSize, Head, Kind, StreamId};
 use ntex_bytes::{BufMut, BytesMut};
 
-#[derive(Clone, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct Settings {
     flags: SettingsFlags,
     // Fields

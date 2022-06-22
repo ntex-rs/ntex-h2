@@ -84,6 +84,11 @@ impl Codec {
         self.0.borrow_mut().decoder.set_max_frame_length(val);
     }
 
+    /// Local max frame size.
+    pub fn recv_frame_size(&self) -> u32 {
+        self.0.borrow_mut().decoder.max_frame_length() as u32
+    }
+
     /// Set the max header list size that can be received.
     pub fn set_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
@@ -367,27 +372,20 @@ impl Encoder for Codec {
             }
             Frame::Settings(v) => {
                 v.encode(buf);
-                // log::trace!(rem = inner.buf.remaining(), "encoded settings");
             }
             Frame::GoAway(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded go_away");
             }
             Frame::Ping(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded ping");
             }
             Frame::WindowUpdate(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded window_update");
             }
 
-            Frame::Priority(_) => {
-                unimplemented!()
-            }
+            Frame::Priority(_) => (),
             Frame::Reset(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded reset");
             }
         }
 

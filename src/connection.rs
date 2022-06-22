@@ -1,5 +1,5 @@
 use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc, task::Context, task::Poll};
-use std::{collections::VecDeque, time::Duration, time::Instant};
+use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
@@ -9,30 +9,9 @@ use ntex_util::future::{poll_fn, Either};
 use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
-use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
+use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, message::Message, window::Window};
-
-#[derive(Debug)]
-pub(crate) struct Config {
-    /// Initial window size of locally initiated streams
-    pub(crate) window_sz: WindowSize,
-    pub(crate) window_sz_threshold: WindowSize,
-    /// How long a locally reset stream should ignore frames
-    pub(crate) reset_duration: Duration,
-    /// Maximum number of locally reset streams to keep at a time
-    pub(crate) reset_max: usize,
-    pub(crate) settings: Settings,
-    /// Initial window size for new connections.
-    pub(crate) connection_window_sz: WindowSize,
-    pub(crate) connection_window_sz_threshold: WindowSize,
-    /// Maximum number of remote initiated streams
-    pub(crate) remote_max_concurrent_streams: Option<u32>,
-    // /// If extended connect protocol is enabled.
-    // pub extended_connect_protocol_enabled: bool,
-    /// Server marker
-    pub(crate) server: bool,
-}
+use crate::{codec::Codec, config::Config, consts, message::Message, window::Window};
 
 const HTTP_SCHEME: ByteString = ByteString::from_static("http");
 const _HTTPS_SCHEME: ByteString = ByteString::from_static("https");
@@ -76,8 +55,8 @@ impl ConnectionState {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            self.local_config.connection_window_sz,
-            self.local_config.connection_window_sz_threshold,
+            self.local_config.connection_window_sz.get(),
+            self.local_config.connection_window_sz_threshold.get(),
         ) {
             self.io
                 .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec)
@@ -112,13 +91,13 @@ impl ConnectionState {
         let mut queue = self.local_reset_queue.borrow_mut();
 
         // check queue size
-        if queue.len() >= self.local_config.reset_max {
+        if queue.len() >= self.local_config.reset_max.get() {
             if let Some((id, _)) = queue.pop_front() {
                 ids.remove(&id);
             }
         }
         ids.insert(id);
-        queue.push_back((id, now() + self.local_config.reset_duration));
+        queue.push_back((id, now() + self.local_config.reset_duration.get()));
         if !self.local_reset_task.get() {
             spawn(delay_drop_task(state.clone()));
         }
@@ -145,8 +124,13 @@ impl ConnectionState {
 
 impl Connection {
     pub(crate) fn new(io: IoRef, codec: Rc<Codec>, config: Rc<Config>) -> Self {
+        // send preface
+        if !config.is_server() {
+            let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+        }
+
         // send setting to the peer
-        io.encode(config.settings.clone().into(), &codec).unwrap();
+        io.encode(config.settings.get().into(), &codec).unwrap();
 
         let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
         let send_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
@@ -154,8 +138,8 @@ impl Connection {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            config.connection_window_sz,
-            config.connection_window_sz_threshold,
+            config.connection_window_sz.get(),
+            config.connection_window_sz_threshold.get(),
         ) {
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
@@ -182,6 +166,10 @@ impl Connection {
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
         }))
+    }
+
+    pub(crate) fn config(&self) -> &Config {
+        &self.0.local_config
     }
 
     pub(crate) fn state(&self) -> &ConnectionState {
@@ -266,7 +254,7 @@ impl Connection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
 
-        if self.0.local_config.server && !id.is_client_initiated() {
+        if self.0.local_config.is_server() && !id.is_client_initiated() {
             return Err(Either::Left(ConnectionError::InvalidStreamId));
         }
 
@@ -280,7 +268,7 @@ impl Connection {
         } else if self.0.local_reset_ids.borrow().contains(&id) {
             Err(Either::Left(ConnectionError::StreamClosed(id)))
         } else {
-            if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
+            if let Some(max) = self.0.local_config.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
                     self.0
                         .io
@@ -361,14 +349,14 @@ impl Connection {
         if settings.is_ack() {
             if !self.0.settings_processed.get() {
                 self.0.settings_processed.set(true);
-                if let Some(max) = self.0.local_config.settings.max_frame_size() {
+                if let Some(max) = self.0.local_config.settings.get().max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
                 }
-                if let Some(max) = self.0.local_config.settings.max_header_list_size() {
+                if let Some(max) = self.0.local_config.settings.get().max_header_list_size() {
                     self.0.codec.set_recv_header_list_size(max as usize);
                 }
 
-                let upd = (self.0.local_config.window_sz as i32)
+                let upd = (self.0.local_config.window_sz.get() as i32)
                     - (frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
 
                 let mut stream_errors = Vec::new();

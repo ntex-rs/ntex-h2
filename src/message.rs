@@ -91,6 +91,11 @@ impl Message {
     pub fn stream(&self) -> &StreamRef {
         &self.stream
     }
+
+    #[inline]
+    pub fn take(&mut self) -> MessageKind {
+        self.kind().take()
+    }
 }
 
 impl MessageKind {

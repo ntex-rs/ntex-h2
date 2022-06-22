@@ -85,6 +85,7 @@ macro_rules! proto_err {
 }
 
 mod codec;
+mod config;
 mod connection;
 mod consts;
 mod control;
@@ -103,9 +104,9 @@ pub mod server;
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
-
 pub use self::codec::Codec;
+pub use self::config::Config;
 pub use self::control::{ControlMessage, ControlResult};
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Stream, StreamRef};
+pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};

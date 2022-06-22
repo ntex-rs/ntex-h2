@@ -7,6 +7,8 @@ if ! [ -e "h2spec" ] ; then
     tar xf h2spec_linux_amd64.tar.gz
 fi
 
+ls -la ./
+
 source <(cargo llvm-cov show-env --export-prefix)
 
 cargo build --example server
@@ -32,5 +34,8 @@ kill -INT "${SERVER_PID}"
 sleep 5
 
 cargo llvm-cov --no-run --lcov --output-path lcov.info
+
+ls -la ./
+
 
 exit "${H2SPEC_STATUS}"

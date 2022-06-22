@@ -14,7 +14,7 @@ async fn main() -> std::io::Result<()> {
     ntex::server::Server::build()
         .bind("http", "127.0.0.1:5928", move |_| {
             server::Server::build()
-                .max_concurrent_streams(10)
+                .configure(|cfg| cfg.max_concurrent_streams(10))
                 .control(|msg: ControlMessage<_>| async move {
                     log::trace!("Control message: {:?}", msg);
                     Ok::<_, ()>(msg.ack())
