@@ -51,7 +51,7 @@ impl Window {
         if available < (threshold_size as i32) {
             None
         } else {
-            self.window_size = self.window_size + available;
+            self.window_size += available;
             Some(available as WindowSize)
         }
     }

@@ -437,7 +437,7 @@ impl StreamRef {
     pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), StreamError> {
         let orig = self.0.send_window.get();
         let window = match upd.cmp(&0) {
-            Ordering::Less => orig.dec(upd.abs() as u32), // We must decrease the (remote) window
+            Ordering::Less => orig.dec(upd.unsigned_abs()), // We must decrease the (remote) window
             Ordering::Greater => orig
                 .inc(upd as u32)
                 .map_err(|_| StreamError::WindowOverflowed)?,
@@ -454,7 +454,7 @@ impl StreamRef {
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, StreamError> {
         let mut window = match upd.cmp(&0) {
-            Ordering::Less => self.0.recv_window.get().dec(upd.abs() as u32), // We must decrease the (local) window
+            Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
             Ordering::Greater => self
                 .0
                 .recv_window

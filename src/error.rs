@@ -3,16 +3,16 @@ pub use crate::codec::EncoderError;
 use crate::frame::{self, GoAway, Reason, StreamId};
 use crate::stream::StreamRef;
 
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectionError {
-    #[error("Unknown stream {0:?}")]
-    UnknownStream(frame::Frame),
-    #[error("Reason: {0}")]
-    Reason(Reason),
-    #[error("{0}")]
+    #[error("Go away: {0}")]
+    GoAway(Reason),
+    #[error("Unknown stream id in {0} frame")]
+    UnknownStream(&'static str),
+    #[error("Encoder error: {0}")]
     Encoder(#[from] EncoderError),
-    #[error("Stream idle: {0}")]
-    StreamIdle(&'static str),
+    #[error("Decoder error: {0}")]
+    Decoder(#[from] frame::FrameError),
     #[error("{0:?} is closed")]
     StreamClosed(StreamId),
     /// An invalid stream identifier was provided
@@ -29,19 +29,22 @@ pub enum ConnectionError {
     /// Window update value is zero
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
+    #[error("Window value is overflowed")]
+    WindowValueOverflow,
     /// Keep-alive timeout
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
-    #[error("{0}")]
-    Frame(#[from] frame::FrameError),
 }
 
 impl ConnectionError {
     pub fn to_goaway(&self) -> GoAway {
         match self {
-            ConnectionError::Reason(reason) => GoAway::new(*reason),
+            ConnectionError::GoAway(reason) => GoAway::new(*reason),
             ConnectionError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
+            }
+            ConnectionError::Decoder(_) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame decoding")
             }
             ConnectionError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data(format!("Missing pseudo header {:?}", s)),
@@ -52,9 +55,6 @@ impl ConnectionError {
             }
             ConnectionError::InvalidStreamId => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("An invalid stream identifier was provided"),
-            ConnectionError::StreamIdle(s) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Stream idle: {}", s))
-            }
             ConnectionError::StreamClosed(s) => {
                 GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{:?} is closed", s))
             }
@@ -63,11 +63,10 @@ impl ConnectionError {
             }
             ConnectionError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("zero value for window update frame is not allowed"),
+            ConnectionError::WindowValueOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
+                .set_data("updated value for window is overflowed"),
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("keep-alive timeout")
-            }
-            ConnectionError::Frame(err) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
             }
         }
     }

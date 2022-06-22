@@ -348,9 +348,7 @@ impl Connection {
                 .unwrap();
             Ok(None)
         } else {
-            Err(Either::Left(ConnectionError::from(
-                frame::FrameError::InvalidStreamId,
-            )))
+            Err(Either::Left(ConnectionError::InvalidStreamId))
         }
     }
 
@@ -474,9 +472,7 @@ impl Connection {
                     .send_window
                     .get()
                     .inc(frm.size_increment())
-                    .map_err(|_| {
-                        Either::Left(ConnectionError::Reason(frame::Reason::FLOW_CONTROL_ERROR))
-                    })?;
+                    .map_err(|_| Either::Left(ConnectionError::WindowValueOverflow))?;
                 self.0.send_window.set(window);
                 Ok(())
             }
@@ -485,7 +481,9 @@ impl Connection {
                 .recv_window_update(frm)
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
         } else {
-            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream(
+                "WINDOW_UPDATE",
+            )))
         }
     }
 
@@ -496,12 +494,12 @@ impl Connection {
         log::trace!("processing incoming {:#?}", frm);
 
         if frm.stream_id().is_zero() {
-            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         } else if let Some(stream) = self.query(frm.stream_id()) {
             stream.recv_rst_stream(frm);
             Ok(())
         } else {
-            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         }
     }
 
@@ -514,7 +512,7 @@ impl Connection {
 
         self.0
             .error
-            .set(Some(ConnectionError::Reason(reason).into()));
+            .set(Some(ConnectionError::GoAway(reason).into()));
         self.0.readiness.wake();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -524,7 +522,7 @@ impl Connection {
     }
 
     pub(crate) fn proto_error(&self, err: &ConnectionError) {
-        self.0.error.set(Some(err.clone().into()));
+        self.0.error.set(Some((*err).into()));
         self.0.readiness.wake();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
