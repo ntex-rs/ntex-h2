@@ -50,7 +50,7 @@ pub(super) fn debug_flags<'a, 'f: 'a>(
     }
 }
 
-pub(super) struct DebugFlags<'a, 'f: 'a> {
+pub(super) struct DebugFlags<'a, 'f> {
     fmt: &'a mut fmt::Formatter<'f>,
     result: fmt::Result,
     started: bool,

@@ -97,7 +97,7 @@ impl From<Reason> for u32 {
 }
 
 impl fmt::Debug for Reason {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self.0 {
             0 => "NO_ERROR",
             1 => "PROTOCOL_ERROR",
@@ -122,13 +122,13 @@ impl fmt::Debug for Reason {
 struct Hex(u32);
 
 impl fmt::Debug for Hex {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::LowerHex::fmt(&self.0, f)
     }
 }
 
 impl fmt::Display for Reason {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "{}", self.description())
     }
 }

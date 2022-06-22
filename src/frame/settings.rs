@@ -267,7 +267,7 @@ impl From<Settings> for Frame {
 }
 
 impl fmt::Debug for Settings {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
 
@@ -382,7 +382,7 @@ impl From<SettingsFlags> for u8 {
 }
 
 impl fmt::Debug for SettingsFlags {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         util::debug_flags(f, self.0)
             .flag_if(self.is_ack(), "ACK")
             .finish()

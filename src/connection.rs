@@ -8,7 +8,7 @@ use ntex_rt::spawn;
 use ntex_util::future::{poll_fn, Either};
 use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 
-use crate::error::{OperationError, ProtocolError, StreamErrorInner};
+use crate::error::{ConnectionError, OperationError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, flow::FlowControl, message::Message};
@@ -263,11 +263,11 @@ impl Connection {
     pub(crate) fn recv_headers(
         &self,
         frm: Headers,
-    ) -> Result<Option<(StreamRef, Message)>, Either<ProtocolError, StreamErrorInner>> {
+    ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
 
         if self.0.local_config.server && !id.is_client_initiated() {
-            return Err(Either::Left(ProtocolError::InvalidStreamId));
+            return Err(Either::Left(ConnectionError::InvalidStreamId));
         }
 
         if let Some(stream) = self.query(id) {
@@ -276,9 +276,9 @@ impl Connection {
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         } else if id < self.0.next_stream_id.get() {
-            Err(Either::Left(ProtocolError::InvalidStreamId))
+            Err(Either::Left(ConnectionError::InvalidStreamId))
         } else if self.0.local_reset_ids.borrow().contains(&id) {
-            Err(Either::Left(ProtocolError::StreamClosed(id)))
+            Err(Either::Left(ConnectionError::StreamClosed(id)))
         } else {
             if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
                 if self.0.active_remote_streams.get() >= max {
@@ -301,9 +301,9 @@ impl Connection {
                 .unwrap_or("")
                 .is_empty()
             {
-                Err(Either::Left(ProtocolError::MissingPseudo("path")))
+                Err(Either::Left(ConnectionError::MissingPseudo("path")))
             } else if pseudo.method.is_none() {
-                Err(Either::Left(ProtocolError::MissingPseudo("method")))
+                Err(Either::Left(ConnectionError::MissingPseudo("method")))
             } else if pseudo
                 .scheme
                 .as_ref()
@@ -311,9 +311,9 @@ impl Connection {
                 .unwrap_or("")
                 .is_empty()
             {
-                Err(Either::Left(ProtocolError::MissingPseudo("scheme")))
+                Err(Either::Left(ConnectionError::MissingPseudo("scheme")))
             } else if frm.pseudo().status.is_some() {
-                Err(Either::Left(ProtocolError::UnexpectedPseudo("scheme")))
+                Err(Either::Left(ConnectionError::UnexpectedPseudo("scheme")))
             } else {
                 let stream = StreamRef::new(id, true, self.0.clone());
                 self.0.next_stream_id.set(id);
@@ -332,7 +332,7 @@ impl Connection {
     pub(crate) fn recv_data(
         &self,
         frm: frame::Data,
-    ) -> Result<Option<(StreamRef, Message)>, Either<ProtocolError, StreamErrorInner>> {
+    ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         if let Some(stream) = self.query(frm.stream_id()) {
             match stream.recv_data(frm) {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
@@ -348,7 +348,7 @@ impl Connection {
                 .unwrap();
             Ok(None)
         } else {
-            Err(Either::Left(ProtocolError::from(
+            Err(Either::Left(ConnectionError::from(
                 frame::FrameError::InvalidStreamId,
             )))
         }
@@ -357,7 +357,7 @@ impl Connection {
     pub(crate) fn recv_settings(
         &self,
         settings: frame::Settings,
-    ) -> Result<(), Either<ProtocolError, Vec<StreamErrorInner>>> {
+    ) -> Result<(), Either<ConnectionError, Vec<StreamErrorInner>>> {
         log::trace!("processing incoming settings: {:#?}", settings);
 
         if settings.is_ack() {
@@ -395,7 +395,7 @@ impl Connection {
                 }
             } else {
                 proto_err!(conn: "received unexpected settings ack");
-                return Err(Either::Left(ProtocolError::UnexpectedSettingsAck));
+                return Err(Either::Left(ConnectionError::UnexpectedSettingsAck));
             }
         } else {
             // Ack settings to the peer
@@ -462,12 +462,12 @@ impl Connection {
     pub(crate) fn recv_window_update(
         &self,
         frm: frame::WindowUpdate,
-    ) -> Result<(), Either<ProtocolError, StreamErrorInner>> {
+    ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
         log::trace!("processing incoming {:#?}", frm);
 
         if frm.stream_id().is_zero() {
             if frm.size_increment() == 0 {
-                Err(Either::Left(ProtocolError::ZeroWindowUpdateValue))
+                Err(Either::Left(ConnectionError::ZeroWindowUpdateValue))
             } else {
                 let flow = self
                     .0
@@ -475,7 +475,7 @@ impl Connection {
                     .get()
                     .inc_window(frm.size_increment())
                     .map_err(|_| {
-                        Either::Left(ProtocolError::Reason(frame::Reason::FLOW_CONTROL_ERROR))
+                        Either::Left(ConnectionError::Reason(frame::Reason::FLOW_CONTROL_ERROR))
                     })?;
                 self.0.send_flow.set(flow);
                 Ok(())
@@ -485,23 +485,23 @@ impl Connection {
                 .recv_window_update(frm)
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
         } else {
-            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
         }
     }
 
     pub(crate) fn recv_rst_stream(
         &self,
         frm: frame::Reset,
-    ) -> Result<(), Either<ProtocolError, StreamErrorInner>> {
+    ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
         log::trace!("processing incoming {:#?}", frm);
 
         if frm.stream_id().is_zero() {
-            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
         } else if let Some(stream) = self.query(frm.stream_id()) {
             stream.recv_rst_stream(frm);
             Ok(())
         } else {
-            Err(Either::Left(ProtocolError::UnknownStream(frm.into())))
+            Err(Either::Left(ConnectionError::UnknownStream(frm.into())))
         }
     }
 
@@ -512,7 +512,9 @@ impl Connection {
             data.slice(..std::cmp::min(data.len(), 20))
         );
 
-        self.0.error.set(Some(ProtocolError::Reason(reason).into()));
+        self.0
+            .error
+            .set(Some(ConnectionError::Reason(reason).into()));
         self.0.readiness.wake();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -521,7 +523,7 @@ impl Connection {
         }
     }
 
-    pub(crate) fn proto_error(&self, err: &ProtocolError) {
+    pub(crate) fn proto_error(&self, err: &ConnectionError) {
         self.0.error.set(Some(err.clone().into()));
         self.0.readiness.wake();
 
@@ -546,7 +548,7 @@ impl Connection {
 }
 
 impl fmt::Debug for ConnectionState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("ConnectionState");
         builder
             .field("io", &self.io)

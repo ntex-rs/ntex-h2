@@ -80,7 +80,7 @@ pub fn ping(payload: [u8; 8]) -> Mock<frame::Ping> {
 pub struct Mock<T>(T);
 
 impl<T: fmt::Debug> fmt::Debug for Mock<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(&self.0, f)
     }
 }

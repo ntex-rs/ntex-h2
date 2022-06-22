@@ -622,7 +622,7 @@ impl ops::Deref for Stream {
 }
 
 impl fmt::Debug for Stream {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Stream");
         builder
             .field("stream_id", &self.0 .0.id)
@@ -633,7 +633,7 @@ impl fmt::Debug for Stream {
 }
 
 impl fmt::Debug for StreamState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("StreamState");
         builder
             .field("id", &self.id)

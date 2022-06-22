@@ -4,7 +4,7 @@
 mod client;
 mod connector;
 
-use crate::error::ProtocolError;
+use crate::error::ConnectionError;
 
 pub use self::client::{Client, ClientConnection};
 pub use self::connector::Connector;
@@ -14,7 +14,7 @@ pub use self::connector::Connector;
 pub enum ClientError {
     /// Protocol error
     #[error("Protocol error: {0}")]
-    Protocol(Box<ProtocolError>),
+    Protocol(Box<ConnectionError>),
     /// Handshake timeout
     #[error("Handshake timeout")]
     HandshakeTimeout,
@@ -26,8 +26,8 @@ pub enum ClientError {
     Connect(Box<ntex_connect::ConnectError>),
 }
 
-impl From<ProtocolError> for ClientError {
-    fn from(err: ProtocolError) -> Self {
+impl From<ConnectionError> for ClientError {
+    fn from(err: ConnectionError) -> Self {
         Self::Protocol(Box::new(err))
     }
 }

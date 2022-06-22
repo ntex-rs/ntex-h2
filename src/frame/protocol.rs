@@ -54,7 +54,7 @@ impl AsRef<[u8]> for Protocol {
 }
 
 impl fmt::Debug for Protocol {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.value.fmt(f)
     }
 }

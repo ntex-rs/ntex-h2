@@ -1,7 +1,7 @@
 use std::task::{Context, Poll, Waker};
 use std::{cmp, io, pin::Pin, sync::Arc, sync::Mutex, time::Duration};
 
-use ntex_h2::{frame, frame::Frame, ProtocolError};
+use ntex_h2::{frame, frame::Frame, ConnectionError};
 use ntex_util::future::poll_fn;
 
 use futures::{ready, Stream, StreamExt};

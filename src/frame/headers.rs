@@ -232,7 +232,7 @@ impl From<Headers> for Frame {
 }
 
 impl fmt::Debug for Headers {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Headers");
         builder
             .field("stream_id", &self.stream_id)
@@ -448,7 +448,7 @@ impl From<HeadersFlag> for u8 {
 }
 
 impl fmt::Debug for HeadersFlag {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         util::debug_flags(fmt, self.0)
             .flag_if(self.is_end_headers(), "END_HEADERS")
             .flag_if(self.is_end_stream(), "END_STREAM")

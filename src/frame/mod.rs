@@ -84,7 +84,7 @@ pub enum Frame {
 }
 
 impl fmt::Debug for Frame {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         use self::Frame::*;
 
         match *self {

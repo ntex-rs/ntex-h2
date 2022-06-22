@@ -10,7 +10,7 @@ pub enum ControlMessage<E> {
     /// Application level error from publish service
     AppError(AppError<E>),
     /// Protocol level error
-    ProtocolError(ProtocolError),
+    ConnectionError(ConnectionError),
     /// Remote GoAway is received
     GoAway(GoAway),
     /// Peer is gone
@@ -45,15 +45,15 @@ impl<E> ControlMessage<E> {
     }
 
     /// Create a new `ControlMessage` for protocol level errors
-    pub(super) fn proto_error(err: error::ProtocolError) -> Self {
-        ControlMessage::ProtocolError(ProtocolError::new(err))
+    pub(super) fn proto_error(err: error::ConnectionError) -> Self {
+        ControlMessage::ConnectionError(ConnectionError::new(err))
     }
 
     /// Default ack impl
     pub fn ack(self) -> ControlResult {
         match self {
             ControlMessage::AppError(item) => item.ack(),
-            ControlMessage::ProtocolError(item) => item.ack(),
+            ControlMessage::ConnectionError(item) => item.ack(),
             ControlMessage::GoAway(item) => item.ack(),
             ControlMessage::PeerGone(item) => item.ack(),
             ControlMessage::Terminated(item) => item.ack(),
@@ -129,13 +129,13 @@ impl Terminated {
 
 /// Protocol level error
 #[derive(Debug)]
-pub struct ProtocolError {
-    err: error::ProtocolError,
+pub struct ConnectionError {
+    err: error::ConnectionError,
     frm: frame::GoAway,
 }
 
-impl ProtocolError {
-    pub fn new(err: error::ProtocolError) -> Self {
+impl ConnectionError {
+    pub fn new(err: error::ConnectionError) -> Self {
         Self {
             frm: err.to_goaway(),
             err,
@@ -144,7 +144,7 @@ impl ProtocolError {
 
     #[inline]
     /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::ProtocolError {
+    pub fn get_ref(&self) -> &error::ConnectionError {
         &self.err
     }
 

@@ -119,7 +119,7 @@ impl From<Data> for Frame {
 }
 
 impl std::fmt::Debug for Data {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut f = fmt.debug_struct("Data");
         f.field("stream_id", &self.stream_id);
         if !self.flags.is_empty() {
@@ -166,7 +166,7 @@ impl From<DataFlags> for u8 {
 }
 
 impl std::fmt::Debug for DataFlags {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         util::debug_flags(fmt, self.0)
             .flag_if(self.is_end_stream(), "END_STREAM")
             .flag_if(self.is_padded(), "PADDED")

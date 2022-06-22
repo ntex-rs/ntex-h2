@@ -4,7 +4,7 @@ use crate::frame::{self, GoAway, Reason, StreamId};
 use crate::stream::StreamRef;
 
 #[derive(Debug, Clone, thiserror::Error)]
-pub enum ProtocolError {
+pub enum ConnectionError {
     #[error("Unknown stream {0:?}")]
     UnknownStream(frame::Frame),
     #[error("Reason: {0}")]
@@ -36,43 +36,37 @@ pub enum ProtocolError {
     Frame(#[from] frame::FrameError),
 }
 
-impl From<Reason> for ProtocolError {
-    fn from(r: Reason) -> Self {
-        ProtocolError::Reason(r)
-    }
-}
-
-impl ProtocolError {
+impl ConnectionError {
     pub fn to_goaway(&self) -> GoAway {
         match self {
-            ProtocolError::Reason(reason) => GoAway::new(*reason),
-            ProtocolError::Encoder(_) => {
+            ConnectionError::Reason(reason) => GoAway::new(*reason),
+            ConnectionError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
             }
-            ProtocolError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
+            ConnectionError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data(format!("Missing pseudo header {:?}", s)),
-            ProtocolError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
+            ConnectionError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data(format!("Unexpected pseudo header {:?}", s)),
-            ProtocolError::UnknownStream(_) => {
+            ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
             }
-            ProtocolError::InvalidStreamId => GoAway::new(Reason::PROTOCOL_ERROR)
+            ConnectionError::InvalidStreamId => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("An invalid stream identifier was provided"),
-            ProtocolError::StreamIdle(s) => {
+            ConnectionError::StreamIdle(s) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Stream idle: {}", s))
             }
-            ProtocolError::StreamClosed(s) => {
+            ConnectionError::StreamClosed(s) => {
                 GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{:?} is closed", s))
             }
-            ProtocolError::UnexpectedSettingsAck => {
+            ConnectionError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
             }
-            ProtocolError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
+            ConnectionError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("zero value for window update frame is not allowed"),
-            ProtocolError::KeepaliveTimeout => {
+            ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("keep-alive timeout")
             }
-            ProtocolError::Frame(err) => {
+            ConnectionError::Frame(err) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("protocol error: {:?}", err))
             }
         }
@@ -138,7 +132,7 @@ pub enum OperationError {
     #[error("{0:?}")]
     Stream(#[from] StreamError),
     #[error("{0}")]
-    Protocol(#[from] ProtocolError),
+    Connection(#[from] ConnectionError),
 
     /// Cannot process operation for idle stream
     #[error("Cannot process operation for idle stream")]

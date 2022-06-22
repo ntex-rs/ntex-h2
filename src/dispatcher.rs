@@ -6,7 +6,7 @@ use ntex_util::{future::Either, future::Ready, ready};
 
 use crate::connection::{Connection, ConnectionState};
 use crate::control::{ControlMessage, ControlResult};
-use crate::error::{ProtocolError, StreamErrorInner};
+use crate::error::{ConnectionError, StreamErrorInner};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
@@ -59,7 +59,7 @@ where
 
     fn handle_message(
         &self,
-        result: Result<Option<(StreamRef, Message)>, Either<ProtocolError, StreamErrorInner>>,
+        result: Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>>,
     ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(
@@ -225,7 +225,7 @@ where
                 }
             },
             DispatchItem::EncoderError(err) => {
-                let err = ProtocolError::from(err);
+                let err = ConnectionError::from(err);
                 self.connection.proto_error(&err);
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
@@ -233,7 +233,7 @@ where
                 )))
             }
             DispatchItem::DecoderError(err) => {
-                let err = ProtocolError::from(err);
+                let err = ConnectionError::from(err);
                 self.connection.proto_error(&err);
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
@@ -242,9 +242,9 @@ where
             }
             DispatchItem::KeepAliveTimeout => {
                 self.connection
-                    .proto_error(&ProtocolError::KeepaliveTimeout);
+                    .proto_error(&ConnectionError::KeepaliveTimeout);
                 Either::Right(Either::Right(ControlResponse::new(
-                    ControlMessage::proto_error(ProtocolError::KeepaliveTimeout),
+                    ControlMessage::proto_error(ConnectionError::KeepaliveTimeout),
                     &self.inner,
                 )))
             }

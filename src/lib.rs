@@ -68,18 +68,12 @@
 //!
 //! [HTTP/2]: https://http2.github.io/
 //! [futures]: https://docs.rs/futures/
-//! [`client`]: client/index.html
-//! [`server`]: server/index.html
-//! [Flow control]: http://httpwg.org/specs/rfc7540.html#FlowControl
-//! [`FlowControl`]: struct.FlowControl.html
-//! [`SendStream`]: struct.SendStream.html
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
 
 // #![deny(missing_debug_implementations, missing_docs)]
-//#![cfg_attr(test, deny(warnings))]
-//#![deny(dead_code)]
-//#![allow(dead_code, unused_variables)]
+#![cfg_attr(test, deny(warnings))]
+#![deny(rust_2018_idioms)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {
@@ -109,7 +103,7 @@ pub mod server;
 //#[cfg(fuzzing)]
 //pub mod fuzz_bridge;
 
-pub use crate::error::{EncoderError, OperationError, ProtocolError, StreamError};
+pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
 
 pub use self::codec::Codec;
 pub use self::control::{ControlMessage, ControlResult};
