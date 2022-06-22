@@ -30,8 +30,8 @@ pub(crate) struct Config {
     pub(crate) remote_max_concurrent_streams: Option<u32>,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
-    /// Client flags
-    pub(crate) client: bool,
+    /// Server marker
+    pub(crate) server: bool,
 }
 
 const HTTP_SCHEME: ByteString = ByteString::from_static("http");
@@ -266,9 +266,7 @@ impl Connection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ProtocolError, StreamErrorInner>> {
         let id = frm.stream_id();
 
-        if (self.0.local_config.client && id.is_client_initiated())
-            || (!self.0.local_config.client && id.is_server_initiated())
-        {
+        if self.0.local_config.server && !id.is_client_initiated() {
             return Err(Either::Left(ProtocolError::InvalidStreamId));
         }
 

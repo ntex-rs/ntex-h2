@@ -297,7 +297,7 @@ where
             connection_window_sz,
             connection_window_sz_threshold,
             remote_max_concurrent_streams,
-            client: false,
+            server: true,
             reset_max: self.reset_stream_max,
             reset_duration: self.reset_stream_duration.into(),
         };
