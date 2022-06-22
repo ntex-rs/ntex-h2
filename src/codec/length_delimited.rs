@@ -61,6 +61,11 @@ impl LengthDelimitedCodec {
         }
     }
 
+    /// max frame size setting.
+    pub fn max_frame_length(&self) -> usize {
+        self.builder.max_frame_len
+    }
+
     /// Updates the max frame setting.
     pub fn set_max_frame_length(&mut self, val: usize) {
         self.builder.max_frame_length(val);

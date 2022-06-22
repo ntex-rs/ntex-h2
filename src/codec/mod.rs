@@ -84,6 +84,11 @@ impl Codec {
         self.0.borrow_mut().decoder.set_max_frame_length(val);
     }
 
+    /// Local max frame size.
+    pub fn recv_frame_size(&self) -> u32 {
+        self.0.borrow_mut().decoder.max_frame_length() as u32
+    }
+
     /// Set the max header list size that can be received.
     pub fn set_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
