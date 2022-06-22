@@ -23,42 +23,6 @@ async fn handshake() {
 }
 
 #[tokio::test]
-async fn client_other_thread() {
-    h2_support::trace_init!();
-    let (io, mut srv) = mock::new();
-
-    let srv = async move {
-        let settings = srv.assert_client_handshake().await;
-        assert_default_settings!(settings);
-        srv.recv_frame(
-            frames::headers(1)
-                .request("GET", "https://http2.akamai.com/")
-                .eos(),
-        )
-        .await;
-        srv.send_frame(frames::headers(1).response(200).eos()).await;
-    };
-
-    let h2 = async move {
-        let (mut client, h2) = client::handshake(io).await.unwrap();
-        tokio::spawn(async move {
-            let request = Request::builder()
-                .uri("https://http2.akamai.com/")
-                .body(())
-                .unwrap();
-            let _res = client
-                .send_request(request, true)
-                .unwrap()
-                .0
-                .await
-                .expect("request");
-        });
-        h2.await.expect("h2");
-    };
-    join(srv, h2).await;
-}
-
-#[tokio::test]
 async fn recv_invalid_server_stream_id() {
     h2_support::trace_init!();
 

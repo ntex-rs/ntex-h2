@@ -56,6 +56,16 @@ impl Data {
         self.flags.set_end_stream();
     }
 
+    /// Returns whether the `PADDED` flag is set on this frame.
+    pub fn is_padded(&self) -> bool {
+        self.flags.is_padded()
+    }
+
+    /// Sets the value for the `PADDED` flag on this frame.
+    pub fn set_padded(&mut self) {
+        self.flags.set_padded();
+    }
+
     /// Returns a reference to this frame's payload.
     ///
     /// This does **not** include any padding that might have been originally
@@ -153,7 +163,6 @@ impl DataFlags {
         self.0 & PADDED == PADDED
     }
 
-    #[cfg(feature = "unstable")]
     fn set_padded(&mut self) {
         self.0 |= PADDED
     }

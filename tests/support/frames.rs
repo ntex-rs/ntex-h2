@@ -1,7 +1,8 @@
+#![allow(dead_code, unused_variables)]
 use std::{convert::TryInto, fmt};
 
 use ntex_bytes::Bytes;
-use ntex_h2::frame::{self, Frame, Protocol, StreamId};
+use ntex_h2::frame::{self, Frame, Protocol, PseudoHeaders, StreamId};
 use ntex_http::{self as http, HeaderMap, StatusCode};
 
 pub const SETTINGS: &'static [u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
@@ -15,7 +16,7 @@ where
 {
     Mock(frame::Headers::new(
         id.into(),
-        frame::Pseudo::default(),
+        PseudoHeaders::default(),
         HeaderMap::default(),
     ))
 }
@@ -29,19 +30,6 @@ where
     Mock(frame::Data::new(id.into(), buf))
 }
 
-pub fn push_promise<T1, T2>(id: T1, promised: T2) -> Mock<frame::PushPromise>
-where
-    T1: Into<StreamId>,
-    T2: Into<StreamId>,
-{
-    Mock(frame::PushPromise::new(
-        id.into(),
-        promised.into(),
-        frame::Pseudo::default(),
-        HeaderMap::default(),
-    ))
-}
-
 pub fn window_update<T>(id: T, sz: u32) -> frame::WindowUpdate
 where
     T: Into<StreamId>,
@@ -53,7 +41,7 @@ pub fn go_away<T>(id: T) -> Mock<frame::GoAway>
 where
     T: Into<StreamId>,
 {
-    Mock(frame::GoAway::new(id.into(), frame::Reason::NO_ERROR))
+    Mock(frame::GoAway::new(frame::Reason::NO_ERROR).set_last_stream_id(id.into()))
 }
 
 pub fn reset<T>(id: T) -> Mock<frame::Reset>
@@ -108,7 +96,7 @@ impl Mock<frame::Headers> {
         let uri = uri.try_into().unwrap();
         let (id, _, fields) = self.into_parts();
         let extensions = Default::default();
-        let pseudo = frame::Pseudo::request(method, uri, extensions);
+        let pseudo = PseudoHeaders::request(method, uri, extensions);
         let frame = frame::Headers::new(id, pseudo, fields);
         Mock(frame)
     }
@@ -122,7 +110,7 @@ impl Mock<frame::Headers> {
         let (id, _, fields) = self.into_parts();
         let frame = frame::Headers::new(
             id,
-            frame::Pseudo {
+            frame::PseudoHeaders {
                 scheme: None,
                 method: Some(method),
                 ..Default::default()
@@ -139,7 +127,7 @@ impl Mock<frame::Headers> {
     {
         let status = status.try_into().unwrap();
         let (id, _, fields) = self.into_parts();
-        let frame = frame::Headers::new(id, frame::Pseudo::response(status), fields);
+        let frame = frame::Headers::new(id, PseudoHeaders::response(status), fields);
         Mock(frame)
     }
 
@@ -197,7 +185,7 @@ impl Mock<frame::Headers> {
         self.0.into_parts().1
     }
 
-    fn into_parts(self) -> (StreamId, frame::Pseudo, HeaderMap) {
+    pub fn into_parts(self) -> (StreamId, frame::PseudoHeaders, HeaderMap) {
         assert!(!self.0.is_end_stream(), "eos flag will be lost");
         assert!(self.0.is_end_headers(), "unset eoh will be lost");
         let id = self.0.stream_id();
@@ -221,55 +209,8 @@ impl Mock<frame::Data> {
     }
 
     pub fn eos(mut self) -> Self {
-        self.0.set_end_stream(true);
+        self.0.set_end_stream();
         self
-    }
-}
-
-// PushPromise helpers
-
-impl Mock<frame::PushPromise> {
-    pub fn request<M, U>(self, method: M, uri: U) -> Self
-    where
-        M: TryInto<http::Method>,
-        M::Error: fmt::Debug,
-        U: TryInto<http::Uri>,
-        U::Error: fmt::Debug,
-    {
-        let method = method.try_into().unwrap();
-        let uri = uri.try_into().unwrap();
-        let (id, promised, _, fields) = self.into_parts();
-        let extensions = Default::default();
-        let pseudo = frame::Pseudo::request(method, uri, extensions);
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
-        Mock(frame)
-    }
-
-    pub fn fields(self, fields: HeaderMap) -> Self {
-        let (id, promised, pseudo, _) = self.into_parts();
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
-        Mock(frame)
-    }
-
-    pub fn field<K, V>(self, key: K, value: V) -> Self
-    where
-        K: TryInto<http::header::HeaderName>,
-        K::Error: fmt::Debug,
-        V: TryInto<http::header::HeaderValue>,
-        V::Error: fmt::Debug,
-    {
-        let (id, promised, pseudo, mut fields) = self.into_parts();
-        fields.insert(key.try_into().unwrap(), value.try_into().unwrap());
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
-        Mock(frame)
-    }
-
-    fn into_parts(self) -> (StreamId, StreamId, frame::Pseudo, HeaderMap) {
-        assert!(self.0.is_end_headers(), "unset eoh will be lost");
-        let id = self.0.stream_id();
-        let promised = self.0.promised_id();
-        let parts = self.0.into_parts();
-        (id, promised, parts.0, parts.1)
     }
 }
 
@@ -297,7 +238,7 @@ impl Mock<frame::GoAway> {
     }
 
     pub fn reason(self, reason: frame::Reason) -> Self {
-        Mock(frame::GoAway::new(self.0.last_stream_id(), reason))
+        Mock(frame::GoAway::new(reason).set_last_stream_id(self.0.last_stream_id()))
     }
 }
 

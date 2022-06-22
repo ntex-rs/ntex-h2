@@ -372,27 +372,20 @@ impl Encoder for Codec {
             }
             Frame::Settings(v) => {
                 v.encode(buf);
-                // log::trace!(rem = inner.buf.remaining(), "encoded settings");
             }
             Frame::GoAway(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded go_away");
             }
             Frame::Ping(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded ping");
             }
             Frame::WindowUpdate(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded window_update");
             }
 
-            Frame::Priority(_) => {
-                unimplemented!()
-            }
+            Frame::Priority(_) => (),
             Frame::Reset(v) => {
                 v.encode(buf);
-                // log::trace!(rem = self.buf.remaining(), "encoded reset");
             }
         }
 

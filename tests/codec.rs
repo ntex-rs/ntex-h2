@@ -1,6 +1,16 @@
+#![allow(dead_code, unused_variables)]
+use std::convert::TryFrom;
+
+mod support;
+
 use ntex_bytes::BytesMut;
 use ntex_codec::Decoder;
 use ntex_h2::{frame, frame::FrameError, Codec};
+use ntex_http::{HeaderMap, HeaderName, Method, StatusCode};
+use ntex_io::testing::IoTest;
+use ntex_util::future::join;
+
+use support::{build_large_headers, frames};
 
 // ===== DATA =====
 
@@ -98,64 +108,65 @@ fn read_data_stream_id_zero() {
 
 // ===== HEADERS =====
 
-// #[tokio::test]
-// async fn read_continuation_frames() {
-//     h2_support::trace_init!();
-//     let (io, mut srv) = mock::new();
+// #[ntex::test]
+async fn read_continuation_frames() {
+    let _ = env_logger::try_init();
 
-//     let large = build_large_headers();
-//     let frame = large
-//         .iter()
-//         .fold(
-//             frames::headers(1).response(200),
-//             |frame, &(name, ref value)| frame.field(name, &value[..]),
-//         )
-//         .eos();
+    let (cli, srv) = IoTest::create();
 
-//     let srv = async move {
-//         let settings = srv.assert_client_handshake().await;
-//         assert_default_settings!(settings);
-//         srv.recv_frame(
-//             frames::headers(1)
-//                 .request("GET", "https://http2.akamai.com/")
-//                 .eos(),
-//         )
-//         .await;
-//         srv.send_frame(frame).await;
-//     };
+    let large = build_large_headers();
+    let frame = large
+        .iter()
+        .fold(
+            frames::headers(1).response(200),
+            |frame, &(name, ref value)| frame.field(name, &value[..]),
+        )
+        .eos();
 
-//     let client = async move {
-//         let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+    let srv_rx = support::start_server(srv);
+    let (client, client_rx) = support::start_client(cli);
 
-//         let request = Request::builder()
-//             .uri("https://http2.akamai.com/")
-//             .body(())
-//             .unwrap();
+    let srv_fut = async move {
+        let msg = srv_rx.recv().await.unwrap();
 
-//         let req = async {
-//             let res = client
-//                 .send_request(request, true)
-//                 .expect("send_request")
-//                 .0
-//                 .await
-//                 .expect("response");
-//             assert_eq!(res.status(), StatusCode::OK);
-//             let (head, _body) = res.into_parts();
-//             let expected = large
-//                 .iter()
-//                 .fold(HeaderMap::new(), |mut map, &(name, ref value)| {
-//                     map.append(name, value.parse().unwrap());
-//                     map
-//                 });
-//             assert_eq!(head.headers, expected);
-//         };
+        let hdrs = frame.into_fields();
+        msg.stream()
+            .send_response(StatusCode::OK, hdrs, true)
+            .unwrap();
 
-//         conn.drive(req).await;
-//         conn.await.expect("client");
-//     };
+        let (pseudo, hdrs, eof) = get_headers!(msg);
+        // println!("REQUEST {:?} {:?}", pseudo, hdrs);
+        //     srv.recv_frame(
+        //         frames::headers(1)
+        //             .request("GET", "https://http2.akamai.com/")
+        //             .eos(),
+        //     )
+        //     .await;
+    };
 
-//     join(srv, client).await;
-// }
+    let client_fut = async move {
+        let stream = client
+            .send_request(Method::GET, "/".into(), HeaderMap::new())
+            .await
+            .expect("response");
+
+        let msg = client_rx.recv().await.unwrap();
+        let (pseudo, hdrs, eof) = get_headers!(msg);
+        // println!("RESPONSE {:?} {:?} {:?}", pseudo, hdrs, eof);
+
+        assert_eq!(pseudo.status, Some(StatusCode::OK));
+        //let (head, _body) = res.into_parts();
+        let expected = large
+            .iter()
+            .fold(HeaderMap::new(), |mut map, &(name, ref value)| {
+                map.append(HeaderName::try_from(name).unwrap(), value.parse().unwrap());
+                map
+            });
+        // assert_eq!(hdrs, expected);
+    };
+
+    join(srv_fut, client_fut).await;
+}
 
 #[test]
 fn update_max_frame_len_at_rest() {

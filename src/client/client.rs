@@ -1,4 +1,4 @@
-use std::{fmt, task::Context, task::Poll};
+use std::{fmt, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
@@ -10,18 +10,15 @@ use ntex_util::time::{sleep, Millis, Seconds};
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{connection::Connection, Message, OperationError, Stream};
+use crate::{
+    codec::Codec, config::Config, connection::Connection, Message, OperationError, Stream,
+};
 
 /// Http2 client
 pub struct Client(Connection);
 
 /// Http2 client connection
-pub struct ClientConnection {
-    io: IoBoxed,
-    con: Connection,
-    keepalive: Seconds,
-    disconnect_timeout: Seconds,
-}
+pub struct ClientConnection(IoBoxed, Connection);
 
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -32,10 +29,6 @@ impl fmt::Debug for Client {
 }
 
 impl Client {
-    fn new(con: Connection) -> Self {
-        Self(con)
-    }
-
     /// Check client readiness.
     ///
     /// Client is ready when it is possible to start new stream.
@@ -62,48 +55,28 @@ impl Client {
 impl fmt::Debug for ClientConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ntex_h2::ClientConnection")
-            .field("keepalive", &self.keepalive)
-            .field("disconnect_timeout", &self.disconnect_timeout)
+            .field("config", &self.1.config())
             .finish()
     }
 }
 
 impl ClientConnection {
     /// Construct new `ClientConnection` instance.
-    pub(super) fn new(io: IoBoxed, con: Connection) -> Self {
-        ClientConnection {
-            io,
-            con,
-            keepalive: Seconds(120),
-            disconnect_timeout: Seconds(3),
-        }
-    }
+    pub fn new<T>(io: T, config: Config) -> Self
+    where
+        IoBoxed: From<T>,
+    {
+        let io: IoBoxed = io.into();
+        let codec = Rc::new(Codec::default());
+        let con = Connection::new(io.get_ref(), codec, Rc::new(config));
 
-    /// Set server connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 3 seconds.
-    pub fn disconnect_timeout(mut self, val: Seconds) -> Self {
-        self.disconnect_timeout = val;
-        self
-    }
-
-    /// Set keep-alive timeout.
-    ///
-    /// By default keep-alive time-out is set to 120 seconds.
-    pub fn idle_timeout(mut self, timeout: Seconds) -> Self {
-        self.keepalive = timeout;
-        self
+        ClientConnection(io, con)
     }
 
     #[inline]
     /// Get client
     pub fn client(&self) -> Client {
-        Client::new(self.con.clone())
+        Client(self.1.clone())
     }
 
     /// Run client with provided control messages handler
@@ -113,19 +86,22 @@ impl ClientConnection {
         S: Service<Message, Response = ()> + 'static,
         S::Error: fmt::Debug,
     {
-        if self.keepalive.non_zero() {
-            spawn(keepalive(self.con.clone(), self.keepalive));
+        if self.1.config().keepalive_timeout.get().non_zero() {
+            spawn(keepalive(
+                self.1.clone(),
+                self.1.config().keepalive_timeout.get(),
+            ));
         }
 
         let disp = Dispatcher::new(
-            self.con.clone(),
+            self.1.clone(),
             DefaultControlService,
             service.into_service(),
         );
 
-        IoDispatcher::new(self.io, self.con.state().codec.clone(), disp)
+        IoDispatcher::new(self.0, self.1.state().codec.clone(), disp)
             .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.disconnect_timeout)
+            .disconnect_timeout(self.1.config().disconnect_timeout.get())
             .await
     }
 }

@@ -215,15 +215,15 @@ impl StreamState {
         let mut window = self.recv_window.get();
         if let Some(val) = window.update(
             size,
-            self.con.local_config.window_sz,
-            self.con.local_config.window_sz_threshold,
+            self.con.local_config.window_sz.get(),
+            self.con.local_config.window_sz_threshold.get(),
         ) {
             log::trace!(
                 "{:?} capacity decresed below threshold {} increase by {} ({})",
                 self.id,
-                self.con.local_config.window_sz_threshold,
+                self.con.local_config.window_sz_threshold.get(),
                 val,
-                self.con.local_config.window_sz,
+                self.con.local_config.window_sz.get(),
             );
             self.recv_window.set(window);
             self.con
@@ -239,7 +239,7 @@ impl StreamRef {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_window = if con.settings_processed.get() {
-            Window::new(con.local_config.window_sz as i32)
+            Window::new(con.local_config.window_sz.get() as i32)
         } else {
             Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
         };
@@ -465,8 +465,8 @@ impl StreamRef {
         };
         if let Some(val) = window.update(
             self.0.recv_size.get(),
-            self.0.con.local_config.window_sz,
-            self.0.con.local_config.window_sz_threshold,
+            self.0.con.local_config.window_sz.get(),
+            self.0.con.local_config.window_sz_threshold.get(),
         ) {
             self.0.recv_window.set(window);
             Ok(Some(val))
