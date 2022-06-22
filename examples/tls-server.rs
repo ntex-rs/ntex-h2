@@ -76,9 +76,6 @@ async fn main() -> std::io::Result<()> {
                                 MessageKind::Eof(data) => {
                                     println!("Got eof: {:?}", data);
                                 }
-                                MessageKind::Error(e) => {
-                                    println!("{:?} failed with: {}", msg.id(), e);
-                                }
                                 MessageKind::Empty => {}
                             }
                             Ok::<_, OperationError>(())

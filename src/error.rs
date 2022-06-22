@@ -107,6 +107,8 @@ pub enum StreamError {
     WrongPayloadLength,
     #[error("Non-empty payload for HEAD response")]
     NonEmptyPayload,
+    #[error("Stream has been reset with {0}")]
+    Reset(Reason),
 }
 
 impl StreamError {
@@ -121,6 +123,7 @@ impl StreamError {
             StreamError::InvalidContentLength => Reason::PROTOCOL_ERROR,
             StreamError::WrongPayloadLength => Reason::PROTOCOL_ERROR,
             StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
+            StreamError::Reset(r) => *r,
         }
     }
 }

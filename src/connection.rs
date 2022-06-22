@@ -8,7 +8,7 @@ use ntex_rt::spawn;
 use ntex_util::future::{poll_fn, Either};
 use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 
-use crate::error::{ConnectionError, OperationError, StreamErrorInner};
+use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, Settings, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, message::Message, window::Window};
@@ -496,8 +496,11 @@ impl Connection {
         if frm.stream_id().is_zero() {
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         } else if let Some(stream) = self.query(frm.stream_id()) {
-            stream.recv_rst_stream(frm);
-            Ok(())
+            stream.recv_rst_stream(&frm);
+            Err(Either::Right(StreamErrorInner::new(
+                stream,
+                StreamError::Reset(frm.reason()),
+            )))
         } else {
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         }

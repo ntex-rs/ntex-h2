@@ -45,9 +45,6 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
                     MessageKind::Eof(data) => {
                         println!("Got eof: {:?}", data);
                     }
-                    MessageKind::Error(e) => {
-                        println!("{:?} failed with: {}", msg.id(), e);
-                    }
                     MessageKind::Empty => {}
                 }
                 Ok::<_, ()>(())

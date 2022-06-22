@@ -58,9 +58,6 @@ async fn main() -> std::io::Result<()> {
                                 .send_payload("hello world".into(), true)
                                 .await?;
                         }
-                        MessageKind::Error(e) => {
-                            log::trace!("{:?} failed with: {}", msg.id(), e);
-                        }
                         MessageKind::Empty => {}
                     }
                     Ok::<_, OperationError>(())

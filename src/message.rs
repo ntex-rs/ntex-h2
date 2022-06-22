@@ -4,7 +4,7 @@ use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 
 use crate::error::StreamError;
-use crate::frame::{PseudoHeaders, Reason, StreamId};
+use crate::frame::{PseudoHeaders, StreamId};
 use crate::stream::{Capacity, StreamRef};
 
 #[derive(Debug)]
@@ -22,7 +22,6 @@ pub enum MessageKind {
     },
     Data(Bytes, Capacity),
     Eof(StreamEof),
-    Error(StreamError),
     Empty,
 }
 
@@ -30,7 +29,7 @@ pub enum MessageKind {
 pub enum StreamEof {
     Data(Bytes),
     Trailers(HeaderMap),
-    Reset(Reason),
+    Error(StreamError),
 }
 
 impl Message {
@@ -74,7 +73,7 @@ impl Message {
     pub(crate) fn error(err: StreamError, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Error(err),
+            kind: MessageKind::Eof(StreamEof::Error(err)),
         }
     }
 

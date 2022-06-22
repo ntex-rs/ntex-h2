@@ -411,7 +411,7 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn recv_rst_stream(&self, frm: Reset) {
+    pub(crate) fn recv_rst_stream(&self, frm: &Reset) {
         self.0.remote_reset_stream(frm.reason())
     }
 
