@@ -63,7 +63,8 @@ async fn main() -> std::io::Result<()> {
                     Ok::<_, OperationError>(())
                 }))
         })?
-        // .workers(1)
+        .workers(1)
+        .stop_runtime()
         .run()
         .await
 }
