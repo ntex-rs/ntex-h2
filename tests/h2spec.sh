@@ -7,21 +7,22 @@ if ! [ -e "h2spec" ] ; then
     tar xf h2spec_linux_amd64.tar.gz
 fi
 
-ls -la ./
+# source <(cargo llvm-cov show-env --export-prefix)
+# cargo llvm-cov run --example server --lcov --output-path lcov.info
 
-#source <(cargo llvm-cov show-env --export-prefix)
-
-cargo build --example server
-exec 3< <(cargo run --example server);
+exec 3< <(cargo llvm-cov run --example server);
 SERVER_PID=$!
 
 # wait 'til the server is listening before running h2spec, and pipe server's
 # stdout to a log file.
 # sed '/Starting socket listener/q' <&3 ; cat <&3 > "${LOGFILE}" &
-sleep 5
+sleep 15
 
 # run h2spec against the server, printing the server log if h2spec failed
 ./h2spec -p 5928
+sleep 5
+
+SPID=`pgrep server`
 H2SPEC_STATUS=$?
 if [ "${H2SPEC_STATUS}" -eq 0 ]; then
     echo "h2spec passed!"
@@ -30,12 +31,14 @@ else
     cat "${LOGFILE}"
 fi
 kill -INT "${SERVER_PID}"
-
+kill -INT "${SPID}"
 sleep 5
 
-#cargo llvm-cov --no-run --lcov --output-path lcov.info
+cargo llvm-cov --no-run --lcov --output-path lcov.info
+#cargo llvm-cov --no-run --summary-only
 
-ls -la ./
+#ls -la ./
+#ls -la ./target/llvm-cov-target
 
 
 exit "${H2SPEC_STATUS}"
