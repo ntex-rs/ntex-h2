@@ -9,7 +9,7 @@ fi
 
 ls -la ./
 
-source <(cargo llvm-cov show-env --export-prefix)
+#source <(cargo llvm-cov show-env --export-prefix)
 
 cargo build --example server
 exec 3< <(cargo run --example server);
@@ -33,7 +33,7 @@ kill -INT "${SERVER_PID}"
 
 sleep 5
 
-cargo llvm-cov --no-run --lcov --output-path lcov.info
+#cargo llvm-cov --no-run --lcov --output-path lcov.info
 
 ls -la ./
 

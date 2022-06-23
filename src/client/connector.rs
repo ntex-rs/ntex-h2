@@ -17,13 +17,32 @@ pub struct Connector<A, T> {
     _t: PhantomData<A>,
 }
 
-impl<A> Connector<A, ()>
+impl<A, T> Connector<A, T>
+where
+    A: Address,
+    T: Service<Connect<A>, Error = connect::ConnectError>,
+    IoBoxed: From<T::Response>,
+{
+    /// Create new http2 connector
+    pub fn new<F>(connector: F) -> Connector<A, T>
+    where
+        F: IntoService<T, Connect<A>>,
+    {
+        Connector {
+            connector: connector.into_service(),
+            config: Config::default(),
+            pool: Cell::new(PoolId::P5.pool_ref()),
+            _t: PhantomData,
+        }
+    }
+}
+
+impl<A> Default for Connector<A, DefaultConnector<A>>
 where
     A: Address,
 {
-    #[allow(clippy::new_ret_no_self)]
     /// Create new h2 connector
-    pub fn new() -> Connector<A, DefaultConnector<A>> {
+    fn default() -> Self {
         Connector {
             connector: DefaultConnector::default(),
             config: Config::default(),

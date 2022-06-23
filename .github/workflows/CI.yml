@@ -67,11 +67,11 @@ jobs:
       - name: Run lib tests and doc tests
         uses: actions-rs/cargo@v1
         with:
-          command: llvm-cov
+          command: test
 
-      #- name: Generate code coverage
-      #  run: cargo llvm-cov --lcov --output-path lcov.info
-      #  if: matrix.rust == 'stable'
+      - name: Generate code coverage
+        run: cargo llvm-cov --lcov --output-path lcov.info
+        if: matrix.rust == 'stable'
 
       #- name: Run integration tests
       #  uses: actions-rs/cargo@v1

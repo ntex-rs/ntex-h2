@@ -19,9 +19,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .set_alpn_protos(b"\x02h2\x08http/1.1")
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
-    let connector =
-        client::Connector::new().connector(connect::openssl::Connector::new(builder.build()));
-
+    let connector = client::Connector::new(connect::openssl::Connector::new(builder.build()));
     let connection = connector.connect("127.0.0.1:5928").await.unwrap();
 
     let client = connection.client();

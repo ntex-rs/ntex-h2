@@ -2,7 +2,7 @@ use std::{fmt, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
-use ntex_io::{Dispatcher as IoDispatcher, IoBoxed};
+use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
 use ntex_rt::spawn;
 use ntex_service::{IntoService, Service};
 use ntex_util::future::poll_fn;
@@ -29,13 +29,8 @@ impl fmt::Debug for Client {
 }
 
 impl Client {
-    /// Check client readiness.
-    ///
-    /// Client is ready when it is possible to start new stream.
-    pub async fn ready(&self) -> Result<(), OperationError> {
-        poll_fn(|cx| self.poll_ready(cx)).await
-    }
-
+    #[inline]
+    /// Send request to the peer
     pub async fn send_request(
         &self,
         method: Method,
@@ -45,11 +40,37 @@ impl Client {
         self.0.send_request(method, path, headers).await
     }
 
+    #[inline]
+    /// Check client readiness
+    ///
+    /// Client is ready when it is possible to start new stream
+    pub async fn ready(&self) -> Result<(), OperationError> {
+        poll_fn(|cx| self.poll_ready(cx)).await
+    }
+
+    #[inline]
+    /// Check client readiness
     pub fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
         self.0.poll_ready(cx)
     }
 
-    pub fn close(&self) {}
+    #[inline]
+    /// Gracefully close connection
+    pub fn close(&self) {
+        self.0.state().io.close()
+    }
+
+    #[inline]
+    /// Check if connection is closed
+    pub fn is_closed(&self) -> bool {
+        self.0.state().io.is_closed()
+    }
+
+    #[inline]
+    /// Notify when connection get closed
+    pub fn on_disconnect(&self) -> OnDisconnect {
+        self.0.state().io.on_disconnect()
+    }
 }
 
 impl fmt::Debug for ClientConnection {
