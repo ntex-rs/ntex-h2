@@ -108,11 +108,8 @@ impl ClientConnection {
         S: Service<Message, Response = ()> + 'static,
         S::Error: fmt::Debug,
     {
-        if self.1.config().keepalive_timeout.get().non_zero() {
-            spawn(keepalive(
-                self.1.clone(),
-                self.1.config().keepalive_timeout.get(),
-            ));
+        if self.1.config().ping_timeout.get().non_zero() {
+            spawn(ping(self.1.clone(), self.1.config().ping_timeout.get()));
         }
 
         let disp = Dispatcher::new(
@@ -128,7 +125,7 @@ impl ClientConnection {
     }
 }
 
-async fn keepalive(con: Connection, timeout: Seconds) {
+async fn ping(con: Connection, timeout: Seconds) {
     log::debug!("start http client keep-alive task");
 
     let keepalive = Millis::from(timeout);

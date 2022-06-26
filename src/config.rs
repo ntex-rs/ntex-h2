@@ -34,8 +34,9 @@ pub(crate) struct ConfigInner {
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
     pub(super) handshake_timeout: Cell<Seconds>,
+    pub(super) client_timeout: Cell<Seconds>,
     pub(super) disconnect_timeout: Cell<Seconds>,
-    pub(super) keepalive_timeout: Cell<Seconds>,
+    pub(super) ping_timeout: Cell<Seconds>,
 
     /// Config flags
     flags: Cell<ConfigFlags>,
@@ -80,9 +81,10 @@ impl Config {
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
+            client_timeout: Cell::new(Seconds(0)),
             handshake_timeout: Cell::new(Seconds(5)),
             disconnect_timeout: Cell::new(Seconds(3)),
-            keepalive_timeout: Cell::new(Seconds(120)),
+            ping_timeout: Cell::new(Seconds(60)),
         }))
     }
 }
@@ -262,6 +264,20 @@ impl Config {
         self
     }
 
+    /// Set server client timeout for first request.
+    ///
+    /// Defines a timeout for reading client request header. If a client does not transmit
+    /// the entire set headers within this time, the request is terminated with
+    /// the 408 (Request Time-out) error.
+    ///
+    /// To disable timeout set value to 0.
+    ///
+    /// By default client timeout is set to 3 seconds.
+    pub fn client_timeout(&self, timeout: Seconds) -> &Self {
+        self.0.client_timeout.set(timeout);
+        self
+    }
+
     /// Set server connection disconnect timeout.
     ///
     /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
@@ -275,11 +291,11 @@ impl Config {
         self
     }
 
-    /// Set keep-alive timeout.
+    /// Set ping timeout.
     ///
-    /// By default keep-alive time-out is set to 120 seconds.
-    pub fn idle_timeout(&self, timeout: Seconds) -> &Self {
-        self.0.keepalive_timeout.set(timeout);
+    /// By default ping time-out is set to 60 seconds.
+    pub fn ping_timeout(&self, timeout: Seconds) -> &Self {
+        self.0.ping_timeout.set(timeout);
         self
     }
 

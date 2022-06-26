@@ -245,7 +245,7 @@ impl StreamRef {
     pub(crate) fn new(id: StreamId, remote: bool, con: Rc<ConnectionState>) -> Self {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
-        let recv_window = if con.settings_processed.get() {
+        let recv_window = if con.settings_processed() {
             Window::new(con.config().window_sz.get() as i32)
         } else {
             Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)

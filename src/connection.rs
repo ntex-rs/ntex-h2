@@ -20,12 +20,19 @@ const _HTTPS_SCHEME: ByteString = ByteString::from_static("https");
 #[derive(Clone, Debug)]
 pub struct Connection(Rc<ConnectionState>);
 
+bitflags::bitflags! {
+    pub(crate) struct ConnectionFlags: u8 {
+        const SETTINGS_PROCESSED      = 0b0000_0001;
+        const DELAY_DROP_TASK_STARTED = 0b0000_0010;
+        const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
+    }
+}
+
 pub(crate) struct ConnectionState {
     pub(crate) io: IoRef,
     pub(crate) codec: Codec,
     pub(crate) send_window: Cell<Window>,
     pub(crate) recv_window: Cell<Window>,
-    pub(crate) settings_processed: Cell<bool>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
@@ -43,9 +50,10 @@ pub(crate) struct ConnectionState {
     // Locally reset streams
     local_reset_queue: RefCell<VecDeque<(StreamId, Instant)>>,
     local_reset_ids: RefCell<HashSet<StreamId>>,
-    local_reset_task: Cell<bool>,
     // protocol level error
     pub(crate) error: Cell<Option<OperationError>>,
+    // connection state flags
+    flags: Cell<ConnectionFlags>,
 }
 
 impl ConnectionState {
@@ -67,6 +75,25 @@ impl ConnectionState {
     }
 
     #[inline]
+    pub(crate) fn flags(&self) -> ConnectionFlags {
+        self.flags.get()
+    }
+
+    #[inline]
+    pub(crate) fn set_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.flags.get();
+        flags.insert(f);
+        self.flags.set(flags);
+    }
+
+    #[inline]
+    pub(crate) fn unset_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.flags.get();
+        flags.remove(f);
+        self.flags.set(flags);
+    }
+
+    #[inline]
     pub(crate) fn config(&self) -> &ConfigInner {
         &self.local_config.0
     }
@@ -74,6 +101,10 @@ impl ConnectionState {
     #[inline]
     pub(crate) fn remote_frame_size(&self) -> usize {
         self.remote_frame_size.get() as usize
+    }
+
+    pub(crate) fn settings_processed(&self) -> bool {
+        self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED)
     }
 
     #[inline]
@@ -104,7 +135,10 @@ impl ConnectionState {
         }
         ids.insert(id);
         queue.push_back((id, now() + self.local_config.0.reset_duration.get()));
-        if !self.local_reset_task.get() {
+        if !self
+            .flags()
+            .contains(ConnectionFlags::DELAY_DROP_TASK_STARTED)
+        {
             spawn(delay_drop_task(state.clone()));
         }
     }
@@ -166,14 +200,13 @@ impl Connection {
             active_local_streams: Cell::new(0),
             readiness: LocalWaker::new(),
             next_stream_id: Cell::new(StreamId::new(1)),
-            settings_processed: Cell::new(false),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
-            local_reset_task: Cell::new(false),
             local_reset_ids: RefCell::new(HashSet::default()),
             local_reset_queue: RefCell::new(VecDeque::new()),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
+            flags: Cell::new(ConnectionFlags::empty()),
         }))
     }
 
@@ -264,8 +297,12 @@ impl Connection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
 
-        if self.0.local_config.is_server() && !id.is_client_initiated() {
-            return Err(Either::Left(ConnectionError::InvalidStreamId));
+        if self.0.local_config.is_server() {
+            self.0.unset_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
+
+            if !id.is_client_initiated() {
+                return Err(Either::Left(ConnectionError::InvalidStreamId));
+            }
         }
 
         if let Some(stream) = self.query(id) {
@@ -357,8 +394,8 @@ impl Connection {
         log::trace!("processing incoming settings: {:#?}", settings);
 
         if settings.is_ack() {
-            if !self.0.settings_processed.get() {
-                self.0.settings_processed.set(true);
+            if !self.0.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
+                self.0.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
                 if let Some(max) = self.0.local_config.0.settings.get().max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
                 }
@@ -554,7 +591,7 @@ impl fmt::Debug for ConnectionState {
             .field("codec", &self.codec)
             .field("recv_window", &self.recv_window.get())
             .field("send_window", &self.send_window.get())
-            .field("settings_processed", &self.settings_processed.get())
+            .field("settings_processed", &self.settings_processed())
             .field("next_stream_id", &self.next_stream_id.get())
             .field("local_config", &self.local_config)
             .field(
@@ -568,7 +605,7 @@ impl fmt::Debug for ConnectionState {
 }
 
 async fn delay_drop_task(state: Rc<ConnectionState>) {
-    state.local_reset_task.set(true);
+    state.set_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 
     #[allow(clippy::while_let_loop)]
     loop {
@@ -596,10 +633,10 @@ async fn delay_drop_task(state: Rc<ConnectionState>) {
                     break;
                 }
             } else {
-                state.local_reset_task.set(false);
+                state.unset_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
                 return;
             }
         }
     }
-    state.local_reset_task.set(false);
+    state.unset_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 }
