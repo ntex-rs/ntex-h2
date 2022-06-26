@@ -31,7 +31,7 @@ impl<E> ServerBuilder<E> {
     /// Configuration methods can be chained on the return value.
     pub fn new() -> ServerBuilder<E> {
         ServerBuilder {
-            config: Config::default(),
+            config: Config::server(),
             control: DefaultControlService,
             _t: marker::PhantomData,
         }

@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
 
 use ntex_bytes::BytesMut;
 use ntex_codec::{Decoder, Encoder};
@@ -17,8 +17,8 @@ const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
 // Push promise frame kind
 const PUSH_PROMISE: u8 = 5;
 
-#[derive(Debug)]
-pub struct Codec(RefCell<CodecInner>);
+#[derive(Clone, Debug)]
+pub struct Codec(Rc<RefCell<CodecInner>>);
 
 /// Partially loaded headers frame
 #[derive(Debug)]
@@ -55,7 +55,7 @@ impl Default for Codec {
             .num_skip(0) // Don't skip the header
             .new_codec();
 
-        Codec(RefCell::new(CodecInner {
+        Codec(Rc::new(RefCell::new(CodecInner {
             decoder,
             decoder_hpack: hpack::Decoder::new(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
             decoder_max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
@@ -64,7 +64,7 @@ impl Default for Codec {
             encoder_hpack: hpack::Encoder::default(),
             encoder_last_data_frame: None,
             encoder_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
-        }))
+        })))
     }
 }
 

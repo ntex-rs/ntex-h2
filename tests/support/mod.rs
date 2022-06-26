@@ -13,7 +13,7 @@ pub fn start_client(io: IoTest) -> (client::Client, mpsc::Receiver<Message>) {
     io.remote_buffer_cap(1000000);
 
     let (tx, rx) = mpsc::channel();
-    let con = client::ClientConnection::new(Io::new(io), Config::default());
+    let con = client::ClientConnection::new(Io::new(io), Config::client());
     let client = con.client();
 
     ntex_rt::spawn(async move {
@@ -34,7 +34,7 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
     let (tx, rx) = mpsc::channel();
     ntex_rt::spawn(async move {
         let _ = server::Server::new(
-            Config::default(),
+            Config::server(),
             fn_service(|msg: ControlMessage<()>| async move {
                 log::trace!("Control message: {:?}", msg);
                 Ok::<_, ()>(msg.ack())

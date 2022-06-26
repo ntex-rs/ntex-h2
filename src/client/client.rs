@@ -1,4 +1,4 @@
-use std::{fmt, rc::Rc, task::Context, task::Poll};
+use std::{fmt, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
@@ -88,8 +88,8 @@ impl ClientConnection {
         IoBoxed: From<T>,
     {
         let io: IoBoxed = io.into();
-        let codec = Rc::new(Codec::default());
-        let con = Connection::new(io.get_ref(), codec, Rc::new(config));
+        let codec = Codec::default();
+        let con = Connection::new(io.get_ref(), codec, config);
 
         ClientConnection(io, con)
     }

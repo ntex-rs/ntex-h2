@@ -28,19 +28,26 @@ impl Capacity {
         }
     }
 
+    #[inline]
+    /// Size of capacity
+    pub fn size(&self) -> usize {
+        self.size.get() as usize
+    }
+
     /// Consume specified amount of capacity.
     ///
     /// Panics if provided size larger than capacity.
     pub fn consume(&self, sz: u32) {
-        if let Some(sz) = self.size.get().checked_sub(sz) {
+        let size = self.size.get();
+        if let Some(sz) = size.checked_sub(sz) {
             log::trace!(
                 "{:?} capacity consumed from {} to {}",
                 self.stream.id,
-                self.size.get(),
+                size,
                 sz
             );
             self.size.set(sz);
-            self.stream.consume_capacity(sz);
+            self.stream.consume_capacity(size - sz);
         } else {
             panic!("Capacity overflow");
         }
@@ -137,7 +144,7 @@ impl StreamState {
     }
 
     fn state_send_close(&self, reason: Option<Reason>) {
-        log::trace!("{:?} send half is closed with reason {:?}", self.id, reason);
+        log::trace!("{:?} send side is closed with reason {:?}", self.id, reason);
         self.send.set(HalfState::Closed(reason));
         self.review_state();
     }
@@ -147,7 +154,7 @@ impl StreamState {
     }
 
     fn state_recv_close(&self, reason: Option<Reason>) {
-        log::trace!("{:?} receive half is closed", self.id);
+        log::trace!("{:?} receive side is closed", self.id);
         self.recv.set(HalfState::Closed(reason));
         self.send_waker.wake();
         self.review_state();
@@ -187,7 +194,7 @@ impl StreamState {
                     log::trace!("{:?} is closed with local reset, dropping stream", self.id);
                     self.con.drop_stream(self.id, &self.con);
                 } else {
-                    log::trace!("{:?} both halfs are closed, dropping stream", self.id);
+                    log::trace!("{:?} both sides are closed, dropping stream", self.id);
                     self.con.drop_stream(self.id, &self.con);
                 }
             }
@@ -215,15 +222,15 @@ impl StreamState {
         let mut window = self.recv_window.get();
         if let Some(val) = window.update(
             size,
-            self.con.local_config.window_sz.get(),
-            self.con.local_config.window_sz_threshold.get(),
+            self.con.config().window_sz.get(),
+            self.con.config().window_sz_threshold.get(),
         ) {
             log::trace!(
                 "{:?} capacity decresed below threshold {} increase by {} ({})",
                 self.id,
-                self.con.local_config.window_sz_threshold.get(),
+                self.con.config().window_sz_threshold.get(),
                 val,
-                self.con.local_config.window_sz.get(),
+                self.con.config().window_sz.get(),
             );
             self.recv_window.set(window);
             self.con
@@ -239,7 +246,7 @@ impl StreamRef {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_window = if con.settings_processed.get() {
-            Window::new(con.local_config.window_sz.get() as i32)
+            Window::new(con.config().window_sz.get() as i32)
         } else {
             Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
         };
@@ -279,6 +286,15 @@ impl StreamRef {
             true
         } else {
             false
+        }
+    }
+
+    /// Get capacity instance for current stream
+    #[inline]
+    pub fn empty_capacity(&self) -> Capacity {
+        Capacity {
+            size: Cell::new(0),
+            stream: self.0.clone(),
         }
     }
 
@@ -465,8 +481,8 @@ impl StreamRef {
         };
         if let Some(val) = window.update(
             self.0.recv_size.get(),
-            self.0.con.local_config.window_sz.get(),
-            self.0.con.local_config.window_sz_threshold.get(),
+            self.0.con.config().window_sz.get(),
+            self.0.con.config().window_sz_threshold.get(),
         ) {
             self.0.recv_window.set(window);
             Ok(Some(val))

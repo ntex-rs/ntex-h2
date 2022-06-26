@@ -2,7 +2,7 @@ mod builder;
 mod service;
 
 pub use self::builder::ServerBuilder;
-pub use self::service::Server;
+pub use self::service::{handle_one, Server, ServerHandler};
 
 use crate::frame;
 

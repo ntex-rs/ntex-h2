@@ -1,4 +1,4 @@
-use std::{cell::Cell, time::Duration};
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use ntex_util::time::Seconds;
 
@@ -11,9 +11,12 @@ bitflags::bitflags! {
     }
 }
 
-/// Http2 connection configuration
 #[derive(Clone, Debug)]
-pub struct Config {
+pub struct Config(pub(crate) Rc<ConfigInner>);
+
+/// Http2 connection configuration
+#[derive(Debug)]
+pub(crate) struct ConfigInner {
     /// Initial window size of locally initiated streams
     pub(crate) window_sz: Cell<WindowSize>,
     pub(crate) window_sz_threshold: Cell<WindowSize>,
@@ -38,8 +41,18 @@ pub struct Config {
     flags: Cell<ConfigFlags>,
 }
 
-impl Default for Config {
-    fn default() -> Self {
+impl Config {
+    /// Create configuration for server
+    pub fn server() -> Self {
+        Config::new(true)
+    }
+
+    /// Create configuration for client
+    pub fn client() -> Self {
+        Config::new(false)
+    }
+
+    fn new(server: bool) -> Self {
         let window_sz = Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE);
         let window_sz_threshold =
             Cell::new(((frame::DEFAULT_INITIAL_WINDOW_SIZE as f32) / 3.0) as u32);
@@ -47,20 +60,30 @@ impl Default for Config {
         let connection_window_sz_threshold =
             Cell::new(((consts::DEFAULT_CONNECTION_WINDOW_SIZE as f32) / 4.0) as u32);
 
-        Config {
+        let mut settings = Settings::default();
+        settings.set_max_concurrent_streams(Some(256));
+        settings.set_enable_push(false);
+
+        let flags = if server {
+            Cell::new(ConfigFlags::SERVER)
+        } else {
+            Cell::new(ConfigFlags::empty())
+        };
+
+        Config(Rc::new(ConfigInner {
+            flags,
             window_sz,
             window_sz_threshold,
             connection_window_sz,
             connection_window_sz_threshold,
-            settings: Cell::new(Default::default()),
+            settings: Cell::new(settings),
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
-            flags: Cell::new(ConfigFlags::empty()),
             handshake_timeout: Cell::new(Seconds(5)),
             disconnect_timeout: Cell::new(Seconds(3)),
             keepalive_timeout: Cell::new(Seconds(120)),
-        }
+        }))
     }
 }
 
@@ -73,12 +96,12 @@ impl Config {
     ///
     /// The default value is 65,535.
     pub fn initial_window_size(&self, size: u32) -> &Self {
-        self.window_sz.set(size);
-        self.window_sz_threshold.set(((size as f32) / 3.0) as u32);
+        self.0.window_sz.set(size);
+        self.0.window_sz_threshold.set(((size as f32) / 3.0) as u32);
 
-        let mut s = self.settings.get();
+        let mut s = self.0.settings.get();
         s.set_initial_window_size(Some(size));
-        self.settings.set(s);
+        self.0.settings.set(s);
         self
     }
 
@@ -93,8 +116,9 @@ impl Config {
     /// [`FlowControl`]: ../struct.FlowControl.html
     pub fn initial_connection_window_size(&self, size: u32) -> &Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
-        self.connection_window_sz.set(size);
-        self.connection_window_sz_threshold
+        self.0.connection_window_sz.set(size);
+        self.0
+            .connection_window_sz_threshold
             .set(((size as f32) / 4.0) as u32);
         self
     }
@@ -113,9 +137,9 @@ impl Config {
     /// This function panics if `max` is not within the legal range specified
     /// above.
     pub fn max_frame_size(&self, max: u32) -> &Self {
-        let mut s = self.settings.get();
+        let mut s = self.0.settings.get();
         s.set_max_frame_size(max);
-        self.settings.set(s);
+        self.0.settings.set(s);
         self
     }
 
@@ -129,9 +153,9 @@ impl Config {
     /// This setting is also used to limit the maximum amount of data that is
     /// buffered to decode HEADERS frames.
     pub fn max_header_list_size(&self, max: u32) -> &Self {
-        let mut s = self.settings.get();
+        let mut s = self.0.settings.get();
         s.set_max_header_list_size(Some(max));
-        self.settings.set(s);
+        self.0.settings.set(s);
         self
     }
 
@@ -159,10 +183,10 @@ impl Config {
     ///
     /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
     pub fn max_concurrent_streams(&self, max: u32) -> &Self {
-        self.remote_max_concurrent_streams.set(Some(max));
-        let mut s = self.settings.get();
+        self.0.remote_max_concurrent_streams.set(Some(max));
+        let mut s = self.0.settings.get();
         s.set_max_concurrent_streams(Some(max));
-        self.settings.set(s);
+        self.0.settings.set(s);
         self
     }
 
@@ -188,7 +212,7 @@ impl Config {
     ///
     /// The default value is 30.
     pub fn max_concurrent_reset_streams(&self, max: usize) -> &Self {
-        self.reset_max.set(max);
+        self.0.reset_max.set(max);
         self
     }
 
@@ -214,7 +238,7 @@ impl Config {
     ///
     /// The default value is 30 seconds.
     pub fn reset_stream_duration(&self, dur: Seconds) -> &Self {
-        self.reset_duration.set(dur.into());
+        self.0.reset_duration.set(dur.into());
         self
     }
 
@@ -222,9 +246,9 @@ impl Config {
     // ///
     // /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
     // pub fn enable_connect_protocol(&self) -> &Self {
-    //     let mut s = self.settings.get();
+    //     let mut s = self.0.settings.get();
     //     s.set_enable_connect_protocol(Some(1));
-    //     self.settings.set(s);
+    //     self.0.settings.set(s);
     //     self
     // }
 
@@ -234,7 +258,7 @@ impl Config {
     ///
     /// By default handshake timeuot is 5 seconds.
     pub fn handshake_timeout(&self, timeout: Seconds) -> &Self {
-        self.handshake_timeout.set(timeout);
+        self.0.handshake_timeout.set(timeout);
         self
     }
 
@@ -247,7 +271,7 @@ impl Config {
     ///
     /// By default disconnect timeout is set to 3 seconds.
     pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
-        self.disconnect_timeout.set(val);
+        self.0.disconnect_timeout.set(val);
         self
     }
 
@@ -255,22 +279,12 @@ impl Config {
     ///
     /// By default keep-alive time-out is set to 120 seconds.
     pub fn idle_timeout(&self, timeout: Seconds) -> &Self {
-        self.keepalive_timeout.set(timeout);
-        self
-    }
-
-    /// Set server flags.
-    ///
-    /// By default server flags is off.
-    pub(crate) fn server(&self) -> &Self {
-        let mut flags = self.flags.get();
-        flags.insert(ConfigFlags::SERVER);
-        self.flags.set(flags);
+        self.0.keepalive_timeout.set(timeout);
         self
     }
 
     /// Check if configuration defined for server.
     pub fn is_server(&self) -> bool {
-        self.flags.get().contains(ConfigFlags::SERVER)
+        self.0.flags.get().contains(ConfigFlags::SERVER)
     }
 }

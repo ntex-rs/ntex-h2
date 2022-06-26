@@ -93,7 +93,7 @@ where
     }
 }
 
-impl<Ctl, Pub> Service<DispatchItem<Rc<Codec>>> for Dispatcher<Ctl, Pub>
+impl<Ctl, Pub> Service<DispatchItem<Codec>> for Dispatcher<Ctl, Pub>
 where
     Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
     Ctl::Error: fmt::Debug,
@@ -159,7 +159,9 @@ where
         }
     }
 
-    fn call(&self, request: DispatchItem<Rc<Codec>>) -> Self::Future {
+    fn call(&self, request: DispatchItem<Codec>) -> Self::Future {
+        log::debug!("Handle h2 message: {:?}", request);
+
         match request {
             DispatchItem::Item(frame) => match frame {
                 Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)),

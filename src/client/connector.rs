@@ -30,7 +30,7 @@ where
     {
         Connector {
             connector: connector.into_service(),
-            config: Config::default(),
+            config: Config::client(),
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -45,7 +45,7 @@ where
     fn default() -> Self {
         Connector {
             connector: DefaultConnector::default(),
-            config: Config::default(),
+            config: Config::client(),
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -110,7 +110,7 @@ where
             ))
         };
 
-        match timeout_checked(self.config.handshake_timeout.get(), fut).await {
+        match timeout_checked(self.config.0.handshake_timeout.get(), fut).await {
             Ok(res) => res.map_err(From::from),
             Err(_) => Err(ClientError::HandshakeTimeout),
         }

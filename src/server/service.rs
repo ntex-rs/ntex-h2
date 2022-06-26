@@ -18,7 +18,7 @@ pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 struct ServerInner<Ctl, Pub> {
     control: Ctl,
     publish: Pub,
-    config: Rc<Config>,
+    config: Config,
 }
 
 impl Server<(), ()> {
@@ -40,11 +40,10 @@ where
 {
     /// Create new instance of Server factory
     pub fn new(config: Config, control: Ctl, publish: Pub) -> Server<Ctl, Pub> {
-        config.server();
         Self(Rc::new(ServerInner {
             control,
             publish,
-            config: Rc::new(config),
+            config,
         }))
     }
 
@@ -98,6 +97,12 @@ where
 /// Http2 connections handler
 pub struct ServerHandler<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 
+impl<Ctl, Pub> Clone for ServerHandler<Ctl, Pub> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<Ctl, Pub> ServerHandler<Ctl, Pub>
 where
     Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
@@ -107,34 +112,11 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    pub async fn run(&self, req: IoBoxed) -> Result<(), ServerError<()>> {
+    pub async fn run(&self, io: IoBoxed) -> Result<(), ServerError<()>> {
         let inner = &self.0;
 
-        let (ctl_srv, pub_srv) = timeout_checked(inner.config.handshake_timeout.get(), async {
-            // read preface
-            loop {
-                let ready = req.with_read_buf(|buf| {
-                    if buf.len() >= consts::PREFACE.len() {
-                        if buf[..consts::PREFACE.len()] == consts::PREFACE {
-                            buf.split_to(consts::PREFACE.len());
-                            Ok(true)
-                        } else {
-                            log::trace!("read_preface: invalid preface");
-                            Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
-                        }
-                    } else {
-                        Ok(false)
-                    }
-                })?;
-
-                if ready {
-                    break;
-                } else {
-                    req.read_ready()
-                        .await?
-                        .ok_or(ServerError::Disconnected(None))?;
-                }
-            }
+        let (ctl_srv, pub_srv) = timeout_checked(inner.config.0.handshake_timeout.get(), async {
+            read_preface(&io).await?;
 
             // create publish service
             let pub_srv = inner.publish.new_service(()).await.map_err(|e| {
@@ -154,13 +136,13 @@ where
         .map_err(|_| ServerError::HandshakeTimeout)??;
 
         // create h2 codec
-        let codec = Rc::new(Codec::default());
-        let con = Connection::new(req.get_ref(), codec.clone(), inner.config.clone());
+        let codec = Codec::default();
+        let con = Connection::new(io.get_ref(), codec.clone(), inner.config.clone());
 
         // start protocol dispatcher
-        IoDispatcher::new(req, codec, Dispatcher::new(con, ctl_srv, pub_srv))
-            .keepalive_timeout(inner.config.keepalive_timeout.get())
-            .disconnect_timeout(inner.config.disconnect_timeout.get())
+        IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_srv, pub_srv))
+            .keepalive_timeout(inner.config.0.keepalive_timeout.get())
+            .disconnect_timeout(inner.config.0.disconnect_timeout.get())
             .await
             .map_err(|_| ServerError::Dispatcher)
     }
@@ -189,9 +171,9 @@ where
         Poll::Ready(())
     }
 
-    fn call(&self, req: IoBoxed) -> Self::Future {
+    fn call(&self, io: IoBoxed) -> Self::Future {
         let slf = ServerHandler(self.0.clone());
-        Box::pin(async move { slf.run(req).await })
+        Box::pin(async move { slf.run(io).await })
     }
 }
 
@@ -223,4 +205,63 @@ where
         let slf = ServerHandler(self.0.clone());
         Box::pin(async move { slf.run(req.into()).await })
     }
+}
+
+async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
+    loop {
+        let ready = io.with_read_buf(|buf| {
+            if buf.len() >= consts::PREFACE.len() {
+                if buf[..consts::PREFACE.len()] == consts::PREFACE {
+                    buf.split_to(consts::PREFACE.len());
+                    Ok(true)
+                } else {
+                    log::trace!("read_preface: invalid preface {:?}", buf);
+                    Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
+                }
+            } else {
+                Ok(false)
+            }
+        })?;
+
+        if ready {
+            log::debug!("Preface has been received");
+            return Ok::<_, ServerError<_>>(());
+        } else {
+            io.read_ready()
+                .await?
+                .ok_or(ServerError::Disconnected(None))?;
+        }
+    }
+}
+
+/// Handle io object.
+pub async fn handle_one<Ctl, Pub>(
+    io: IoBoxed,
+    config: Config,
+    ctl_svc: Ctl,
+    pub_svc: Pub,
+) -> Result<(), ServerError<()>>
+where
+    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl::Error: fmt::Debug,
+    Pub: Service<Message, Response = ()> + 'static,
+    Pub::Error: fmt::Debug,
+{
+    // read preface
+    timeout_checked(config.0.handshake_timeout.get(), async {
+        read_preface(&io).await
+    })
+    .await
+    .map_err(|_| ServerError::HandshakeTimeout)??;
+
+    // create h2 codec
+    let codec = Codec::default();
+    let con = Connection::new(io.get_ref(), codec.clone(), config.clone());
+
+    // start protocol dispatcher
+    IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_svc, pub_svc))
+        .keepalive_timeout(config.0.keepalive_timeout.get())
+        .disconnect_timeout(config.0.disconnect_timeout.get())
+        .await
+        .map_err(|_| ServerError::Dispatcher)
 }

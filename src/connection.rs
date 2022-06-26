@@ -8,10 +8,11 @@ use ntex_rt::spawn;
 use ntex_util::future::{poll_fn, Either};
 use ntex_util::{task::LocalWaker, time::now, time::sleep, HashMap, HashSet};
 
+use crate::config::{Config, ConfigInner};
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, config::Config, consts, message::Message, window::Window};
+use crate::{codec::Codec, consts, message::Message, window::Window};
 
 const HTTP_SCHEME: ByteString = ByteString::from_static("http");
 const _HTTPS_SCHEME: ByteString = ByteString::from_static("https");
@@ -21,7 +22,7 @@ pub struct Connection(Rc<ConnectionState>);
 
 pub(crate) struct ConnectionState {
     pub(crate) io: IoRef,
-    pub(crate) codec: Rc<Codec>,
+    pub(crate) codec: Codec,
     pub(crate) send_window: Cell<Window>,
     pub(crate) recv_window: Cell<Window>,
     pub(crate) settings_processed: Cell<bool>,
@@ -32,7 +33,7 @@ pub(crate) struct ConnectionState {
     readiness: LocalWaker,
 
     // Local config
-    pub(crate) local_config: Rc<Config>,
+    pub(crate) local_config: Config,
     // Maximum number of locally initiated streams
     pub(crate) local_max_concurrent_streams: Cell<Option<u32>>,
     // Initial window size of remote initiated streams
@@ -55,14 +56,19 @@ impl ConnectionState {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            self.local_config.connection_window_sz.get(),
-            self.local_config.connection_window_sz_threshold.get(),
+            self.local_config.0.connection_window_sz.get(),
+            self.local_config.0.connection_window_sz_threshold.get(),
         ) {
             self.io
                 .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec)
                 .unwrap();
         }
         self.recv_window.set(recv_window);
+    }
+
+    #[inline]
+    pub(crate) fn config(&self) -> &ConfigInner {
+        &self.local_config.0
     }
 
     #[inline]
@@ -91,13 +97,13 @@ impl ConnectionState {
         let mut queue = self.local_reset_queue.borrow_mut();
 
         // check queue size
-        if queue.len() >= self.local_config.reset_max.get() {
+        if queue.len() >= self.local_config.0.reset_max.get() {
             if let Some((id, _)) = queue.pop_front() {
                 ids.remove(&id);
             }
         }
         ids.insert(id);
-        queue.push_back((id, now() + self.local_config.reset_duration.get()));
+        queue.push_back((id, now() + self.local_config.0.reset_duration.get()));
         if !self.local_reset_task.get() {
             spawn(delay_drop_task(state.clone()));
         }
@@ -123,14 +129,16 @@ impl ConnectionState {
 }
 
 impl Connection {
-    pub(crate) fn new(io: IoRef, codec: Rc<Codec>, config: Rc<Config>) -> Self {
+    pub(crate) fn new(io: IoRef, codec: Codec, config: Config) -> Self {
         // send preface
         if !config.is_server() {
             let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
         }
 
         // send setting to the peer
-        io.encode(config.settings.get().into(), &codec).unwrap();
+        let settings = config.0.settings.get();
+        log::debug!("Sending local settings {:?}", settings);
+        io.encode(settings.into(), &codec).unwrap();
 
         let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
         let send_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
@@ -138,9 +146,10 @@ impl Connection {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            config.connection_window_sz.get(),
-            config.connection_window_sz_threshold.get(),
+            config.0.connection_window_sz.get(),
+            config.0.connection_window_sz_threshold.get(),
         ) {
+            log::debug!("Sending connection window update to {:?}", val);
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
@@ -168,8 +177,8 @@ impl Connection {
         }))
     }
 
-    pub(crate) fn config(&self) -> &Config {
-        &self.0.local_config
+    pub(crate) fn config(&self) -> &ConfigInner {
+        &self.0.local_config.0
     }
 
     pub(crate) fn state(&self) -> &ConnectionState {
@@ -268,7 +277,7 @@ impl Connection {
         } else if self.0.local_reset_ids.borrow().contains(&id) {
             Err(Either::Left(ConnectionError::StreamClosed(id)))
         } else {
-            if let Some(max) = self.0.local_config.remote_max_concurrent_streams.get() {
+            if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
                     self.0
                         .io
@@ -349,14 +358,14 @@ impl Connection {
         if settings.is_ack() {
             if !self.0.settings_processed.get() {
                 self.0.settings_processed.set(true);
-                if let Some(max) = self.0.local_config.settings.get().max_frame_size() {
+                if let Some(max) = self.0.local_config.0.settings.get().max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
                 }
-                if let Some(max) = self.0.local_config.settings.get().max_header_list_size() {
+                if let Some(max) = self.0.local_config.0.settings.get().max_header_list_size() {
                     self.0.codec.set_recv_header_list_size(max as usize);
                 }
 
-                let upd = (self.0.local_config.window_sz.get() as i32)
+                let upd = (self.0.local_config.0.window_sz.get() as i32)
                     - (frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
 
                 let mut stream_errors = Vec::new();
