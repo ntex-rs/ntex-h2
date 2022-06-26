@@ -108,7 +108,7 @@ fn read_data_stream_id_zero() {
 
 // ===== HEADERS =====
 
-// #[ntex::test]
+#[ntex::test]
 async fn read_continuation_frames() {
     let _ = env_logger::try_init();
 
@@ -135,34 +135,27 @@ async fn read_continuation_frames() {
             .unwrap();
 
         let (pseudo, hdrs, eof) = get_headers!(msg);
-        // println!("REQUEST {:?} {:?}", pseudo, hdrs);
-        //     srv.recv_frame(
-        //         frames::headers(1)
-        //             .request("GET", "https://http2.akamai.com/")
-        //             .eos(),
-        //     )
-        //     .await;
+        assert_eq!(pseudo.path, Some("/index.html".into()));
+        assert!(eof);
     };
 
     let client_fut = async move {
         let stream = client
-            .send_request(Method::GET, "/".into(), HeaderMap::new())
+            .send_request(Method::GET, "/index.html".into(), HeaderMap::new(), true)
             .await
             .expect("response");
 
         let msg = client_rx.recv().await.unwrap();
         let (pseudo, hdrs, eof) = get_headers!(msg);
-        // println!("RESPONSE {:?} {:?} {:?}", pseudo, hdrs, eof);
 
         assert_eq!(pseudo.status, Some(StatusCode::OK));
-        //let (head, _body) = res.into_parts();
         let expected = large
             .iter()
             .fold(HeaderMap::new(), |mut map, &(name, ref value)| {
                 map.append(HeaderName::try_from(name).unwrap(), value.parse().unwrap());
                 map
             });
-        // assert_eq!(hdrs, expected);
+        assert_eq!(hdrs, expected);
     };
 
     join(srv_fut, client_fut).await;
@@ -196,10 +189,8 @@ fn read_goaway_with_debug_data() {
         0, 0, 0, 1, // error_code
         0, 0, 0, 11,
     ]);
-    buf.extend_from_slice(
-        // debug_data
-        b"too_many_pings",
-    );
+    // debug_data
+    buf.extend_from_slice(b"too_many_pings");
 
     let data = decode_frame!(GoAway, buf);
     assert_eq!(data.reason(), frame::Reason::ENHANCE_YOUR_CALM);

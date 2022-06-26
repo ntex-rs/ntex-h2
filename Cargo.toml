@@ -24,7 +24,7 @@ members = [
 [dependencies]
 ntex-connect = "0.1.0"
 ntex-io = "0.1.8"
-ntex-http = "0.1.0"
+ntex-http = "0.1.1"
 ntex-bytes = "0.1.14"
 ntex-codec = "0.6.2"
 ntex-service = "0.3.1"

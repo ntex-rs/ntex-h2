@@ -501,8 +501,7 @@ impl StreamRef {
         match self.0.send.get() {
             HalfState::Idle => {
                 let pseudo = PseudoHeaders::response(status);
-                let mut hdrs = Headers::new(self.0.id, pseudo, headers);
-                hdrs.set_end_headers();
+                let mut hdrs = Headers::new(self.0.id, pseudo, headers, eof);
 
                 if eof {
                     hdrs.set_end_stream();

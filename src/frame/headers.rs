@@ -70,15 +70,19 @@ const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
 impl Headers {
     /// Create a new HEADERS frame
-    pub fn new(stream_id: StreamId, pseudo: PseudoHeaders, fields: HeaderMap) -> Self {
+    pub fn new(stream_id: StreamId, pseudo: PseudoHeaders, fields: HeaderMap, eof: bool) -> Self {
+        let mut flags = HeadersFlag::default();
+        if eof {
+            flags.set_end_stream();
+        }
         Headers {
+            flags,
             stream_id,
             header_block: HeaderBlock {
                 fields,
                 pseudo,
                 is_over_size: false,
             },
-            flags: HeadersFlag::default(),
         }
     }
 
@@ -230,7 +234,7 @@ impl fmt::Debug for Headers {
         builder
             .field("stream_id", &self.stream_id)
             .field("flags", &self.flags)
-            .field("headers", &self.header_block);
+            .field("pseudo", &self.header_block.pseudo);
 
         if let Some(ref protocol) = self.header_block.pseudo.protocol {
             builder.field("protocol", protocol);
@@ -628,7 +632,7 @@ mod test {
             HeaderValue::from_static("sup"),
         );
 
-        let mut headers = Headers::new(StreamId::CON, Default::default(), hdrs);
+        let mut headers = Headers::new(StreamId::CON, Default::default(), hdrs, false);
         headers.set_end_headers();
         headers.encode(&mut encoder, &mut dst, 8);
         assert_eq!(48, dst.len());
@@ -638,8 +642,6 @@ mod test {
         assert_eq!(0x80 | 3, dst[15]);
 
         let mut world = BytesMut::from(&dst[16..17]);
-        //dst.clear();
-
         world.extend_from_slice(&dst[26..29]);
         // assert_eq!("world", huff_decode(&world));
 

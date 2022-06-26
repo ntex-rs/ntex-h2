@@ -222,6 +222,7 @@ impl Connection {
         method: Method,
         path: ByteString,
         headers: HeaderMap,
+        eof: bool,
     ) -> Result<Stream, OperationError> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
@@ -253,7 +254,7 @@ impl Connection {
             scheme: Some(HTTP_SCHEME),
             ..Default::default()
         };
-        stream.send_headers(Headers::new(stream.id(), pseudo, headers));
+        stream.send_headers(Headers::new(stream.id(), pseudo, headers, eof));
         Ok(stream.into_stream())
     }
 

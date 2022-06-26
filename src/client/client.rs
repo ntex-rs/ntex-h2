@@ -36,8 +36,9 @@ impl Client {
         method: Method,
         path: ByteString,
         headers: HeaderMap,
+        eof: bool,
     ) -> Result<Stream, OperationError> {
-        self.0.send_request(method, path, headers).await
+        self.0.send_request(method, path, headers, eof).await
     }
 
     #[inline]
