@@ -206,6 +206,7 @@ where
                 Frame::Ping(ping) => {
                     log::trace!("processing PING: {:#?}", ping);
                     if ping.is_ack() {
+                        self.connection.recv_pong(ping);
                         Either::Right(Either::Left(Ready::Ok(None)))
                     } else {
                         Either::Right(Either::Left(Ready::Ok(Some(

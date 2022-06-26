@@ -144,6 +144,10 @@ pub enum OperationError {
     #[error("Cannot process operation for stream in payload state")]
     Payload,
 
+    /// Ping timeout
+    #[error("Ping timeout")]
+    PingTimeout,
+
     /// Stream is closed
     #[error("Stream is closed {0:?}")]
     Closed(Option<Reason>),

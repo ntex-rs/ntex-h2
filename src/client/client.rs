@@ -3,10 +3,8 @@ use std::{fmt, task::Context, task::Poll};
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
-use ntex_rt::spawn;
 use ntex_service::{IntoService, Service};
-use ntex_util::future::poll_fn;
-use ntex_util::time::{sleep, Millis, Seconds};
+use ntex_util::{future::poll_fn, time::Seconds};
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
@@ -108,10 +106,6 @@ impl ClientConnection {
         S: Service<Message, Response = ()> + 'static,
         S::Error: fmt::Debug,
     {
-        if self.1.config().ping_timeout.get().non_zero() {
-            spawn(ping(self.1.clone(), self.1.config().ping_timeout.get()));
-        }
-
         let disp = Dispatcher::new(
             self.1.clone(),
             DefaultControlService,
@@ -122,23 +116,5 @@ impl ClientConnection {
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(self.1.config().disconnect_timeout.get())
             .await
-    }
-}
-
-async fn ping(con: Connection, timeout: Seconds) {
-    log::debug!("start http client keep-alive task");
-
-    let keepalive = Millis::from(timeout);
-    loop {
-        if con.state().is_disconnected() {
-            break;
-        }
-        sleep(keepalive).await;
-
-        //if !con.ping() {
-        // connection is closed
-        //log::debug!("http client connection is closed, stopping keep-alive task");
-        //break;
-        //}
     }
 }
