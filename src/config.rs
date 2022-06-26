@@ -1,6 +1,6 @@
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{cell::Cell, fmt, rc::Rc, time::Duration};
 
-use ntex_util::time::Seconds;
+use ntex_util::{channel::pool, time::Seconds};
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
 
@@ -11,11 +11,10 @@ bitflags::bitflags! {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Config(pub(crate) Rc<ConfigInner>);
 
 /// Http2 connection configuration
-#[derive(Debug)]
 pub(crate) struct ConfigInner {
     /// Initial window size of locally initiated streams
     pub(crate) window_sz: Cell<WindowSize>,
@@ -33,13 +32,15 @@ pub(crate) struct ConfigInner {
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
-    pub(super) handshake_timeout: Cell<Seconds>,
-    pub(super) client_timeout: Cell<Seconds>,
-    pub(super) disconnect_timeout: Cell<Seconds>,
-    pub(super) ping_timeout: Cell<Seconds>,
+    pub(crate) handshake_timeout: Cell<Seconds>,
+    pub(crate) client_timeout: Cell<Seconds>,
+    pub(crate) disconnect_timeout: Cell<Seconds>,
+    pub(crate) ping_timeout: Cell<Seconds>,
 
     /// Config flags
     flags: Cell<ConfigFlags>,
+
+    pub(crate) pool: pool::Pool<()>,
 }
 
 impl Config {
@@ -85,6 +86,7 @@ impl Config {
             handshake_timeout: Cell::new(Seconds(5)),
             disconnect_timeout: Cell::new(Seconds(3)),
             ping_timeout: Cell::new(Seconds(60)),
+            pool: pool::new(),
         }))
     }
 }
@@ -302,5 +304,47 @@ impl Config {
     /// Check if configuration defined for server.
     pub fn is_server(&self) -> bool {
         self.0.flags.get().contains(ConfigFlags::SERVER)
+    }
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("window_sz", &self.0.window_sz.get())
+            .field("window_sz_threshold", &self.0.window_sz_threshold.get())
+            .field("reset_duration", &self.0.reset_duration.get())
+            .field("reset_max", &self.0.reset_max.get())
+            .field("connection_window_sz", &self.0.connection_window_sz.get())
+            .field(
+                "connection_window_sz_threshold",
+                &self.0.connection_window_sz_threshold.get(),
+            )
+            .field(
+                "remote_max_concurrent_streams",
+                &self.0.remote_max_concurrent_streams.get(),
+            )
+            .field("settings", &self.0.settings.get())
+            .finish()
+    }
+}
+
+impl fmt::Debug for ConfigInner {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("window_sz", &self.window_sz.get())
+            .field("window_sz_threshold", &self.window_sz_threshold.get())
+            .field("reset_duration", &self.reset_duration.get())
+            .field("reset_max", &self.reset_max.get())
+            .field("connection_window_sz", &self.connection_window_sz.get())
+            .field(
+                "connection_window_sz_threshold",
+                &self.connection_window_sz_threshold.get(),
+            )
+            .field(
+                "remote_max_concurrent_streams",
+                &self.remote_max_concurrent_streams.get(),
+            )
+            .field("settings", &self.settings.get())
+            .finish()
     }
 }

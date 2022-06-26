@@ -1,10 +1,10 @@
-use std::{fmt, task::Context, task::Poll};
+use std::fmt;
 
 use ntex_bytes::ByteString;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
 use ntex_service::{IntoService, Service};
-use ntex_util::{future::poll_fn, time::Seconds};
+use ntex_util::time::Seconds;
 
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
@@ -13,6 +13,7 @@ use crate::{
 };
 
 /// Http2 client
+#[derive(Clone)]
 pub struct Client(Connection);
 
 /// Http2 client connection
@@ -39,18 +40,19 @@ impl Client {
         self.0.send_request(method, path, headers, eof).await
     }
 
+    /// Check if client is allowed to send new request
+    ///
+    /// Readiness depends on number of opened streams and max concurrency setting
+    pub fn is_ready(&self) -> bool {
+        self.0.can_create_new_stream()
+    }
+
     #[inline]
     /// Check client readiness
     ///
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) -> Result<(), OperationError> {
-        poll_fn(|cx| self.poll_ready(cx)).await
-    }
-
-    #[inline]
-    /// Check client readiness
-    pub fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
-        self.0.poll_ready(cx)
+        self.0.ready().await
     }
 
     #[inline]

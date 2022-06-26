@@ -1,12 +1,12 @@
-use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_rt::spawn;
-use ntex_util::future::{poll_fn, Either};
-use ntex_util::{task::LocalWaker, time, time::now, time::sleep, HashMap, HashSet};
+use ntex_util::future::Either;
+use ntex_util::{channel::pool, time, time::now, time::sleep, HashMap, HashSet};
 
 use crate::config::{Config, ConfigInner};
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
@@ -38,7 +38,7 @@ pub(crate) struct ConnectionState {
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
     active_local_streams: Cell<u32>,
-    readiness: LocalWaker,
+    readiness: RefCell<VecDeque<pool::Sender<()>>>,
 
     // Local config
     pub(crate) local_config: Config,
@@ -119,7 +119,12 @@ impl ConnectionState {
                 self.active_local_streams.set(local - 1);
                 if let Some(max) = self.local_max_concurrent_streams.get() {
                     if local == max {
-                        self.readiness.wake()
+                        while let Some(tx) = self.readiness.borrow_mut().pop_front() {
+                            if !tx.is_canceled() {
+                                let _ = tx.send(());
+                                break;
+                            }
+                        }
                     }
                 }
             }
@@ -218,7 +223,7 @@ impl Connection {
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
-            readiness: LocalWaker::new(),
+            readiness: RefCell::new(VecDeque::new()),
             next_stream_id: Cell::new(StreamId::new(1)),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
@@ -249,7 +254,11 @@ impl Connection {
         self.0.clone()
     }
 
-    fn can_create_new_stream(&self) -> bool {
+    fn query(&self, id: StreamId) -> Option<StreamRef> {
+        self.0.streams.borrow_mut().get(&id).cloned()
+    }
+
+    pub(crate) fn can_create_new_stream(&self) -> bool {
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             self.0.active_local_streams.get() < max
         } else {
@@ -257,24 +266,26 @@ impl Connection {
         }
     }
 
-    pub(crate) fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
-        if let Some(err) = self.0.error.take() {
-            self.0.error.set(Some(err.clone()));
-            Poll::Ready(Err(err))
-        } else if let Some(max) = self.0.local_max_concurrent_streams.get() {
-            if self.0.active_local_streams.get() < max {
-                Poll::Ready(Ok(()))
+    pub(crate) async fn ready(&self) -> Result<(), OperationError> {
+        loop {
+            if let Some(err) = self.0.error.take() {
+                self.0.error.set(Some(err.clone()));
+                return Err(err);
+            } else if let Some(max) = self.0.local_max_concurrent_streams.get() {
+                if self.0.active_local_streams.get() < max {
+                    return Ok(());
+                } else {
+                    let (tx, rx) = self.config().pool.channel();
+                    self.0.readiness.borrow_mut().push_back(tx);
+                    match rx.await {
+                        Ok(_) => continue,
+                        Err(_) => return Err(OperationError::Disconnected),
+                    }
+                }
             } else {
-                self.0.readiness.register(cx.waker());
-                Poll::Pending
+                return Ok(());
             }
-        } else {
-            Poll::Ready(Ok(()))
         }
-    }
-
-    pub(crate) fn query(&self, id: StreamId) -> Option<StreamRef> {
-        self.0.streams.borrow_mut().get(&id).cloned()
     }
 
     pub(crate) async fn send_request(
@@ -291,7 +302,7 @@ impl Connection {
 
         if !self.can_create_new_stream() {
             log::warn!("Cannot create new stream, waiting for available streams");
-            poll_fn(|cx| self.poll_ready(cx)).await?;
+            self.ready().await?
         }
 
         let stream = {
@@ -473,7 +484,9 @@ impl Connection {
             }
             if let Some(max) = settings.max_concurrent_streams() {
                 self.0.local_max_concurrent_streams.set(Some(max));
-                self.0.readiness.wake();
+                for tx in mem::take(&mut *self.0.readiness.borrow_mut()) {
+                    let _ = tx.send(());
+                }
             }
 
             // RFC 7540 §6.9.2
@@ -582,7 +595,7 @@ impl Connection {
         self.0
             .error
             .set(Some(ConnectionError::GoAway(reason).into()));
-        self.0.readiness.wake();
+        self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
@@ -592,7 +605,7 @@ impl Connection {
 
     pub(crate) fn proto_error(&self, err: &ConnectionError) {
         self.0.error.set(Some((*err).into()));
-        self.0.readiness.wake();
+        self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
