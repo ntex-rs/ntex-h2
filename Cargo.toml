@@ -3,13 +3,13 @@ name = "ntex-h2"
 version = "0.1.0"
 license = "MIT"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
-description = "An HTTP/2 client and server (h2 crate fork)"
+description = "An HTTP/2 client and server"
 documentation = "https://docs.rs/ntex-h2"
 repository = "https://github.com/ntex-rs/ntex-h2"
 readme = "README.md"
 keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
-exclude = ["fixtures/**", "ci/**"]
+exclude = ["fixtures/**", "util/**"]
 edition = "2018"
 
 [workspace]

@@ -1,6 +1,6 @@
 use std::{fmt, io::Cursor};
 
-use ntex_bytes::{ByteString, Bytes, BytesMut};
+use ntex_bytes::{ByteString, BytesMut};
 use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
 
 use crate::hpack;
@@ -58,11 +58,6 @@ struct HeaderBlock {
     /// Pseudo headers, these are broken out as they must be sent as part of the
     /// headers frame.
     pseudo: PseudoHeaders,
-}
-
-#[derive(Debug)]
-struct EncodingHeaderBlock {
-    hpack: Bytes,
 }
 
 const END_STREAM: u8 = 0x1;
@@ -208,16 +203,14 @@ impl Headers {
         self.header_block.fields
     }
 
-    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut) {
+    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut, max_size: usize) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
 
         // Get the HEADERS frame head
         let head = self.head();
 
-        self.header_block
-            .into_encoding(encoder)
-            .encode(&head, dst, |_| {})
+        self.header_block.encode(encoder, &head, dst, max_size);
     }
 
     fn head(&self) -> Head {
@@ -321,37 +314,6 @@ impl PseudoHeaders {
 
     pub fn set_authority(&mut self, authority: ByteString) {
         self.authority = Some(authority);
-    }
-}
-
-// ===== impl EncodingHeaderBlock =====
-
-impl EncodingHeaderBlock {
-    fn encode<F>(self, head: &Head, dst: &mut BytesMut, f: F)
-    where
-        F: FnOnce(&mut BytesMut),
-    {
-        let head_pos = dst.len();
-
-        // At this point, we don't know how big the h2 frame will be.
-        // So, we write the head with length 0, then write the body, and
-        // finally write the length once we know the size.
-        head.encode(0, dst);
-
-        let payload_pos = dst.len();
-
-        f(dst);
-
-        // Now, encode the header payload
-        dst.extend_from_slice(&self.hpack);
-
-        // Compute the header block length
-        let payload_len = (dst.len() - payload_pos) as u64;
-
-        // Write the frame length
-        let payload_len_be = payload_len.to_be_bytes();
-        assert!(payload_len_be[0..5].iter().all(|b| *b == 0));
-        (dst[head_pos..head_pos + 3]).copy_from_slice(&payload_len_be[5..]);
     }
 }
 
@@ -569,17 +531,34 @@ impl HeaderBlock {
         Ok(())
     }
 
-    fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
+    fn encode(
+        self,
+        encoder: &mut hpack::Encoder,
+        head: &Head,
+        dst: &mut BytesMut,
+        max_size: usize,
+    ) {
+        // encode hpack
         let mut hpack = BytesMut::new();
         let headers = Iter {
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
         };
-
         encoder.encode(headers, &mut hpack);
 
-        EncodingHeaderBlock {
-            hpack: hpack.freeze(),
+        let mut head = *head;
+        loop {
+            // encode the header payload
+            if hpack.len() > max_size {
+                Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id())
+                    .encode(max_size, dst);
+                dst.extend_from_slice(&hpack.split_to(max_size));
+                head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
+            } else {
+                head.encode(hpack.len(), dst);
+                dst.extend_from_slice(&hpack);
+                break;
+            }
         }
     }
 
@@ -636,40 +615,35 @@ mod test {
         let mut dst = BytesMut::new();
 
         let mut hdrs = HeaderMap::default();
-        hdrs.insert(
+        hdrs.append(
             HeaderName::from_static("hello"),
             HeaderValue::from_static("world"),
         );
-        hdrs.insert(
+        hdrs.append(
             HeaderName::from_static("hello"),
             HeaderValue::from_static("zomg"),
         );
-        hdrs.insert(
+        hdrs.append(
             HeaderName::from_static("hello"),
             HeaderValue::from_static("sup"),
         );
 
-        let headers = Headers::new(StreamId::CON, Default::default(), hdrs);
-        //let continuation = headers.encode(&mut encoder, &mut dst);
-
-        headers.encode(&mut encoder, &mut dst);
-        //assert_eq!(17, dst.len());
-        //assert_eq!([0, 0, 8, 1, 0, 0, 0, 0, 0], &dst[0..9]);
-        assert_eq!(19, dst.len());
-        assert_eq!([0, 0, 10, 1, 4, 0, 0, 0, 0], &dst[0..9]);
+        let mut headers = Headers::new(StreamId::CON, Default::default(), hdrs);
+        headers.set_end_headers();
+        headers.encode(&mut encoder, &mut dst, 8);
+        assert_eq!(48, dst.len());
+        assert_eq!([0, 0, 8, 1, 0, 0, 0, 0, 0], &dst[0..9]);
         assert_eq!(&[0x40, 0x80 | 4], &dst[9..11]);
         assert_eq!("hello", huff_decode(&dst[11..15]));
-        // assert_eq!(0x80 | 4, dst[15]);
+        assert_eq!(0x80 | 3, dst[15]);
 
-        //let mut world = dst[16..17].to_owned();
+        let mut world = BytesMut::from(&dst[16..17]);
         //dst.clear();
 
-        //assert!(continuation.encode(&mut dst).is_none());
-        //world.extend_from_slice(&dst[9..12]);
-        //assert_eq!("world", huff_decode(&world));
+        world.extend_from_slice(&dst[26..29]);
+        // assert_eq!("world", huff_decode(&world));
 
-        //assert_eq!(24, dst.len());
-        //assert_eq!([0, 0, 15, 9, 4, 0, 0, 0, 0], &dst[0..9]);
+        assert_eq!([0, 0, 8, 9, 0, 0, 0, 0, 0], &dst[17..26]);
 
         // // Next is not indexed
         //assert_eq!(&[15, 47, 0x80 | 3], &dst[12..15]);

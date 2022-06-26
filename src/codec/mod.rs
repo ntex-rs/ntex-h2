@@ -368,7 +368,8 @@ impl Encoder for Codec {
                 inner.encoder_last_data_frame = Some(v);
             }
             Frame::Headers(v) => {
-                v.encode(&mut inner.encoder_hpack, buf);
+                let max_size = inner.encoder_max_frame_size as usize;
+                v.encode(&mut inner.encoder_hpack, buf, max_size);
             }
             Frame::Settings(v) => {
                 v.encode(buf);
