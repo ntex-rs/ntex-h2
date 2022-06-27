@@ -164,7 +164,7 @@ impl StreamState {
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(reason));
         if let Some(reason) = reason {
-            self.error.set(Some(OperationError::RemoteReset(reason)));
+            self.error.set(Some(OperationError::LocalReset(reason)));
         }
         self.send_waker.wake();
         self.review_state();
@@ -310,7 +310,7 @@ impl StreamRef {
         } else {
             self.0.state_send_payload();
         }
-        log::trace!("send headers {:#?}", hdrs);
+        log::debug!("send headers {:#?} eos: {:?}", hdrs, hdrs.is_end_stream());
 
         if hdrs
             .pseudo()
@@ -339,7 +339,7 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, StreamError> {
-        log::trace!(
+        log::debug!(
             "processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.0.id,
             hdrs,
@@ -384,7 +384,7 @@ impl StreamRef {
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, StreamError> {
         let cap = Capacity::new(data.payload().len() as u32, &self.0);
-        log::trace!(
+        log::debug!(
             "processing DATA frame for {:?}, len: {:?}",
             self.0.id,
             data.payload().len()
@@ -530,7 +530,7 @@ impl StreamRef {
                     self.0.error.set(Some(e));
                     return Err(res);
                 }
-                log::trace!(
+                log::debug!(
                     "{:?} sending {} bytes, eof: {}, send: {:?}",
                     self.0.id,
                     res.len(),
@@ -633,6 +633,23 @@ impl ops::Deref for Stream {
     #[inline]
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        if !self.0 .0.recv.get().is_closed() || !self.0 .0.send.get().is_closed() {
+            self.0
+                 .0
+                .con
+                .io
+                .encode(
+                    Reset::new(self.0 .0.id, Reason::CANCEL).into(),
+                    &self.0 .0.con.codec,
+                )
+                .unwrap();
+            self.0 .0.reset_stream(Some(Reason::CANCEL));
+        }
     }
 }
 

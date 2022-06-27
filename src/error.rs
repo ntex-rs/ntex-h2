@@ -133,6 +133,7 @@ impl StreamError {
 pub enum OperationError {
     #[error("{0:?}")]
     Stream(#[from] StreamError),
+
     #[error("{0}")]
     Connection(#[from] ConnectionError),
 
@@ -155,6 +156,10 @@ pub enum OperationError {
     /// Stream has been reset from the peer
     #[error("Stream has been reset from the peer with {0}")]
     RemoteReset(Reason),
+
+    /// Stream has been reset from local side
+    #[error("Stream has been reset from local side with {0}")]
+    LocalReset(Reason),
 
     /// The stream ID space is overflowed
     ///

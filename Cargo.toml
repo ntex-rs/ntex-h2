@@ -9,7 +9,7 @@ repository = "https://github.com/ntex-rs/ntex-h2"
 readme = "README.md"
 keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
-exclude = ["fixtures/**", "util/**"]
+exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2018"
 
 [workspace]
