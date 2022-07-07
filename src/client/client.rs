@@ -1,7 +1,7 @@
 use std::fmt;
 
 use ntex_bytes::ByteString;
-use ntex_http::{HeaderMap, Method};
+use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
 use ntex_service::{IntoService, Service};
 use ntex_util::time::Seconds;
@@ -14,7 +14,11 @@ use crate::{
 
 /// Http2 client
 #[derive(Clone)]
-pub struct Client(Connection);
+pub struct Client {
+    con: Connection,
+    scheme: Scheme,
+    authority: ByteString,
+}
 
 /// Http2 client connection
 pub struct ClientConnection(IoBoxed, Connection);
@@ -22,7 +26,9 @@ pub struct ClientConnection(IoBoxed, Connection);
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ntex_h2::Client")
-            // .field("connection", &self.0)
+            .field("scheme", &self.scheme)
+            .field("authority", &self.authority)
+            .field("connection", &self.con)
             .finish()
     }
 }
@@ -37,14 +43,35 @@ impl Client {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, OperationError> {
-        self.0.send_request(method, path, headers, eof).await
+        self.con
+            .send_request(
+                self.scheme.clone(),
+                self.authority.clone(),
+                method,
+                path,
+                headers,
+                eof,
+            )
+            .await
     }
 
+    #[inline]
     /// Check if client is allowed to send new request
     ///
     /// Readiness depends on number of opened streams and max concurrency setting
     pub fn is_ready(&self) -> bool {
-        self.0.can_create_new_stream()
+        self.con.can_create_new_stream()
+    }
+
+    #[inline]
+    /// Set client's secure state
+    pub fn set_scheme(&mut self, scheme: Scheme) {
+        self.scheme = scheme;
+    }
+
+    /// Set client's authority
+    pub fn set_authority(&mut self, authority: ByteString) {
+        self.authority = authority;
     }
 
     #[inline]
@@ -52,25 +79,25 @@ impl Client {
     ///
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) -> Result<(), OperationError> {
-        self.0.ready().await
+        self.con.ready().await
     }
 
     #[inline]
     /// Gracefully close connection
     pub fn close(&self) {
-        self.0.state().io.close()
+        self.con.state().io.close()
     }
 
     #[inline]
     /// Check if connection is closed
     pub fn is_closed(&self) -> bool {
-        self.0.state().io.is_closed()
+        self.con.state().io.is_closed()
     }
 
     #[inline]
     /// Notify when connection get closed
     pub fn on_disconnect(&self) -> OnDisconnect {
-        self.0.state().io.on_disconnect()
+        self.con.state().io.on_disconnect()
     }
 }
 
@@ -98,7 +125,11 @@ impl ClientConnection {
     #[inline]
     /// Get client
     pub fn client(&self) -> Client {
-        Client(self.1.clone())
+        Client {
+            con: self.1.clone(),
+            scheme: Scheme::HTTP,
+            authority: ByteString::new(),
+        }
     }
 
     /// Run client with provided control messages handler

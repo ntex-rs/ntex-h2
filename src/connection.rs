@@ -2,7 +2,7 @@ use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{HeaderMap, Method};
+use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_rt::spawn;
 use ntex_util::future::Either;
@@ -13,9 +13,6 @@ use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInne
 use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, consts, message::Message, window::Window};
-
-const HTTP_SCHEME: ByteString = ByteString::from_static("http");
-const _HTTPS_SCHEME: ByteString = ByteString::from_static("https");
 
 #[derive(Clone, Debug)]
 pub struct Connection(Rc<ConnectionState>);
@@ -290,6 +287,8 @@ impl Connection {
 
     pub(crate) async fn send_request(
         &self,
+        scheme: Scheme,
+        authority: ByteString,
         method: Method,
         path: ByteString,
         headers: HeaderMap,
@@ -320,9 +319,14 @@ impl Connection {
         };
 
         let pseudo = PseudoHeaders {
+            scheme: Some(if scheme == Scheme::HTTPS {
+                consts::HTTPS_SCHEME
+            } else {
+                consts::HTTP_SCHEME
+            }),
             method: Some(method),
+            authority: Some(authority),
             path: Some(path),
-            scheme: Some(HTTP_SCHEME),
             ..Default::default()
         };
         stream.send_headers(Headers::new(stream.id(), pseudo, headers, eof));
