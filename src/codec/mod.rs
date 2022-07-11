@@ -101,7 +101,7 @@ impl Codec {
     }
 
     /// Set the peer's header table size size.
-    pub fn set_send_header_list_size(&self, val: usize) {
+    pub fn set_send_header_table_size(&self, val: usize) {
         self.0.borrow_mut().encoder_hpack.update_max_size(val);
     }
 

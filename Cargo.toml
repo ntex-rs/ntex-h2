@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.1.1"
+version = "0.1.2"
 license = "MIT"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -11,15 +11,6 @@ keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2018"
-
-[workspace]
-members = [
-    #"tests/h2-fuzz",
-    #"tests/h2-tests",
-    #"tests/h2-support",
-    #"util/genfixture",
-    #"util/genhuff",
-]
 
 [dependencies]
 ntex-connect = "0.1.0"

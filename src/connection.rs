@@ -483,8 +483,8 @@ impl Connection {
                 self.0.codec.set_send_frame_size(max as usize);
                 self.0.remote_frame_size.set(max);
             }
-            if let Some(max) = settings.max_header_list_size() {
-                self.0.codec.set_send_header_list_size(max as usize);
+            if let Some(max) = settings.header_table_size() {
+                self.0.codec.set_send_header_table_size(max as usize);
             }
             if let Some(max) = settings.max_concurrent_streams() {
                 self.0.local_max_concurrent_streams.set(Some(max));
