@@ -1,12 +1,13 @@
 use std::{cell, fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use ntex_io::DispatchItem;
+use ntex_rt::spawn;
 use ntex_service::Service;
-use ntex_util::{future::Either, future::Ready, ready};
+use ntex_util::{future::join_all, future::Either, future::Ready, ready, HashMap};
 
 use crate::connection::{Connection, ConnectionState};
 use crate::control::{ControlMessage, ControlResult};
-use crate::error::{ConnectionError, StreamErrorInner};
+use crate::error::{ConnectionError, OperationError, StreamErrorInner};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
@@ -16,8 +17,7 @@ where
     Ctl: Service<ControlMessage<Pub::Error>>,
     Pub: Service<Message>,
 {
-    inner: Rc<Inner<Ctl>>,
-    publish: Pub,
+    inner: Rc<Inner<Ctl, Pub>>,
     connection: Connection,
     shutdown: cell::RefCell<Shutdown<Ctl::Future>>,
 }
@@ -28,20 +28,23 @@ enum Shutdown<F> {
     InProcess(Pin<Box<F>>),
 }
 
-struct Inner<Ctl> {
+struct Inner<Ctl, Pub> {
     control: Ctl,
+    publish: Pub,
     connection: Rc<ConnectionState>,
     last_stream_id: StreamId,
 }
 
-type ServiceFut<Pub, Ctl, E> =
-    Either<PublishResponse<Pub, Ctl>, Either<Ready<Option<Frame>, ()>, ControlResponse<E, Ctl>>>;
+type ServiceFut<Pub, Ctl, E> = Either<
+    PublishResponse<Pub, Ctl>,
+    Either<Ready<Option<Frame>, ()>, ControlResponse<E, Ctl, Pub>>,
+>;
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult>,
+    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
     Ctl::Error: fmt::Debug,
-    Pub: Service<Message, Response = ()>,
+    Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
     pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
@@ -49,10 +52,10 @@ where
             shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
                 control,
+                publish,
                 last_stream_id: 0.into(),
                 connection: connection.get_state(),
             }),
-            publish,
             connection,
         }
     }
@@ -63,7 +66,7 @@ where
     ) -> ServiceFut<Pub, Ctl, Pub::Error> {
         match result {
             Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(
-                self.publish.call(msg),
+                self.inner.publish.call(msg),
                 stream,
                 &self.inner,
             )),
@@ -84,11 +87,23 @@ where
                     .io
                     .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
                 Either::Left(PublishResponse::new(
-                    self.publish.call(Message::error(kind, &stream)),
+                    self.inner.publish.call(Message::error(kind, &stream)),
                     stream,
                     &self.inner,
                 ))
             }
+        }
+    }
+
+    fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: OperationError) {
+        if !streams.is_empty() {
+            let inner = self.inner.clone();
+            spawn(async move {
+                let futs = streams.into_iter().map(move |(_, stream)| {
+                    inner.publish.call(Message::disconnect(err.clone(), stream))
+                });
+                let _ = join_all(futs).await;
+            });
         }
     }
 }
@@ -104,12 +119,12 @@ where
     type Error = ();
     type Future = Either<
         PublishResponse<Pub, Ctl>,
-        Either<Ready<Self::Response, Self::Error>, ControlResponse<Pub::Error, Ctl>>,
+        Either<Ready<Self::Response, Self::Error>, ControlResponse<Pub::Error, Ctl, Pub>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // check publish service readiness
-        let res1 = self.publish.poll_ready(cx);
+        let res1 = self.inner.publish.poll_ready(cx);
 
         // check control service readiness
         let res2 = self.inner.control.poll_ready(cx);
@@ -146,7 +161,7 @@ where
         };
 
         if shutdown_ready {
-            let res1 = self.publish.poll_shutdown(cx, is_error);
+            let res1 = self.inner.publish.poll_shutdown(cx, is_error);
             let res2 = self.inner.control.poll_shutdown(cx, is_error);
             if res1.is_pending() || res2.is_pending() {
                 Poll::Pending
@@ -185,7 +200,7 @@ where
                                 .io
                                 .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
                             let fut = PublishResponse::<Pub, Ctl>::new(
-                                self.publish.call(Message::error(kind, &stream)),
+                                self.inner.publish.call(Message::error(kind, &stream)),
                                 stream,
                                 &self.inner,
                             );
@@ -216,7 +231,9 @@ where
                 }
                 Frame::GoAway(frm) => {
                     log::trace!("processing GoAway: {:#?}", frm);
-                    self.connection.recv_go_away(frm.reason(), frm.data());
+                    let reason = frm.reason();
+                    let streams = self.connection.recv_go_away(reason, frm.data());
+                    self.handle_connection_error(streams, ConnectionError::GoAway(reason).into());
                     Either::Right(Either::Right(ControlResponse::new(
                         ControlMessage::go_away(frm),
                         &self.inner,
@@ -229,7 +246,8 @@ where
             },
             DispatchItem::EncoderError(err) => {
                 let err = ConnectionError::from(err);
-                self.connection.proto_error(&err);
+                let streams = self.connection.proto_error(&err);
+                self.handle_connection_error(streams, ConnectionError::from(err).into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
@@ -237,22 +255,26 @@ where
             }
             DispatchItem::DecoderError(err) => {
                 let err = ConnectionError::from(err);
-                self.connection.proto_error(&err);
+                let streams = self.connection.proto_error(&err);
+                self.handle_connection_error(streams, ConnectionError::from(err).into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
                 )))
             }
             DispatchItem::KeepAliveTimeout => {
-                self.connection
+                let streams = self
+                    .connection
                     .proto_error(&ConnectionError::KeepaliveTimeout);
+                self.handle_connection_error(streams, ConnectionError::KeepaliveTimeout.into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ConnectionError::KeepaliveTimeout),
                     &self.inner,
                 )))
             }
             DispatchItem::Disconnect(err) => {
-                self.connection.disconnect();
+                let streams = self.connection.disconnect();
+                self.handle_connection_error(streams, OperationError::Disconnected);
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::peer_gone(err),
                     &self.inner,
@@ -271,7 +293,7 @@ pin_project_lite::pin_project! {
         stream: StreamRef,
         #[pin]
         state: PublishResponseState<P, C>,
-        inner: Rc<Inner<C>>,
+        inner: Rc<Inner<C, P>>,
     }
 }
 
@@ -279,7 +301,7 @@ pin_project_lite::pin_project! {
     #[project = PublishResponseStateProject]
     enum PublishResponseState<P: Service<Message>, C: Service<ControlMessage<P::Error>>> {
         Publish { #[pin] fut: P::Future },
-        Control { #[pin] fut: ControlResponse<P::Error, C> },
+        Control { #[pin] fut: ControlResponse<P::Error, C, P> },
     }
 }
 
@@ -290,7 +312,7 @@ where
     C: Service<ControlMessage<P::Error>, Response = ControlResult>,
     C::Error: fmt::Debug,
 {
-    fn new(fut: P::Future, stream: StreamRef, inner: &Rc<Inner<C>>) -> Self {
+    fn new(fut: P::Future, stream: StreamRef, inner: &Rc<Inner<C, P>>) -> Self {
         Self {
             stream,
             inner: inner.clone(),
@@ -336,21 +358,21 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<E, Ctl: Service<ControlMessage<E>>> {
+    pub(crate) struct ControlResponse<E, Ctl: Service<ControlMessage<E>>, Pub> {
         #[pin]
         fut: Ctl::Future,
-        inner: Rc<Inner<Ctl>>,
+        inner: Rc<Inner<Ctl, Pub>>,
         _t: marker::PhantomData<E>,
     }
 }
 
-impl<E, Ctl> ControlResponse<E, Ctl>
+impl<E, Ctl, Pub> ControlResponse<E, Ctl, Pub>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,
     Ctl::Error: fmt::Debug,
 {
-    fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<Ctl>>) -> Self {
+    fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<Ctl, Pub>>) -> Self {
         Self {
             fut: inner.control.call(pkt),
             inner: inner.clone(),
@@ -359,7 +381,7 @@ where
     }
 }
 
-impl<E, Ctl> Future for ControlResponse<E, Ctl>
+impl<E, Ctl, Pub> Future for ControlResponse<E, Ctl, Pub>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,

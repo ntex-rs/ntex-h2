@@ -589,7 +589,11 @@ impl Connection {
         self.0.unset_flags(ConnectionFlags::PING_SENT);
     }
 
-    pub(crate) fn recv_go_away(&self, reason: frame::Reason, data: &Bytes) {
+    pub(crate) fn recv_go_away(
+        &self,
+        reason: frame::Reason,
+        data: &Bytes,
+    ) -> HashMap<StreamId, StreamRef> {
         log::trace!(
             "processing go away with reason: {:?}, data: {:?}",
             reason,
@@ -605,29 +609,32 @@ impl Connection {
         for stream in streams.values() {
             stream.set_go_away(reason)
         }
+        streams
     }
 
-    pub(crate) fn proto_error(&self, err: &ConnectionError) {
+    pub(crate) fn proto_error(&self, err: &ConnectionError) -> HashMap<StreamId, StreamRef> {
         self.0.error.set(Some((*err).into()));
         self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
-        for stream in streams.values() {
-            stream.set_failed(None)
+        for stream in &mut streams.values() {
+            stream.set_failed_stream((*err).into())
         }
+        streams
     }
 
-    pub(crate) fn disconnect(&self) {
+    pub(crate) fn disconnect(&self) -> HashMap<StreamId, StreamRef> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err))
         } else {
             self.0.error.set(Some(OperationError::Disconnected));
-
-            let streams = mem::take(&mut *self.0.streams.borrow_mut());
-            for stream in streams.values() {
-                stream.set_failed_stream(OperationError::Disconnected)
-            }
         }
+
+        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        for stream in streams.values() {
+            stream.set_failed_stream(OperationError::Disconnected)
+        }
+        streams
     }
 }
 

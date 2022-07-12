@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.3] - 2022-07-12
+
+* Call publish service on connection error
+
 ## [0.1.2] - 2022-07-11
 
 * Fix header_table_size setting handling #128

@@ -3,7 +3,7 @@ use std::mem;
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 
-use crate::error::StreamError;
+use crate::error::{OperationError, StreamError};
 use crate::frame::{PseudoHeaders, StreamId};
 use crate::stream::{Capacity, StreamRef};
 
@@ -22,6 +22,7 @@ pub enum MessageKind {
     },
     Data(Bytes, Capacity),
     Eof(StreamEof),
+    Disconnect(OperationError),
     Empty,
 }
 
@@ -74,6 +75,13 @@ impl Message {
         Message {
             stream: stream.clone(),
             kind: MessageKind::Eof(StreamEof::Error(err)),
+        }
+    }
+
+    pub(crate) fn disconnect(err: OperationError, stream: StreamRef) -> Self {
+        Message {
+            stream,
+            kind: MessageKind::Disconnect(err),
         }
     }
 
