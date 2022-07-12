@@ -58,6 +58,9 @@ async fn main() -> std::io::Result<()> {
                                 .send_payload("hello world".into(), true)
                                 .await?;
                         }
+                        MessageKind::Disconnect(err) => {
+                            log::trace!("Disconnect: {:?}", err);
+                        }
                         MessageKind::Empty => {}
                     }
                     Ok::<_, OperationError>(())

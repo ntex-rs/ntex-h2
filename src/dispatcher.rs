@@ -247,7 +247,7 @@ where
             DispatchItem::EncoderError(err) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
-                self.handle_connection_error(streams, ConnectionError::from(err).into());
+                self.handle_connection_error(streams, err.into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
@@ -256,7 +256,7 @@ where
             DispatchItem::DecoderError(err) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
-                self.handle_connection_error(streams, ConnectionError::from(err).into());
+                self.handle_connection_error(streams, err.into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,

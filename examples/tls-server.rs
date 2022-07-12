@@ -76,6 +76,9 @@ async fn main() -> std::io::Result<()> {
                                 MessageKind::Eof(data) => {
                                     println!("Got eof: {:?}", data);
                                 }
+                                MessageKind::Disconnect(err) => {
+                                    log::trace!("Disconnect: {:?}", err);
+                                }
                                 MessageKind::Empty => {}
                             }
                             Ok::<_, OperationError>(())
