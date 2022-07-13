@@ -10,8 +10,10 @@ use crate::frame::{
 };
 use crate::{connection::ConnectionState, frame, message::Message, window::Window};
 
+/// HTTP/2 Stream
 pub struct Stream(StreamRef);
 
+/// Stream capacity information
 #[derive(Debug)]
 pub struct Capacity {
     size: Cell<u32>,
@@ -95,7 +97,7 @@ impl Drop for Capacity {
     }
 }
 
-/// State related to validating a stream's content-length
+/// State related to a stream's content-length validation
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ContentLength {
     Omitted,

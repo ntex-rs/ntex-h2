@@ -209,23 +209,22 @@ where
 fn create_connection(io: &IoBoxed, config: &Config) -> (Codec, Connection) {
     // create h2 codec
     let codec = Codec::default();
-    let con = Connection::new(io.get_ref(), codec.clone(), config.clone());
+    let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true);
 
     // slow request timeout
     let timeout = config.0.client_timeout.get();
     if !timeout.is_zero() {
         con.state().set_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
 
-        let con2 = con.clone();
+        let state = con.get_state();
         ntex_rt::spawn(async move {
             sleep(timeout).await;
 
-            if con2
-                .state()
+            if state
                 .flags()
                 .contains(ConnectionFlags::SLOW_REQUEST_TIMEOUT)
             {
-                con2.state().io.close()
+                state.io.close()
             }
         });
     }

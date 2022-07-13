@@ -1,6 +1,6 @@
 use std::{cell::Cell, marker::PhantomData, ops};
 
-use ntex_bytes::{PoolId, PoolRef};
+use ntex_bytes::{ByteString, PoolId, PoolRef};
 use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Service};
@@ -12,6 +12,7 @@ use crate::{client::ClientConnection, client::ClientError, config::Config};
 pub struct Connector<A, T> {
     connector: T,
     config: Config,
+    secure: bool,
     pub(super) pool: Cell<PoolRef>,
 
     _t: PhantomData<A>,
@@ -31,6 +32,7 @@ where
         Connector {
             connector: connector.into_service(),
             config: Config::client(),
+            secure: false,
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -46,6 +48,7 @@ where
         Connector {
             connector: DefaultConnector::default(),
             config: Config::client(),
+            secure: false,
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -70,6 +73,13 @@ impl<A, T> Connector<A, T>
 where
     A: Address,
 {
+    #[inline]
+    /// Set scheme
+    pub fn secure(&mut self) -> &mut Self {
+        self.secure = true;
+        self
+    }
+
     /// Set memory pool.
     ///
     /// Use specified memory pool for memory allocations. By default P5
@@ -89,6 +99,7 @@ where
         Connector {
             connector: connector.into_service(),
             config: self.config.clone(),
+            secure: self.secure,
             pool: self.pool.clone(),
             _t: PhantomData,
         }
@@ -103,10 +114,15 @@ where
 {
     /// Connect to http2 server
     pub async fn connect(&self, address: A) -> Result<ClientConnection, ClientError> {
+        let secure = self.secure;
+        let authority = ByteString::from(address.host());
+
         let fut = async {
-            Ok::<_, ClientError>(ClientConnection::new(
+            Ok::<_, ClientError>(ClientConnection::with_params(
                 self.connector.call(Connect::new(address)).await?,
                 self.config.clone(),
+                secure,
+                authority,
             ))
         };
 

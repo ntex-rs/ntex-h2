@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
@@ -6,31 +6,25 @@ use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
 use ntex_service::{IntoService, Service};
 use ntex_util::time::Seconds;
 
+use crate::connection::Connection;
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{
-    codec::Codec, config::Config, connection::Connection, Message, OperationError, Stream,
-};
+use crate::{codec::Codec, config::Config, Message, OperationError, Stream};
 
 /// Http2 client
 #[derive(Clone)]
-pub struct Client {
+pub struct Client(Rc<ClientRef>);
+
+/// Http2 client
+struct ClientRef {
     con: Connection,
-    scheme: Scheme,
     authority: ByteString,
 }
 
 /// Http2 client connection
-pub struct ClientConnection(IoBoxed, Connection);
-
-impl fmt::Debug for Client {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ntex_h2::Client")
-            .field("scheme", &self.scheme)
-            .field("authority", &self.authority)
-            .field("connection", &self.con)
-            .finish()
-    }
+pub struct ClientConnection {
+    io: IoBoxed,
+    client: Rc<ClientRef>,
 }
 
 impl Client {
@@ -43,15 +37,9 @@ impl Client {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, OperationError> {
-        self.con
-            .send_request(
-                self.scheme.clone(),
-                self.authority.clone(),
-                method,
-                path,
-                headers,
-                eof,
-            )
+        self.0
+            .con
+            .send_request(self.0.authority.clone(), method, path, headers, eof)
             .await
     }
 
@@ -60,51 +48,80 @@ impl Client {
     ///
     /// Readiness depends on number of opened streams and max concurrency setting
     pub fn is_ready(&self) -> bool {
-        self.con.can_create_new_stream()
+        self.0.con.can_create_new_stream()
     }
 
+    #[doc(hidden)]
     #[inline]
     /// Set client's secure state
-    pub fn set_scheme(&mut self, scheme: Scheme) {
-        self.scheme = scheme;
+    pub fn set_scheme(&self, scheme: Scheme) {
+        if scheme == Scheme::HTTPS {
+            self.0.con.set_secure(true)
+        } else {
+            self.0.con.set_secure(false)
+        }
     }
 
+    #[doc(hidden)]
     /// Set client's authority
-    pub fn set_authority(&mut self, authority: ByteString) {
-        self.authority = authority;
-    }
+    pub fn set_authority(&self, _: ByteString) {}
 
     #[inline]
     /// Check client readiness
     ///
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) -> Result<(), OperationError> {
-        self.con.ready().await
+        self.0.con.ready().await
     }
 
     #[inline]
     /// Gracefully close connection
     pub fn close(&self) {
-        self.con.state().io.close()
+        self.0.con.disconnect_when_ready()
+    }
+
+    #[inline]
+    /// Close connection
+    pub fn force_close(&self) {
+        self.0.con.close()
     }
 
     #[inline]
     /// Check if connection is closed
     pub fn is_closed(&self) -> bool {
-        self.con.state().io.is_closed()
+        self.0.con.is_closed()
     }
 
     #[inline]
     /// Notify when connection get closed
     pub fn on_disconnect(&self) -> OnDisconnect {
-        self.con.state().io.on_disconnect()
+        self.0.con.state().io.on_disconnect()
     }
 }
 
-impl fmt::Debug for ClientConnection {
+impl Drop for Client {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.0) == 1 {
+            log::debug!("Last h2 client has been dropped, disconnecting");
+            self.0.con.disconnect_when_ready()
+        }
+    }
+}
+
+impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ntex_h2::ClientConnection")
-            .field("config", &self.1.config())
+        f.debug_struct("ntex_h2::Client")
+            .field("authority", &self.0.authority)
+            .field("connection", &self.0.con)
+            .finish()
+    }
+}
+
+impl fmt::Debug for ClientRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ntex_h2::Client")
+            .field("authority", &self.authority)
+            .field("connection", &self.con)
             .finish()
     }
 }
@@ -115,21 +132,29 @@ impl ClientConnection {
     where
         IoBoxed: From<T>,
     {
+        Self::with_params(io, config, false, ByteString::new())
+    }
+
+    /// Construct new `ClientConnection` instance.
+    pub fn with_params<T>(io: T, config: Config, secure: bool, authority: ByteString) -> Self
+    where
+        IoBoxed: From<T>,
+    {
         let io: IoBoxed = io.into();
         let codec = Codec::default();
-        let con = Connection::new(io.get_ref(), codec, config);
+        let con = Connection::new(io.get_ref(), codec, config, false);
+        con.set_secure(secure);
 
-        ClientConnection(io, con)
+        ClientConnection {
+            io,
+            client: Rc::new(ClientRef { con, authority }),
+        }
     }
 
     #[inline]
     /// Get client
     pub fn client(&self) -> Client {
-        Client {
-            con: self.1.clone(),
-            scheme: Scheme::HTTP,
-            authority: ByteString::new(),
-        }
+        Client(self.client.clone())
     }
 
     /// Run client with provided control messages handler
@@ -140,14 +165,23 @@ impl ClientConnection {
         S::Error: fmt::Debug,
     {
         let disp = Dispatcher::new(
-            self.1.clone(),
+            self.client.con.clone(),
             DefaultControlService,
             service.into_service(),
         );
 
-        IoDispatcher::new(self.0, self.1.state().codec.clone(), disp)
+        IoDispatcher::new(self.io, self.client.con.state().codec.clone(), disp)
             .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.1.config().disconnect_timeout.get())
+            .disconnect_timeout(self.client.con.config().disconnect_timeout.get())
             .await
+    }
+}
+
+impl fmt::Debug for ClientConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ntex_h2::ClientConnection")
+            .field("authority", &self.client.authority)
+            .field("config", &self.client.con.config())
+            .finish()
     }
 }

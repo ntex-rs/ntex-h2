@@ -2,7 +2,7 @@ use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
-use ntex_http::{uri::Scheme, HeaderMap, Method};
+use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_rt::spawn;
 use ntex_util::future::Either;
@@ -23,6 +23,8 @@ bitflags::bitflags! {
         const DELAY_DROP_TASK_STARTED = 0b0000_0010;
         const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
         const PING_SENT               = 0b0000_1000;
+        const DISCONNECT_WHEN_READY   = 0b0001_0000;
+        const SECURE                  = 0b0010_0000;
     }
 }
 
@@ -105,26 +107,37 @@ impl ConnectionState {
         self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED)
     }
 
-    #[inline]
     pub(crate) fn drop_stream(&self, id: StreamId, state: &Rc<ConnectionState>) {
-        if let Some(stream) = self.streams.borrow_mut().remove(&id) {
-            if stream.is_remote() {
-                self.active_remote_streams
-                    .set(self.active_remote_streams.get() - 1)
-            } else {
-                let local = self.active_local_streams.get();
-                self.active_local_streams.set(local - 1);
-                if let Some(max) = self.local_max_concurrent_streams.get() {
-                    if local == max {
-                        while let Some(tx) = self.readiness.borrow_mut().pop_front() {
-                            if !tx.is_canceled() {
-                                let _ = tx.send(());
-                                break;
+        let empty = {
+            let mut streams = self.streams.borrow_mut();
+            if let Some(stream) = streams.remove(&id) {
+                if stream.is_remote() {
+                    self.active_remote_streams
+                        .set(self.active_remote_streams.get() - 1)
+                } else {
+                    let local = self.active_local_streams.get();
+                    self.active_local_streams.set(local - 1);
+                    if let Some(max) = self.local_max_concurrent_streams.get() {
+                        if local == max {
+                            while let Some(tx) = self.readiness.borrow_mut().pop_front() {
+                                if !tx.is_canceled() {
+                                    let _ = tx.send(());
+                                    break;
+                                }
                             }
                         }
                     }
                 }
             }
+            streams.is_empty()
+        };
+        let flags = self.flags();
+
+        // Close connection
+        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
+            log::debug!("All streams are closed, disconnecting");
+            self.io.close();
+            return;
         }
 
         let mut ids = self.local_reset_ids.borrow_mut();
@@ -138,10 +151,7 @@ impl ConnectionState {
         }
         ids.insert(id);
         queue.push_back((id, now() + self.local_config.0.reset_duration.get()));
-        if !self
-            .flags()
-            .contains(ConnectionFlags::DELAY_DROP_TASK_STARTED)
-        {
+        if !flags.contains(ConnectionFlags::DELAY_DROP_TASK_STARTED) {
             spawn(delay_drop_task(state.clone()));
         }
     }
@@ -154,7 +164,16 @@ impl ConnectionState {
         }
     }
 
-    #[inline]
+    pub(crate) fn disconnect_when_ready(&self) {
+        if self.streams.borrow().is_empty() {
+            log::debug!("All streams are closed, disconnecting");
+            self.io.close();
+        } else {
+            log::debug!("Not all streams are closed, set disconnect flag");
+            self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
+        }
+    }
+
     pub(crate) fn is_disconnected(&self) -> bool {
         if let Some(e) = self.error.take() {
             self.error.set(Some(e));
@@ -185,7 +204,7 @@ impl ConnectionState {
 }
 
 impl Connection {
-    pub(crate) fn new(io: IoRef, codec: Codec, config: Config) -> Self {
+    pub(crate) fn new(io: IoRef, codec: Codec, config: Config, secure: bool) -> Self {
         // send preface
         if !config.is_server() {
             let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
@@ -228,7 +247,11 @@ impl Connection {
             local_reset_queue: RefCell::new(VecDeque::new()),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
-            flags: Cell::new(ConnectionFlags::empty()),
+            flags: Cell::new(if secure {
+                ConnectionFlags::SECURE
+            } else {
+                ConnectionFlags::empty()
+            }),
         });
 
         // start ping/pong
@@ -245,6 +268,26 @@ impl Connection {
 
     pub(crate) fn state(&self) -> &ConnectionState {
         self.0.as_ref()
+    }
+
+    pub(crate) fn close(&self) {
+        self.0.io.close()
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.0.io.is_closed()
+    }
+
+    pub(crate) fn disconnect_when_ready(&self) {
+        self.0.disconnect_when_ready()
+    }
+
+    pub(crate) fn set_secure(&self, secure: bool) {
+        if secure {
+            self.0.set_flags(ConnectionFlags::SECURE)
+        } else {
+            self.0.unset_flags(ConnectionFlags::SECURE)
+        }
     }
 
     pub(crate) fn get_state(&self) -> Rc<ConnectionState> {
@@ -287,7 +330,6 @@ impl Connection {
 
     pub(crate) async fn send_request(
         &self,
-        scheme: Scheme,
         authority: ByteString,
         method: Method,
         path: ByteString,
@@ -319,7 +361,7 @@ impl Connection {
         };
 
         let pseudo = PseudoHeaders {
-            scheme: Some(if scheme == Scheme::HTTPS {
+            scheme: Some(if self.0.flags.get().contains(ConnectionFlags::SECURE) {
                 consts::HTTPS_SCHEME
             } else {
                 consts::HTTP_SCHEME
