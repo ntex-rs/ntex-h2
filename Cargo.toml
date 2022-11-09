@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.1.4"
+version = "0.1.5"
 license = "MIT"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -15,7 +15,7 @@ edition = "2018"
 [dependencies]
 ntex-connect = "0.1.0"
 ntex-io = "0.1.8"
-ntex-http = "0.1.1"
+ntex-http = "0.1.3"
 ntex-bytes = "0.1.14"
 ntex-codec = "0.6.2"
 ntex-service = "0.3.1"

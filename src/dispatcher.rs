@@ -334,23 +334,33 @@ where
         let mut this = self.as_mut().project();
 
         match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish { fut } => match fut.poll(cx) {
-                Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
-                Poll::Ready(Err(e)) => {
-                    if this.inner.connection.is_disconnected() {
-                        Poll::Ready(Ok(None))
-                    } else {
-                        this.state.set(PublishResponseState::Control {
-                            fut: ControlResponse::new(
-                                ControlMessage::app_error(e, this.stream.clone()),
-                                this.inner,
-                            ),
-                        });
-                        self.poll(cx)
+            PublishResponseStateProject::Publish { fut } => {
+                match this.stream.poll_send_reset(cx) {
+                    Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
+                        log::trace!("Stream is closed {:?}", this.stream.id());
+                        return Poll::Ready(Ok(None));
                     }
+                    Poll::Pending => (),
                 }
-                Poll::Pending => Poll::Pending,
-            },
+
+                match fut.poll(cx) {
+                    Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
+                    Poll::Ready(Err(e)) => {
+                        if this.inner.connection.is_disconnected() {
+                            Poll::Ready(Ok(None))
+                        } else {
+                            this.state.set(PublishResponseState::Control {
+                                fut: ControlResponse::new(
+                                    ControlMessage::app_error(e, this.stream.clone()),
+                                    this.inner,
+                                ),
+                            });
+                            self.poll(cx)
+                        }
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            }
             PublishResponseStateProject::Control { fut } => fut.poll(cx),
         }
     }

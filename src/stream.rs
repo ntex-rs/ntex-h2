@@ -158,7 +158,6 @@ impl StreamState {
     fn state_recv_close(&self, reason: Option<Reason>) {
         log::trace!("{:?} receive side is closed", self.id);
         self.recv.set(HalfState::Closed(reason));
-        self.send_waker.wake();
         self.review_state();
     }
 
@@ -168,7 +167,6 @@ impl StreamState {
         if let Some(reason) = reason {
             self.error.set(Some(OperationError::LocalReset(reason)));
         }
-        self.send_waker.wake();
         self.review_state();
     }
 
@@ -176,7 +174,6 @@ impl StreamState {
         self.recv.set(HalfState::Closed(Some(reason)));
         self.send.set(HalfState::Closed(None));
         self.error.set(Some(OperationError::RemoteReset(reason)));
-        self.send_waker.wake();
         self.review_state();
     }
 
@@ -184,12 +181,13 @@ impl StreamState {
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(None));
         self.error.set(Some(err));
-        self.send_waker.wake();
         self.review_state();
     }
 
     fn review_state(&self) {
         if self.recv.get().is_closed() {
+            self.send_waker.wake();
+
             if let HalfState::Closed(reason) = self.send.get() {
                 // stream is closed
                 if reason.is_some() {
@@ -288,6 +286,19 @@ impl StreamRef {
             true
         } else {
             false
+        }
+    }
+
+    /// Reset stream
+    #[inline]
+    pub fn reset(&self, reason: Reason) {
+        if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
+            self.0
+                .con
+                .io
+                .encode(Reset::new(self.0.id, reason).into(), &self.0.con.codec)
+                .unwrap();
+            self.0.reset_stream(Some(reason));
         }
     }
 
@@ -607,6 +618,7 @@ impl StreamRef {
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
+    /// Check for available send capacity
     pub fn poll_send_capacity(
         &self,
         cx: &mut Context<'_>,
@@ -627,6 +639,22 @@ impl StreamRef {
             }
         }
     }
+
+    /// Check if send part of stream get reset
+    pub fn poll_send_reset(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
+        if self.0.send.get().is_closed() {
+            Poll::Ready(Ok(()))
+        } else if let Some(err) = self.0.error.take() {
+            self.0.error.set(Some(err.clone()));
+            Poll::Ready(Err(err))
+        } else if let Some(err) = self.0.con.error.take() {
+            self.0.con.error.set(Some(err.clone()));
+            Poll::Ready(Err(err))
+        } else {
+            self.0.send_waker.register(cx.waker());
+            Poll::Pending
+        }
+    }
 }
 
 impl ops::Deref for Stream {
@@ -640,18 +668,7 @@ impl ops::Deref for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        if !self.0 .0.recv.get().is_closed() || !self.0 .0.send.get().is_closed() {
-            self.0
-                 .0
-                .con
-                .io
-                .encode(
-                    Reset::new(self.0 .0.id, Reason::CANCEL).into(),
-                    &self.0 .0.con.codec,
-                )
-                .unwrap();
-            self.0 .0.reset_stream(Some(Reason::CANCEL));
-        }
+        self.0.reset(Reason::CANCEL);
     }
 }
 

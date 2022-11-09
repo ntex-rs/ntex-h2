@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.5] - 2022-11-10
+
+* Drop server handler future if stream get reset
+
 ## [0.1.4] - 2022-07-13
 
 * Disconnect client connection on client drop
