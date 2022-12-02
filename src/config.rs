@@ -85,7 +85,7 @@ impl Config {
             client_timeout: Cell::new(Seconds(0)),
             handshake_timeout: Cell::new(Seconds(5)),
             disconnect_timeout: Cell::new(Seconds(3)),
-            ping_timeout: Cell::new(Seconds(60)),
+            ping_timeout: Cell::new(Seconds(10)),
             pool: pool::new(),
         }))
     }

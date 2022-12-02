@@ -5,8 +5,6 @@ use crate::{error, frame, stream::StreamRef};
 
 #[derive(Debug)]
 pub enum ControlMessage<E> {
-    // /// Ping frame is received
-    // Ping(frame::Ping),
     /// Application level error from publish service
     AppError(AppError<E>),
     /// Protocol level error

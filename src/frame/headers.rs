@@ -639,7 +639,7 @@ mod test {
         assert_eq!([0, 0, 8, 1, 0, 0, 0, 0, 0], &dst[0..9]);
         assert_eq!(&[0x40, 0x80 | 4], &dst[9..11]);
         assert_eq!("hello", huff_decode(&dst[11..15]));
-        assert_eq!(0x80 | 3, dst[15]);
+        assert_eq!(0x80 | 4, dst[15]);
 
         let mut world = BytesMut::from(&dst[16..17]);
         world.extend_from_slice(&dst[26..29]);

@@ -22,7 +22,6 @@ bitflags::bitflags! {
         const SETTINGS_PROCESSED      = 0b0000_0001;
         const DELAY_DROP_TASK_STARTED = 0b0000_0010;
         const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
-        const PING_SENT               = 0b0000_1000;
         const DISCONNECT_WHEN_READY   = 0b0001_0000;
         const SECURE                  = 0b0010_0000;
     }
@@ -182,25 +181,6 @@ impl ConnectionState {
             false
         }
     }
-
-    fn ping_timeout(&self) {
-        if let Some(err) = self.error.take() {
-            self.error.set(Some(err))
-        } else {
-            self.error.set(Some(OperationError::PingTimeout));
-
-            let streams = mem::take(&mut *self.streams.borrow_mut());
-            for stream in streams.values() {
-                stream.set_failed_stream(OperationError::PingTimeout)
-            }
-
-            let _ = self.io.encode(
-                frame::GoAway::new(frame::Reason::NO_ERROR).into(),
-                &self.codec,
-            );
-            self.io.close();
-        }
-    }
 }
 
 impl Connection {
@@ -231,9 +211,9 @@ impl Connection {
         let remote_frame_size = Cell::new(codec.send_frame_size());
 
         let state = Rc::new(ConnectionState {
-            io,
             codec,
             remote_frame_size,
+            io: io.clone(),
             send_window: Cell::new(send_window),
             recv_window: Cell::new(recv_window),
             streams: RefCell::new(HashMap::default()),
@@ -256,7 +236,11 @@ impl Connection {
 
         // start ping/pong
         if state.local_config.0.ping_timeout.get().non_zero() {
-            spawn(ping(state.clone(), state.local_config.0.ping_timeout.get()));
+            spawn(ping(
+                state.clone(),
+                state.local_config.0.ping_timeout.get(),
+                io,
+            ));
         }
 
         Connection(state)
@@ -628,7 +612,7 @@ impl Connection {
     }
 
     pub(crate) fn recv_pong(&self, _: frame::Ping) {
-        self.0.unset_flags(ConnectionFlags::PING_SENT);
+        self.0.io.stop_keepalive_timer();
     }
 
     pub(crate) fn recv_go_away(
@@ -651,6 +635,24 @@ impl Connection {
         for stream in streams.values() {
             stream.set_go_away(reason)
         }
+        streams
+    }
+
+    pub(crate) fn ping_timeout(&self) -> HashMap<StreamId, StreamRef> {
+        self.0
+            .error
+            .set(Some(ConnectionError::KeepaliveTimeout.into()));
+
+        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        for stream in streams.values() {
+            stream.set_failed_stream(ConnectionError::KeepaliveTimeout.into())
+        }
+
+        let _ = self.0.io.encode(
+            frame::GoAway::new(frame::Reason::NO_ERROR).into(),
+            &self.0.codec,
+        );
+        self.0.io.close();
         streams
     }
 
@@ -738,26 +740,23 @@ async fn delay_drop_task(state: Rc<ConnectionState>) {
     state.unset_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 }
 
-async fn ping(st: Rc<ConnectionState>, timeout: time::Seconds) {
+async fn ping(st: Rc<ConnectionState>, timeout: time::Seconds, io: IoRef) {
     log::debug!("start http client ping/pong task");
 
     let mut counter: u64 = 0;
-    let keepalive: time::Millis = timeout.into();
+    let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
+    let timeout = timeout.into();
     loop {
         if st.is_disconnected() {
             log::debug!("http client connection is closed, stopping keep-alive task");
             break;
         }
         sleep(keepalive).await;
-
-        if st.flags().contains(ConnectionFlags::PING_SENT) {
-            // connection is closed
-            log::warn!("did not receive pong response in time, closing connection");
-            st.ping_timeout();
+        if st.is_disconnected() {
             break;
         }
-        st.set_flags(ConnectionFlags::PING_SENT);
 
+        io.start_keepalive_timer(timeout);
         counter += 1;
         let _ = st
             .io

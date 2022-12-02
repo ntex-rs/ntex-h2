@@ -77,6 +77,7 @@ impl Client {
     #[inline]
     /// Gracefully close connection
     pub fn close(&self) {
+        log::debug!("Closing client");
         self.0.con.disconnect_when_ready()
     }
 

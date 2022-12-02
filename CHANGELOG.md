@@ -1,5 +1,9 @@
 # Changes
 
+## [0.1.6] - 2022-12-02
+
+* Fix KeepAlive handling
+
 ## [0.1.5] - 2022-11-10
 
 * Drop server handler future if stream get reset

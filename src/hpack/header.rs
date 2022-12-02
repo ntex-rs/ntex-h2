@@ -227,10 +227,10 @@ impl<'a> Name<'a> {
         match self {
             Name::Field(name) => Ok(Header::Field {
                 name: name.clone(),
-                value: HeaderValue::from_bytes(&*value)?,
+                value: HeaderValue::from_bytes(&value)?,
             }),
             Name::Authority => Ok(Header::Authority(ByteString::try_from(value)?)),
-            Name::Method => Ok(Header::Method(Method::from_bytes(&*value)?)),
+            Name::Method => Ok(Header::Method(Method::from_bytes(&value)?)),
             Name::Scheme => Ok(Header::Scheme(ByteString::try_from(value)?)),
             Name::Path => Ok(Header::Path(ByteString::try_from(value)?)),
             Name::Protocol => Ok(Header::Protocol(ByteString::try_from(value)?)),

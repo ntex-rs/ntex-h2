@@ -263,9 +263,8 @@ where
                 )))
             }
             DispatchItem::KeepAliveTimeout => {
-                let streams = self
-                    .connection
-                    .proto_error(&ConnectionError::KeepaliveTimeout);
+                log::warn!("did not receive pong response in time, closing connection");
+                let streams = self.connection.ping_timeout();
                 self.handle_connection_error(streams, ConnectionError::KeepaliveTimeout.into());
                 Either::Right(Either::Right(ControlResponse::new(
                     ControlMessage::proto_error(ConnectionError::KeepaliveTimeout),

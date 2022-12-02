@@ -108,10 +108,17 @@ pub enum ContentLength {
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
+bitflags::bitflags! {
+    struct StreamFlags: u8 {
+        const REMOTE = 0b0000_0001;
+        const FAILED = 0b0000_0010;
+    }
+}
+
 pub(crate) struct StreamState {
     /// The h2 stream identifier
     id: StreamId,
-    remote: bool,
+    flags: Cell<StreamFlags>,
     content_length: Cell<ContentLength>,
     /// Receive part
     recv: Cell<HalfState>,
@@ -161,7 +168,14 @@ impl StreamState {
         self.review_state();
     }
 
+    fn set_failed(&self) {
+        let mut flags = self.flags.get();
+        flags.insert(StreamFlags::FAILED);
+        self.flags.set(flags);
+    }
+
     fn reset_stream(&self, reason: Option<Reason>) {
+        self.set_failed();
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(reason));
         if let Some(reason) = reason {
@@ -171,6 +185,7 @@ impl StreamState {
     }
 
     fn remote_reset_stream(&self, reason: Reason) {
+        self.set_failed();
         self.recv.set(HalfState::Closed(Some(reason)));
         self.send.set(HalfState::Closed(None));
         self.error.set(Some(OperationError::RemoteReset(reason)));
@@ -178,6 +193,7 @@ impl StreamState {
     }
 
     fn failed(&self, err: OperationError) {
+        self.set_failed();
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(None));
         self.error.set(Some(err));
@@ -255,7 +271,6 @@ impl StreamRef {
         StreamRef(Rc::new(StreamState {
             id,
             con,
-            remote,
             recv: Cell::new(HalfState::Idle),
             recv_window: Cell::new(recv_window),
             recv_size: Cell::new(0),
@@ -264,6 +279,11 @@ impl StreamRef {
             send_waker: LocalWaker::new(),
             error: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
+            flags: Cell::new(if remote {
+                StreamFlags::REMOTE
+            } else {
+                StreamFlags::empty()
+            }),
         }))
     }
 
@@ -275,18 +295,13 @@ impl StreamRef {
     /// Check if stream has been opened from remote side
     #[inline]
     pub fn is_remote(&self) -> bool {
-        self.0.remote
+        self.0.flags.get().contains(StreamFlags::REMOTE)
     }
 
     /// Check if stream has failed
     #[inline]
     pub fn is_failed(&self) -> bool {
-        if let Some(e) = self.0.error.take() {
-            self.0.error.set(Some(e));
-            true
-        } else {
-            false
-        }
+        self.0.flags.get().contains(StreamFlags::FAILED)
     }
 
     /// Reset stream
