@@ -19,13 +19,13 @@ where
 {
     inner: Rc<Inner<Ctl, Pub>>,
     connection: Connection,
-    shutdown: cell::RefCell<Shutdown<Ctl::Future>>,
+    shutdown: cell::RefCell<Shutdown<Pin<Box<dyn Future<Output = ()>>>>>,
 }
 
 enum Shutdown<F> {
     NotSet,
     Done,
-    InProcess(Pin<Box<F>>),
+    InProcess(F),
 }
 
 struct Inner<Ctl, Pub> {
@@ -35,9 +35,9 @@ struct Inner<Ctl, Pub> {
     last_stream_id: StreamId,
 }
 
-type ServiceFut<Pub, Ctl, E> = Either<
-    PublishResponse<Pub, Ctl>,
-    Either<Ready<Option<Frame>, ()>, ControlResponse<E, Ctl, Pub>>,
+type ServiceFut<'f, Pub, Ctl, E> = Either<
+    PublishResponse<'f, Pub, Ctl>,
+    Either<Ready<Option<Frame>, ()>, ControlResponse<'f, E, Ctl, Pub>>,
 >;
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
@@ -63,13 +63,9 @@ where
     fn handle_message(
         &self,
         result: Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>>,
-    ) -> ServiceFut<Pub, Ctl, Pub::Error> {
+    ) -> ServiceFut<'_, Pub, Ctl, Pub::Error> {
         match result {
-            Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(
-                self.inner.publish.call(msg),
-                stream,
-                &self.inner,
-            )),
+            Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(msg, stream, &self.inner)),
             Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
             Err(Either::Left(err)) => {
                 self.connection.proto_error(&err);
@@ -87,7 +83,7 @@ where
                     .io
                     .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
                 Either::Left(PublishResponse::new(
-                    self.inner.publish.call(Message::error(kind, &stream)),
+                    Message::error(kind, &stream),
                     stream,
                     &self.inner,
                 ))
@@ -99,7 +95,7 @@ where
         if !streams.is_empty() {
             let inner = self.inner.clone();
             spawn(async move {
-                let futs = streams.into_iter().map(move |(_, stream)| {
+                let futs = streams.into_iter().map(|(_, stream)| {
                     inner.publish.call(Message::disconnect(err.clone(), stream))
                 });
                 let _ = join_all(futs).await;
@@ -117,9 +113,9 @@ where
 {
     type Response = Option<Frame>;
     type Error = ();
-    type Future = Either<
-        PublishResponse<Pub, Ctl>,
-        Either<Ready<Self::Response, Self::Error>, ControlResponse<Pub::Error, Ctl, Pub>>,
+    type Future<'f> = Either<
+        PublishResponse<'f, Pub, Ctl>,
+        Either<Ready<Self::Response, Self::Error>, ControlResponse<'f, Pub::Error, Ctl, Pub>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -139,11 +135,13 @@ where
     fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
         let mut shutdown = self.shutdown.borrow_mut();
         if matches!(&*shutdown, &Shutdown::NotSet) {
-            *shutdown = Shutdown::InProcess(Box::pin(
-                self.inner
+            let inner = self.inner.clone();
+            *shutdown = Shutdown::InProcess(Box::pin(async move {
+                let _ = inner
                     .control
-                    .call(ControlMessage::terminated(is_error)),
-            ));
+                    .call(ControlMessage::terminated(is_error))
+                    .await;
+            }));
         }
 
         let shutdown_ready = match &mut *shutdown {
@@ -174,7 +172,7 @@ where
         }
     }
 
-    fn call(&self, request: DispatchItem<Codec>) -> Self::Future {
+    fn call(&self, request: DispatchItem<Codec>) -> Self::Future<'_> {
         log::debug!("Handle h2 message: {:?}", request);
 
         match request {
@@ -199,13 +197,14 @@ where
                             let _ = st
                                 .io
                                 .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
-                            let fut = PublishResponse::<Pub, Ctl>::new(
-                                self.inner.publish.call(Message::error(kind, &stream)),
-                                stream,
-                                &self.inner,
-                            );
+                            let inner = self.inner.clone();
                             ntex_rt::spawn(async move {
-                                let _ = fut.await;
+                                let _ = PublishResponse::<Pub, Ctl>::new(
+                                    Message::error(kind, &stream),
+                                    stream,
+                                    &inner,
+                                )
+                                .await;
                             });
                         }
                         Either::Right(Either::Left(Ready::Ok(None)))
@@ -288,39 +287,44 @@ where
 
 pin_project_lite::pin_project! {
     /// Publish service response future
-    pub(crate) struct PublishResponse<P: Service<Message>, C: Service<ControlMessage<P::Error>>> {
+    pub(crate) struct PublishResponse<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>> {
         stream: StreamRef,
         #[pin]
-        state: PublishResponseState<P, C>,
-        inner: Rc<Inner<C, P>>,
+        state: PublishResponseState<'f, P, C>,
+        inner: &'f Inner<C, P>,
     }
 }
 
 pin_project_lite::pin_project! {
     #[project = PublishResponseStateProject]
-    enum PublishResponseState<P: Service<Message>, C: Service<ControlMessage<P::Error>>> {
-        Publish { #[pin] fut: P::Future },
-        Control { #[pin] fut: ControlResponse<P::Error, C, P> },
+    enum PublishResponseState<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>>
+    where P: 'f
+    {
+        Publish { #[pin] fut: P::Future<'f> },
+        Control { #[pin] fut: ControlResponse<'f, P::Error, C, P> },
     }
 }
 
-impl<P, C> PublishResponse<P, C>
+impl<'f, P, C> PublishResponse<'f, P, C>
 where
     P: Service<Message, Response = ()>,
     P::Error: fmt::Debug,
     C: Service<ControlMessage<P::Error>, Response = ControlResult>,
     C::Error: fmt::Debug,
 {
-    fn new(fut: P::Future, stream: StreamRef, inner: &Rc<Inner<C, P>>) -> Self {
+    fn new(msg: Message, stream: StreamRef, inner: &'f Inner<C, P>) -> Self {
+        let state = PublishResponseState::Publish {
+            fut: inner.publish.call(msg),
+        };
         Self {
+            state,
             stream,
-            inner: inner.clone(),
-            state: PublishResponseState::Publish { fut },
+            inner,
         }
     }
 }
 
-impl<P, C> Future for PublishResponse<P, C>
+impl<'f, P, C> Future for PublishResponse<'f, P, C>
 where
     P: Service<Message, Response = ()>,
     P::Error: fmt::Debug,
@@ -332,65 +336,70 @@ where
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.as_mut().project();
 
-        match this.state.as_mut().project() {
-            PublishResponseStateProject::Publish { fut } => {
-                match this.stream.poll_send_reset(cx) {
-                    Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
-                        log::trace!("Stream is closed {:?}", this.stream.id());
-                        return Poll::Ready(Ok(None));
-                    }
-                    Poll::Pending => (),
-                }
-
-                match fut.poll(cx) {
-                    Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
-                    Poll::Ready(Err(e)) => {
-                        if this.inner.connection.is_disconnected() {
-                            Poll::Ready(Ok(None))
-                        } else {
-                            this.state.set(PublishResponseState::Control {
-                                fut: ControlResponse::new(
-                                    ControlMessage::app_error(e, this.stream.clone()),
-                                    this.inner,
-                                ),
-                            });
-                            self.poll(cx)
+        loop {
+            return match this.state.as_mut().project() {
+                PublishResponseStateProject::Publish { fut } => {
+                    match this.stream.poll_send_reset(cx) {
+                        Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
+                            log::trace!("Stream is closed {:?}", this.stream.id());
+                            return Poll::Ready(Ok(None));
                         }
+                        Poll::Pending => (),
                     }
-                    Poll::Pending => Poll::Pending,
+
+                    match fut.poll(cx) {
+                        Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
+                        Poll::Ready(Err(e)) => {
+                            if this.inner.connection.is_disconnected() {
+                                Poll::Ready(Ok(None))
+                            } else {
+                                this.state.set(PublishResponseState::Control {
+                                    fut: ControlResponse::new(
+                                        ControlMessage::app_error(e, this.stream.clone()),
+                                        this.inner.clone(),
+                                    ),
+                                });
+                                //this = self.as_mut().project();
+                                continue;
+                            }
+                        }
+                        Poll::Pending => Poll::Pending,
+                    }
                 }
-            }
-            PublishResponseStateProject::Control { fut } => fut.poll(cx),
+                PublishResponseStateProject::Control { fut } => fut.poll(cx),
+            };
         }
     }
 }
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<E, Ctl: Service<ControlMessage<E>>, Pub> {
+    pub(crate) struct ControlResponse<'f, E, Ctl: Service<ControlMessage<E>>, Pub>
+    where Ctl: 'f, E: 'f
+    {
         #[pin]
-        fut: Ctl::Future,
-        inner: Rc<Inner<Ctl, Pub>>,
+        fut: Ctl::Future<'f>,
+        inner: &'f Inner<Ctl, Pub>,
         _t: marker::PhantomData<E>,
     }
 }
 
-impl<E, Ctl, Pub> ControlResponse<E, Ctl, Pub>
+impl<'f, E, Ctl, Pub> ControlResponse<'f, E, Ctl, Pub>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,
     Ctl::Error: fmt::Debug,
 {
-    fn new(pkt: ControlMessage<E>, inner: &Rc<Inner<Ctl, Pub>>) -> Self {
+    fn new(pkt: ControlMessage<E>, inner: &'f Inner<Ctl, Pub>) -> Self {
         Self {
             fut: inner.control.call(pkt),
-            inner: inner.clone(),
+            inner,
             _t: marker::PhantomData,
         }
     }
 }
 
-impl<E, Ctl, Pub> Future for ControlResponse<E, Ctl, Pub>
+impl<'f, E, Ctl, Pub> Future for ControlResponse<'f, E, Ctl, Pub>
 where
     E: fmt::Debug,
     Ctl: Service<ControlMessage<E>, Response = ControlResult>,
