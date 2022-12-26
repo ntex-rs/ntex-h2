@@ -1,8 +1,9 @@
-use std::{fmt, future::Future, pin::Pin, rc::Rc};
+use std::{fmt, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceFactory};
-use ntex_util::{future::Ready, time::sleep, time::timeout_checked, time::Seconds};
+use ntex_util::future::{BoxFuture, Ready};
+use ntex_util::time::{sleep, timeout_checked, Seconds};
 
 use crate::connection::{Connection, ConnectionFlags};
 use crate::control::{ControlMessage, ControlResult};
@@ -158,7 +159,7 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future<'f> = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
     fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         let slf = ServerHandler(self.0.clone());
@@ -178,7 +179,7 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future<'f> = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
     fn call(&self, req: Io<F>) -> Self::Future<'_> {
         let slf = ServerHandler(self.0.clone());

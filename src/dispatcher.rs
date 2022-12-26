@@ -3,7 +3,8 @@ use std::{cell, fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, ta
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
 use ntex_service::Service;
-use ntex_util::{future::join_all, future::Either, future::Ready, ready, HashMap};
+use ntex_util::future::{join_all, BoxFuture, Either, Ready};
+use ntex_util::{ready, HashMap};
 
 use crate::connection::{Connection, ConnectionState};
 use crate::control::{ControlMessage, ControlResult};
@@ -19,7 +20,7 @@ where
 {
     inner: Rc<Inner<Ctl, Pub>>,
     connection: Connection,
-    shutdown: cell::RefCell<Shutdown<Pin<Box<dyn Future<Output = ()>>>>>,
+    shutdown: cell::RefCell<Shutdown<BoxFuture<'static, ()>>>,
 }
 
 enum Shutdown<F> {
