@@ -132,15 +132,12 @@ where
         }
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>, is_error: bool) -> Poll<()> {
+    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
         let mut shutdown = self.shutdown.borrow_mut();
         if matches!(&*shutdown, &Shutdown::NotSet) {
             let inner = self.inner.clone();
             *shutdown = Shutdown::InProcess(Box::pin(async move {
-                let _ = inner
-                    .control
-                    .call(ControlMessage::terminated(is_error))
-                    .await;
+                let _ = inner.control.call(ControlMessage::terminated()).await;
             }));
         }
 
@@ -159,8 +156,8 @@ where
         };
 
         if shutdown_ready {
-            let res1 = self.inner.publish.poll_shutdown(cx, is_error);
-            let res2 = self.inner.control.poll_shutdown(cx, is_error);
+            let res1 = self.inner.publish.poll_shutdown(cx);
+            let res2 = self.inner.control.poll_shutdown(cx);
             if res1.is_pending() || res2.is_pending() {
                 Poll::Pending
             } else {
