@@ -38,8 +38,8 @@ impl<E> ControlMessage<E> {
         ControlMessage::PeerGone(PeerGone(err))
     }
 
-    pub(super) fn terminated(is_error: bool) -> Self {
-        ControlMessage::Terminated(Terminated::new(is_error))
+    pub(super) fn terminated() -> Self {
+        ControlMessage::Terminated(Terminated)
     }
 
     /// Create a new `ControlMessage` for protocol level errors
@@ -101,20 +101,9 @@ impl<E> AppError<E> {
 
 /// Dispatcher has been terminated
 #[derive(Debug)]
-pub struct Terminated {
-    is_error: bool,
-}
+pub struct Terminated;
 
 impl Terminated {
-    pub(crate) fn new(is_error: bool) -> Self {
-        Self { is_error }
-    }
-
-    /// Returns error state on connection close
-    pub fn is_error(&self) -> bool {
-        self.is_error
-    }
-
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlResult {

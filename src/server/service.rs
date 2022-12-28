@@ -1,8 +1,9 @@
-use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{fmt, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceFactory};
-use ntex_util::{future::Ready, time::sleep, time::timeout_checked, time::Seconds};
+use ntex_util::future::{BoxFuture, Ready};
+use ntex_util::time::{sleep, timeout_checked, Seconds};
 
 use crate::connection::{Connection, ConnectionFlags};
 use crate::control::{ControlMessage, ControlResult};
@@ -66,9 +67,9 @@ where
     type Error = ServerError<()>;
     type Service = ServerHandler<Ctl, Pub>;
     type InitError = ();
-    type Future = Ready<Self::Service, Self::InitError>;
+    type Future<'f> = Ready<Self::Service, Self::InitError>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Ready::Ok(ServerHandler(self.0.clone()))
     }
 }
@@ -87,9 +88,9 @@ where
     type Error = ServerError<()>;
     type Service = ServerHandler<Ctl, Pub>;
     type InitError = ();
-    type Future = Ready<Self::Service, Self::InitError>;
+    type Future<'f> = Ready<Self::Service, Self::InitError>;
 
-    fn new_service(&self, _: ()) -> Self::Future {
+    fn create(&self, _: ()) -> Self::Future<'_> {
         Ready::Ok(ServerHandler(self.0.clone()))
     }
 }
@@ -119,13 +120,13 @@ where
             read_preface(&io).await?;
 
             // create publish service
-            let pub_srv = inner.publish.new_service(()).await.map_err(|e| {
+            let pub_srv = inner.publish.create(()).await.map_err(|e| {
                 log::error!("Publish service init error: {:?}", e);
                 ServerError::PublishServiceError
             })?;
 
             // create control service
-            let ctl_srv = inner.control.new_service(()).await.map_err(|e| {
+            let ctl_srv = inner.control.create(()).await.map_err(|e| {
                 log::error!("Control service init error: {:?}", e);
                 ServerError::ControlServiceError
             })?;
@@ -158,19 +159,9 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
-    #[inline]
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, _: &mut Context<'_>, _is_error: bool) -> Poll<()> {
-        Poll::Ready(())
-    }
-
-    fn call(&self, io: IoBoxed) -> Self::Future {
+    fn call(&self, io: IoBoxed) -> Self::Future<'_> {
         let slf = ServerHandler(self.0.clone());
         Box::pin(async move { slf.run(io).await })
     }
@@ -188,19 +179,9 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
-    #[inline]
-    fn poll_ready(&self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    #[inline]
-    fn poll_shutdown(&self, _: &mut Context<'_>, _is_error: bool) -> Poll<()> {
-        Poll::Ready(())
-    }
-
-    fn call(&self, req: Io<F>) -> Self::Future {
+    fn call(&self, req: Io<F>) -> Self::Future<'_> {
         let slf = ServerHandler(self.0.clone());
         Box::pin(async move { slf.run(req.into()).await })
     }
