@@ -18,7 +18,7 @@ ntex-io = "0.2.0-beta.0"
 ntex-http = "0.1.8"
 ntex-bytes = "0.1.16"
 ntex-codec = "0.6.2"
-ntex-service = "0.4.0-beta.0"
+ntex-service = "1.0.0-beta.0"
 ntex-util = "0.2.0-beta.0"
 ntex-rt = "0.4.4"
 
