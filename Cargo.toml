@@ -16,7 +16,7 @@ edition = "2018"
 ntex-connect = "0.2.0-beta.0"
 ntex-io = "0.2.0-beta.0"
 ntex-http = "0.1.8"
-ntex-bytes = "0.1.16"
+ntex-bytes = "0.1.18"
 ntex-codec = "0.6.2"
 ntex-service = "1.0.0-beta.0"
 ntex-util = "0.2.0-beta.0"
@@ -45,11 +45,3 @@ openssl = "0.10"
 ntex = { version = "0.6.0-beta.0", features = ["openssl", "tokio"] }
 ntex-tls = { version = "0.2.0-beta.0", features = ["openssl"] }
 ntex-connect = { version = "0.2.0-beta.0", features = ["openssl", "tokio"] }
-
-[patch.crates-io]
-ntex-connect = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git" }

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.0-beta.0] - 2022-12-28
+
+* Migrate to ntex-service 1.0
+
 ## [0.1.6] - 2022-12-02
 
 * Fix KeepAlive handling
