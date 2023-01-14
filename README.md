@@ -5,7 +5,10 @@ HTTP/2 client & server implementation for Rust.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/ntex-h2.svg)](https://crates.io/crates/ntex-h2)
 [![Documentation](https://docs.rs/ntex-h2/badge.svg)][dox]
-[![CI](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml/badge.svg)](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml)
+[![Version](https://img.shields.io/badge/rustc-1.65+-lightgray.svg)](https://blog.rust-lang.org/2022/11/03/Rust-1.65.0.html) 
+![License](https://img.shields.io/crates/l/ntex.svg) 
+[![CI](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml/badge.svg)](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml) 
+[![codecov](https://codecov.io/gh/ntex-rs/ntex-h2/branch/main/graph/badge.svg)](https://codecov.io/gh/ntex-rs/ntex-h2) 
 
 More information about this crate can be found in the [crate documentation][dox].
 
