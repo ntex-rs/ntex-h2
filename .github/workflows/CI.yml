@@ -72,7 +72,7 @@ jobs:
           command: test
 
       - name: Generate code coverage
-        run: cargo llvm-cov
+        run: cargo llvm-cov --no-report
         if: matrix.rust == 'stable'
 
       #- name: Run integration tests
@@ -102,7 +102,7 @@ jobs:
     strategy:
       matrix:
         rust:
-          - 1.56 # never go past ntex's msrv
+          - 1.65 # never go past ntex's msrv
 
         os:
           - ubuntu-latest
