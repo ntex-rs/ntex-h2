@@ -588,7 +588,9 @@ impl Connection {
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
         } else {
             log::trace!("Unknown WINDOW_UPDATE {:?}", frm);
-            Err(Either::Left(ConnectionError::UnknownStream("WINDOW_UPDATE")))
+            Err(Either::Left(ConnectionError::UnknownStream(
+                "WINDOW_UPDATE",
+            )))
         }
     }
 

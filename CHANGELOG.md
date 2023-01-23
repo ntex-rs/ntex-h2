@@ -1,6 +1,6 @@
 # Changes
 
-## [0.2.1] - 2023-01-xx
+## [0.2.1] - 2023-01-23
 
 * Do not wait for capacity if it is availabe
 
