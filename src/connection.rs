@@ -110,6 +110,7 @@ impl ConnectionState {
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
+                log::trace!("Dropping stream {:?} remote: {:?}", id, stream.is_remote());
                 if stream.is_remote() {
                     self.active_remote_streams
                         .set(self.active_remote_streams.get() - 1)
@@ -586,9 +587,8 @@ impl Connection {
                 .recv_window_update(frm)
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
         } else {
-            Err(Either::Left(ConnectionError::UnknownStream(
-                "WINDOW_UPDATE",
-            )))
+            log::trace!("Unknown WINDOW_UPDATE {:?}", frm);
+            Err(Either::Left(ConnectionError::UnknownStream("WINDOW_UPDATE")))
         }
     }
 

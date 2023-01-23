@@ -549,6 +549,7 @@ impl StreamRef {
         }
     }
 
+    /// Send payload
     pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
         match self.0.send.get() {
             HalfState::Payload => {
@@ -601,9 +602,14 @@ impl StreamRef {
                         if res.is_empty() {
                             return Ok(());
                         }
+                    } else {
+                        log::trace!(
+                            "Not enounf sending capacity for {:?} waiting while available",
+                            self.0.id,
+                        );
+                        // wait for available send window
+                        self.send_capacity().await?;
                     }
-                    // wait for available send window
-                    self.send_capacity().await?;
                 }
             }
             HalfState::Idle => Err(OperationError::Idle),
