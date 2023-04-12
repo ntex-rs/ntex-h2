@@ -81,7 +81,7 @@ async fn test_max_concurrent_streams() {
             ))
             .await;
     });
-    sleep(Millis(350)).await;
+    sleep(Millis(150)).await;
 
     let stream = client
         .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
@@ -101,7 +101,7 @@ async fn test_max_concurrent_streams() {
     });
 
     stream.send_payload(Bytes::new(), true).await.unwrap();
-    sleep(Millis(150)).await;
+    sleep(Millis(50)).await;
     assert!(client.is_ready());
     assert!(opened.get());
 }
@@ -120,7 +120,7 @@ async fn test_max_concurrent_streams_reset() {
             ))
             .await;
     });
-    sleep(Millis(350)).await;
+    sleep(Millis(150)).await;
 
     let stream = client
         .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
@@ -140,7 +140,7 @@ async fn test_max_concurrent_streams_reset() {
     });
 
     stream.reset(Reason::NO_ERROR);
-    sleep(Millis(150)).await;
+    sleep(Millis(50)).await;
     assert!(client.is_ready());
     assert!(opened.get());
 }
