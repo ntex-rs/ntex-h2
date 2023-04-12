@@ -604,7 +604,7 @@ impl StreamRef {
                         }
                     } else {
                         log::trace!(
-                            "Not enounf sending capacity for {:?} waiting while available",
+                            "Not enough sending capacity for {:?} waiting while available",
                             self.0.id,
                         );
                         // wait for available send window

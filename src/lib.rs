@@ -101,9 +101,6 @@ pub mod frame;
 pub mod hpack;
 pub mod server;
 
-//#[cfg(fuzzing)]
-//pub mod fuzz_bridge;
-
 pub use self::codec::Codec;
 pub use self::config::Config;
 pub use self::control::{ControlMessage, ControlResult};

@@ -293,23 +293,23 @@ impl Connection {
 
     pub(crate) async fn ready(&self) -> Result<(), OperationError> {
         loop {
-            if let Some(err) = self.0.error.take() {
+            return if let Some(err) = self.0.error.take() {
                 self.0.error.set(Some(err.clone()));
-                return Err(err);
+                Err(err)
             } else if let Some(max) = self.0.local_max_concurrent_streams.get() {
                 if self.0.active_local_streams.get() < max {
-                    return Ok(());
+                    Ok(())
                 } else {
                     let (tx, rx) = self.config().pool.channel();
                     self.0.readiness.borrow_mut().push_back(tx);
                     match rx.await {
                         Ok(_) => continue,
-                        Err(_) => return Err(OperationError::Disconnected),
+                        Err(_) => Err(OperationError::Disconnected),
                     }
                 }
             } else {
-                return Ok(());
-            }
+                Ok(())
+            };
         }
     }
 
@@ -451,6 +451,8 @@ impl Connection {
                 )
                 .unwrap();
             Ok(None)
+        } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
+            Err(Either::Left(ConnectionError::StreamClosed(frm.stream_id())))
         } else {
             Err(Either::Left(ConnectionError::InvalidStreamId))
         }
@@ -586,6 +588,8 @@ impl Connection {
             stream
                 .recv_window_update(frm)
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
+        } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
+            Ok(())
         } else {
             log::trace!("Unknown WINDOW_UPDATE {:?}", frm);
             Err(Either::Left(ConnectionError::UnknownStream(
@@ -608,6 +612,8 @@ impl Connection {
                 stream,
                 StreamError::Reset(frm.reason()),
             )))
+        } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
+            Ok(())
         } else {
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         }
