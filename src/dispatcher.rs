@@ -96,9 +96,9 @@ where
         if !streams.is_empty() {
             let inner = self.inner.clone();
             spawn(async move {
-                let futs = streams.into_iter().map(|(_, stream)| {
-                    inner.publish.call(Message::disconnect(err.clone(), stream))
-                });
+                let futs = streams
+                    .into_values()
+                    .map(|stream| inner.publish.call(Message::disconnect(err.clone(), stream)));
                 let _ = join_all(futs).await;
             });
         }
@@ -354,7 +354,7 @@ where
                                 this.state.set(PublishResponseState::Control {
                                     fut: ControlResponse::new(
                                         ControlMessage::app_error(e, this.stream.clone()),
-                                        this.inner.clone(),
+                                        this.inner,
                                     ),
                                 });
                                 //this = self.as_mut().project();
