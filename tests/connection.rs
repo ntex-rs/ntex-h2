@@ -81,7 +81,7 @@ async fn test_max_concurrent_streams() {
             ))
             .await;
     });
-    sleep(Millis(250)).await;
+    sleep(Millis(350)).await;
 
     let stream = client
         .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
@@ -120,7 +120,7 @@ async fn test_max_concurrent_streams_reset() {
             ))
             .await;
     });
-    sleep(Millis(250)).await;
+    sleep(Millis(350)).await;
 
     let stream = client
         .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
