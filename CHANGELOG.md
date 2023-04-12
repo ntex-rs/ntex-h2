@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.2] - 2023-04-11
+
+* Handle RST_STREAM, WINDOW_UPDATE, DATA for closed streams
+
 ## [0.2.1] - 2023-01-23
 
 * Do not wait for capacity if it is availabe

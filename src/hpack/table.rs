@@ -316,7 +316,7 @@ impl Table {
             let mut probe = probe + 1;
 
             probe_loop!(probe < self.indices.len(), {
-                let pos = &mut self.indices[probe as usize];
+                let pos = &mut self.indices[probe];
 
                 prev = match mem::replace(pos, Some(prev)) {
                     Some(p) => p,
@@ -658,7 +658,7 @@ fn desired_pos(mask: usize, hash: HashValue) -> usize {
 
 #[inline]
 fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
-    current.wrapping_sub(desired_pos(mask, hash)) & mask as usize
+    current.wrapping_sub(desired_pos(mask, hash)) & mask
 }
 
 fn hash_header(header: &Header) -> HashValue {
