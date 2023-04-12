@@ -2,10 +2,9 @@ use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
 use ntex::http::{test::server as test_server, HeaderMap, HttpService, Method, Response};
+use ntex::service::{fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis};
-use ntex::{
-    connect::openssl, io::IoBoxed, service::fn_service, service::ServiceFactory, util::Bytes,
-};
+use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
 use ntex_h2::{client::ClientConnection, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
@@ -128,19 +127,43 @@ async fn test_max_concurrent_streams_reset() {
         .unwrap();
     assert!(!client.is_ready());
 
+    let opened = Rc::new(Cell::new(0));
+
     let client2 = client.clone();
-    let opened = Rc::new(Cell::new(false));
     let opened2 = opened.clone();
     ntex::rt::spawn(async move {
         let _stream = client2
             .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
-        opened2.set(true);
+        _stream.reset(Reason::NO_ERROR);
+        opened2.set(opened2.get() + 1);
     });
+    let client2 = client.clone();
+    let opened2 = opened.clone();
+    ntex::rt::spawn(async move {
+        let _stream = client2
+            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        drop(_stream);
+        opened2.set(opened2.get() + 1);
+    });
+    let client2 = client.clone();
+    let opened2 = opened.clone();
+    let (tx, rx) = oneshot::channel();
+    ntex::rt::spawn(async move {
+        let _stream = client2
+            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        opened2.set(opened2.get() + 1);
+        let _ = tx.send(());
+    });
+    sleep(Millis(50)).await;
 
     stream.reset(Reason::NO_ERROR);
-    sleep(Millis(50)).await;
+    let _ = rx.await;
     assert!(client.is_ready());
-    assert!(opened.get());
+    assert_eq!(opened.get(), 3);
 }

@@ -653,7 +653,7 @@ fn to_raw_capacity(n: usize) -> usize {
 
 #[inline]
 fn desired_pos(mask: usize, hash: HashValue) -> usize {
-    (hash.0 & mask) as usize
+    hash.0 & mask
 }
 
 #[inline]
