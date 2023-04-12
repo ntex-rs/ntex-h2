@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.2] - 2023-04-12
+
+* Better connection error info
+
 ## [0.2.2] - 2023-04-11
 
 * Handle RST_STREAM, WINDOW_UPDATE, DATA for closed streams

@@ -13,11 +13,11 @@ pub enum ConnectionError {
     Encoder(#[from] EncoderError),
     #[error("Decoder error: {0}")]
     Decoder(#[from] frame::FrameError),
-    #[error("{0:?} is closed")]
-    StreamClosed(StreamId),
+    #[error("{0:?} is closed, {1}")]
+    StreamClosed(StreamId, &'static str),
     /// An invalid stream identifier was provided
-    #[error("An invalid stream identifier was provided")]
-    InvalidStreamId,
+    #[error("An invalid stream identifier was provided: {0}")]
+    InvalidStreamId(&'static str),
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
     /// Missing pseudo header
@@ -41,32 +41,32 @@ impl ConnectionError {
         match self {
             ConnectionError::GoAway(reason) => GoAway::new(*reason),
             ConnectionError::Encoder(_) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame encoding")
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame encoding")
             }
             ConnectionError::Decoder(_) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("error during frame decoding")
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame decoding")
             }
             ConnectionError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data(format!("Missing pseudo header {:?}", s)),
             ConnectionError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data(format!("Unexpected pseudo header {:?}", s)),
             ConnectionError::UnknownStream(_) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("unknown stream")
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
             }
-            ConnectionError::InvalidStreamId => GoAway::new(Reason::PROTOCOL_ERROR)
+            ConnectionError::InvalidStreamId(_) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("An invalid stream identifier was provided"),
-            ConnectionError::StreamClosed(s) => {
+            ConnectionError::StreamClosed(s, _) => {
                 GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{:?} is closed", s))
             }
             ConnectionError::UnexpectedSettingsAck => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("received unexpected settings ack")
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Received unexpected settings ack")
             }
             ConnectionError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
-                .set_data("zero value for window update frame is not allowed"),
+                .set_data("Zero value for window update frame is not allowed"),
             ConnectionError::WindowValueOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
-                .set_data("updated value for window is overflowed"),
+                .set_data("Updated value for window is overflowed"),
             ConnectionError::KeepaliveTimeout => {
-                GoAway::new(Reason::NO_ERROR).set_data("keep-alive timeout")
+                GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
         }
     }

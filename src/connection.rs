@@ -370,7 +370,9 @@ impl Connection {
             self.0.unset_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
 
             if !id.is_client_initiated() {
-                return Err(Either::Left(ConnectionError::InvalidStreamId));
+                return Err(Either::Left(ConnectionError::InvalidStreamId(
+                    "Invalid id in received headers frame",
+                )));
             }
         }
 
@@ -380,9 +382,14 @@ impl Connection {
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         } else if id < self.0.next_stream_id.get() {
-            Err(Either::Left(ConnectionError::InvalidStreamId))
+            Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Received headers",
+            )))
         } else if self.0.local_reset_ids.borrow().contains(&id) {
-            Err(Either::Left(ConnectionError::StreamClosed(id)))
+            Err(Either::Left(ConnectionError::StreamClosed(
+                id,
+                "Received headers",
+            )))
         } else {
             if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
@@ -452,9 +459,14 @@ impl Connection {
                 .unwrap();
             Ok(None)
         } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
-            Err(Either::Left(ConnectionError::StreamClosed(frm.stream_id())))
+            Err(Either::Left(ConnectionError::StreamClosed(
+                frm.stream_id(),
+                "Received data",
+            )))
         } else {
-            Err(Either::Left(ConnectionError::InvalidStreamId))
+            Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Received data",
+            )))
         }
     }
 
