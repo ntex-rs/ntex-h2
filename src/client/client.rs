@@ -98,6 +98,16 @@ impl Client {
     pub fn on_disconnect(&self) -> OnDisconnect {
         self.0.con.state().io.on_disconnect()
     }
+
+    /// Get max number of active streams
+    pub fn max_streams(&self) -> Option<u32> {
+        self.0.con.max_streams()
+    }
+
+    /// Get number of active streams
+    pub fn active_streams(&self) -> u32 {
+        self.0.con.active_streams()
+    }
 }
 
 impl Drop for Client {

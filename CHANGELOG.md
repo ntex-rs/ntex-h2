@@ -1,6 +1,6 @@
 # Changes
 
-## [0.2.2] - 2023-04-12
+## [0.2.3] - 2023-04-12
 
 * Better connection error info
 
