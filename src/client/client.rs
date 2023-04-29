@@ -99,6 +99,12 @@ impl Client {
         self.0.con.state().io.on_disconnect()
     }
 
+    #[inline]
+    /// Client's authority
+    pub fn authority(&self) -> &ByteString {
+        &self.0.authority
+    }
+
     /// Get max number of active streams
     pub fn max_streams(&self) -> Option<u32> {
         self.0.con.max_streams()
