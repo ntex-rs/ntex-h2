@@ -107,7 +107,6 @@ async fn test_max_concurrent_streams() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_reset() {
-    let _ = env_logger::try_init();
     let srv = start_server();
     let io = connect(srv.addr()).await;
     let connection =

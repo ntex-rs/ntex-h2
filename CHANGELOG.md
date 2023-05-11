@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.4] - 2023-05-11
+
+* Expose connection stats
+
 ## [0.2.3] - 2023-04-12
 
 * Better connection error info
