@@ -43,7 +43,7 @@ fn start_server() -> ntex::http::test::TestServer {
             .h2(|mut req: ntex::http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;
-                Ok::<_, io::Error>(Response::Ok().finish())
+                Ok::<_, io::Error>(Response::Ok().body("test body"))
             })
             .openssl(ssl_acceptor())
             .map_err(|_| ())
@@ -162,6 +162,8 @@ async fn test_max_concurrent_streams_reset() {
     });
     sleep(Millis(50)).await;
 
+    stream.send_payload("chunk".into(), false).await.unwrap();
+    sleep(Millis(25)).await;
     stream.reset(Reason::NO_ERROR);
     let _ = rx.await;
     assert!(client.is_ready());

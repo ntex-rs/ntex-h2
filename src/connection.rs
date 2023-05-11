@@ -283,6 +283,22 @@ impl Connection {
         self.0.streams.borrow_mut().get(&id).cloned()
     }
 
+    pub(crate) fn max_streams(&self) -> Option<u32> {
+        if let Some(max) = self.0.local_max_concurrent_streams.get() {
+            Some(max)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn active_streams(&self) -> u32 {
+        if self.0.local_max_concurrent_streams.get().is_some() {
+            self.0.active_local_streams.get()
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn can_create_new_stream(&self) -> bool {
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             self.0.active_local_streams.get() < max
