@@ -1,5 +1,9 @@
 # Changes
 
+## [0.2.5] - 2023-06-15
+
+* Fix receive header handling for local streams
+
 ## [0.2.4] - 2023-05-11
 
 * Expose connection stats

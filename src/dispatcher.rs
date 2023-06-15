@@ -337,12 +337,14 @@ where
         loop {
             return match this.state.as_mut().project() {
                 PublishResponseStateProject::Publish { fut } => {
-                    match this.stream.poll_send_reset(cx) {
-                        Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
-                            log::trace!("Stream is closed {:?}", this.stream.id());
-                            return Poll::Ready(Ok(None));
+                    if this.stream.is_remote() {
+                        match this.stream.poll_send_reset(cx) {
+                            Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
+                                log::trace!("Stream is closed {:?}", this.stream.id());
+                                return Poll::Ready(Ok(None));
+                            }
+                            Poll::Pending => (),
                         }
-                        Poll::Pending => (),
                     }
 
                     match fut.poll(cx) {
