@@ -3,14 +3,14 @@ use std::{cell::Cell, marker::PhantomData, ops};
 use ntex_bytes::{ByteString, PoolId, PoolRef};
 use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_io::IoBoxed;
-use ntex_service::{IntoService, Service};
+use ntex_service::{Container, IntoService, Service};
 use ntex_util::time::timeout_checked;
 
 use crate::{client::ClientConnection, client::ClientError, config::Config};
 
 /// Mqtt client connector
-pub struct Connector<A, T> {
-    connector: T,
+pub struct Connector<A: Address, T> {
+    connector: Container<T>,
     config: Config,
     secure: bool,
     pub(super) pool: Cell<PoolRef>,
@@ -30,7 +30,7 @@ where
         F: IntoService<T, Connect<A>>,
     {
         Connector {
-            connector: connector.into_service(),
+            connector: Container::new(connector.into_service()),
             config: Config::client(),
             secure: false,
             pool: Cell::new(PoolId::P5.pool_ref()),
@@ -46,7 +46,7 @@ where
     /// Create new h2 connector
     fn default() -> Self {
         Connector {
-            connector: DefaultConnector::default(),
+            connector: DefaultConnector::default().into(),
             config: Config::client(),
             secure: false,
             pool: Cell::new(PoolId::P5.pool_ref()),
@@ -55,7 +55,7 @@ where
     }
 }
 
-impl<A, T> ops::Deref for Connector<A, T> {
+impl<A: Address, T> ops::Deref for Connector<A, T> {
     type Target = Config;
 
     fn deref(&self) -> &Self::Target {
@@ -63,7 +63,7 @@ impl<A, T> ops::Deref for Connector<A, T> {
     }
 }
 
-impl<A, T> ops::DerefMut for Connector<A, T> {
+impl<A: Address, T> ops::DerefMut for Connector<A, T> {
     fn deref_mut(&mut self) -> &mut Config {
         &mut self.config
     }
@@ -97,7 +97,7 @@ where
         IoBoxed: From<U::Response>,
     {
         Connector {
-            connector: connector.into_service(),
+            connector: connector.into_service().into(),
             config: self.config.clone(),
             secure: self.secure,
             pool: self.pool.clone(),

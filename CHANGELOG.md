@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.0] - 2023-06-xx
+
+* Migrate to ntex-service 1.2
+
 ## [0.2.5] - 2023-06-15
 
 * Fix receive header handling for local streams

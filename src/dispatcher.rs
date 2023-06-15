@@ -1,8 +1,8 @@
-use std::{cell, fmt, future::Future, marker, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{cell, fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
-use ntex_service::Service;
+use ntex_service::{Container, Ctx, Service, ServiceCall};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
@@ -29,16 +29,20 @@ enum Shutdown<F> {
     InProcess(F),
 }
 
-struct Inner<Ctl, Pub> {
-    control: Ctl,
-    publish: Pub,
+struct Inner<Ctl, Pub>
+where
+    Ctl: Service<ControlMessage<Pub::Error>>,
+    Pub: Service<Message>,
+{
+    control: Container<Ctl>,
+    publish: Container<Pub>,
     connection: Rc<ConnectionState>,
     last_stream_id: StreamId,
 }
 
-type ServiceFut<'f, Pub, Ctl, E> = Either<
+type ServiceFut<'f, Pub, Ctl> = Either<
     PublishResponse<'f, Pub, Ctl>,
-    Either<Ready<Option<Frame>, ()>, ControlResponse<'f, E, Ctl, Pub>>,
+    Either<Ready<Option<Frame>, ()>, ControlResponse<'f, Ctl, Pub>>,
 >;
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
@@ -52,8 +56,8 @@ where
         Dispatcher {
             shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
-                control,
-                publish,
+                control: Container::new(control),
+                publish: Container::new(publish),
                 last_stream_id: 0.into(),
                 connection: connection.get_state(),
             }),
@@ -64,7 +68,7 @@ where
     fn handle_message(
         &self,
         result: Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>>,
-    ) -> ServiceFut<'_, Pub, Ctl, Pub::Error> {
+    ) -> ServiceFut<'_, Pub, Ctl> {
         match result {
             Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(msg, stream, &self.inner)),
             Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
@@ -116,7 +120,7 @@ where
     type Error = ();
     type Future<'f> = Either<
         PublishResponse<'f, Pub, Ctl>,
-        Either<Ready<Self::Response, Self::Error>, ControlResponse<'f, Pub::Error, Ctl, Pub>>,
+        Either<Ready<Self::Response, Self::Error>, ControlResponse<'f, Ctl, Pub>>,
     >;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
@@ -170,7 +174,7 @@ where
         }
     }
 
-    fn call(&self, request: DispatchItem<Codec>) -> Self::Future<'_> {
+    fn call<'a>(&'a self, request: DispatchItem<Codec>, _: Ctx<'a, Self>) -> Self::Future<'a> {
         log::debug!("Handle h2 message: {:?}", request);
 
         match request {
@@ -298,8 +302,8 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>>
     where P: 'f
     {
-        Publish { #[pin] fut: P::Future<'f> },
-        Control { #[pin] fut: ControlResponse<'f, P::Error, C, P> },
+        Publish { #[pin] fut: ServiceCall<'f, P, Message> },
+        Control { #[pin] fut: ControlResponse<'f, C, P> },
     }
 }
 
@@ -374,36 +378,40 @@ where
 
 pin_project_lite::pin_project! {
     /// Control service response future
-    pub(crate) struct ControlResponse<'f, E, Ctl: Service<ControlMessage<E>>, Pub>
-    where Ctl: 'f, E: 'f
+    pub(crate) struct ControlResponse<'f, Ctl: Service<ControlMessage<Pub::Error>>, Pub>
+    where
+        Ctl: Service<ControlMessage<Pub::Error>>,
+        Ctl: 'f,
+        Pub: Service<Message>,
+        Pub: 'f,
     {
         #[pin]
-        fut: Ctl::Future<'f>,
+        fut: ServiceCall<'f, Ctl, ControlMessage<Pub::Error>>,
         inner: &'f Inner<Ctl, Pub>,
-        _t: marker::PhantomData<E>,
     }
 }
 
-impl<'f, E, Ctl, Pub> ControlResponse<'f, E, Ctl, Pub>
+impl<'f, Ctl, Pub> ControlResponse<'f, Ctl, Pub>
 where
-    E: fmt::Debug,
-    Ctl: Service<ControlMessage<E>, Response = ControlResult>,
+    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult>,
     Ctl::Error: fmt::Debug,
+    Pub: Service<Message>,
+    Pub::Error: fmt::Debug,
 {
-    fn new(pkt: ControlMessage<E>, inner: &'f Inner<Ctl, Pub>) -> Self {
+    fn new(pkt: ControlMessage<Pub::Error>, inner: &'f Inner<Ctl, Pub>) -> Self {
         Self {
             fut: inner.control.call(pkt),
             inner,
-            _t: marker::PhantomData,
         }
     }
 }
 
-impl<'f, E, Ctl, Pub> Future for ControlResponse<'f, E, Ctl, Pub>
+impl<'f, Ctl, Pub> Future for ControlResponse<'f, Ctl, Pub>
 where
-    E: fmt::Debug,
-    Ctl: Service<ControlMessage<E>, Response = ControlResult>,
+    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult>,
     Ctl::Error: fmt::Debug,
+    Pub: Service<Message>,
+    Pub::Error: fmt::Debug,
 {
     type Output = Result<Option<Frame>, ()>;
 
