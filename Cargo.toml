@@ -46,13 +46,3 @@ openssl = "0.10"
 # Examples
 env_logger = { version = "0.10", default-features = false }
 ntex-connect = { version = "0.3.0-beta.0", features = ["openssl", "tokio"] }
-
-[patch.crates-io]
-ntex-h2 = { path = "." }
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-service = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tls = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-connect = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-tokio = { git = "https://github.com/ntex-rs/ntex.git" }
