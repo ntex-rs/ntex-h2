@@ -2,7 +2,7 @@ use std::{cell, fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
-use ntex_service::{Container, Ctx, Service, ServiceCall};
+use ntex_service::{Container, ServiceCtx, Service, ServiceCall};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
@@ -174,7 +174,7 @@ where
         }
     }
 
-    fn call<'a>(&'a self, request: DispatchItem<Codec>, _: Ctx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, request: DispatchItem<Codec>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         log::debug!("Handle h2 message: {:?}", request);
 
         match request {
