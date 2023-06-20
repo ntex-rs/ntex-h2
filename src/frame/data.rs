@@ -132,6 +132,7 @@ impl std::fmt::Debug for Data {
     fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut f = fmt.debug_struct("Data");
         f.field("stream_id", &self.stream_id);
+        f.field("data_len", &self.data.len());
         if !self.flags.is_empty() {
             f.field("flags", &self.flags);
         }

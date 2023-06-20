@@ -320,7 +320,7 @@ where
 {
     fn new(msg: Message, stream: StreamRef, inner: &'f Inner<C, P>) -> Self {
         let state = PublishResponseState::Publish {
-            fut: inner.publish.call(msg),
+            fut: inner.publish.container_call(msg),
         };
         Self {
             state,
@@ -404,7 +404,7 @@ where
 {
     fn new(pkt: ControlMessage<Pub::Error>, inner: &'f Inner<Ctl, Pub>) -> Self {
         Self {
-            fut: inner.control.call(pkt),
+            fut: inner.control.container_call(pkt),
             inner,
         }
     }

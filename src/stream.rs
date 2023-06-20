@@ -127,7 +127,8 @@ pub(crate) struct StreamState {
     /// Send part
     send: Cell<HalfState>,
     send_window: Cell<Window>,
-    send_waker: LocalWaker,
+    send_cap: LocalWaker,
+    send_reset: LocalWaker,
     /// Connection config
     con: Rc<ConnectionState>,
     /// error state
@@ -155,6 +156,7 @@ impl StreamState {
     fn state_send_close(&self, reason: Option<Reason>) {
         log::trace!("{:?} send side is closed with reason {:?}", self.id, reason);
         self.send.set(HalfState::Closed(reason));
+        self.send_cap.wake();
         self.review_state();
     }
 
@@ -172,6 +174,8 @@ impl StreamState {
         let mut flags = self.flags.get();
         flags.insert(StreamFlags::FAILED);
         self.flags.set(flags);
+        self.send_cap.wake();
+        self.send_reset.wake();
     }
 
     fn reset_stream(&self, reason: Option<Reason>) {
@@ -202,7 +206,7 @@ impl StreamState {
 
     fn review_state(&self) {
         if self.recv.get().is_closed() {
-            self.send_waker.wake();
+            self.send_reset.wake();
 
             if let HalfState::Closed(reason) = self.send.get() {
                 // stream is closed
@@ -222,7 +226,12 @@ impl StreamState {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
         self.recv_window.set(self.recv_window.get().dec(size));
-        log::trace!("{:?} capacity incresed from {} to {}", self.id, cap, size);
+        log::trace!(
+            "{:?} capacity incresed from {} to {}",
+            self.id,
+            cap,
+            cap + size
+        );
 
         // connection level recv window
         self.con.add_capacity(size);
@@ -276,7 +285,8 @@ impl StreamRef {
             recv_size: Cell::new(0),
             send: Cell::new(HalfState::Idle),
             send_window: Cell::new(send_window),
-            send_waker: LocalWaker::new(),
+            send_cap: LocalWaker::new(),
+            send_reset: LocalWaker::new(),
             error: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
             flags: Cell::new(if remote {
@@ -472,7 +482,7 @@ impl StreamRef {
             self.0.send_window.set(window);
 
             if window.window_size() > 0 {
-                self.0.send_waker.wake();
+                self.0.send_cap.wake();
             }
             Ok(())
         }
@@ -567,6 +577,21 @@ impl StreamRef {
                     self.0.send.get()
                 );
 
+                // eof and empty data
+                if eof && res.is_empty() {
+                    let mut data = Data::new(self.0.id, Bytes::new());
+                    data.set_end_stream();
+                    self.0.state_send_close(None);
+
+                    // write to io buffer
+                    self.0
+                        .con
+                        .io
+                        .encode(data.into(), &self.0.con.codec)
+                        .unwrap();
+                    return Ok(());
+                }
+
                 loop {
                     // calaculate available send window size
                     let win = self.available_send_capacity() as usize;
@@ -604,8 +629,9 @@ impl StreamRef {
                         }
                     } else {
                         log::trace!(
-                            "Not enough sending capacity for {:?} waiting while available",
+                            "Not enough sending capacity for {:?} remaining {:?}",
                             self.0.id,
+                            res.len()
                         );
                         // wait for available send window
                         self.send_capacity().await?;
@@ -655,7 +681,7 @@ impl StreamRef {
             if win > 0 {
                 Poll::Ready(Ok(win))
             } else {
-                self.0.send_waker.register(cx.waker());
+                self.0.send_cap.register(cx.waker());
                 Poll::Pending
             }
         }
@@ -672,7 +698,7 @@ impl StreamRef {
             self.0.con.error.set(Some(err.clone()));
             Poll::Ready(Err(err))
         } else {
-            self.0.send_waker.register(cx.waker());
+            self.0.send_reset.register(cx.waker());
             Poll::Pending
         }
     }

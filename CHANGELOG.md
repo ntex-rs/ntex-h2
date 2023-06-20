@@ -2,6 +2,8 @@
 
 ## [0.3.0-beta.2] - 2023-06-21
 
+* Fix handling stream capacity
+
 * use ContainerCall instead of ServiceCall
 
 ## [0.3.0-beta.1] - 2023-06-19
