@@ -2,7 +2,7 @@ use std::{cell, fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
-use ntex_service::{Container, ServiceCtx, Service, ServiceCall};
+use ntex_service::{Container, ContainerCall, Service, ServiceCtx};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
@@ -174,7 +174,11 @@ where
         }
     }
 
-    fn call<'a>(&'a self, request: DispatchItem<Codec>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(
+        &'a self,
+        request: DispatchItem<Codec>,
+        _: ServiceCtx<'a, Self>,
+    ) -> Self::Future<'a> {
         log::debug!("Handle h2 message: {:?}", request);
 
         match request {
@@ -302,7 +306,7 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>>
     where P: 'f
     {
-        Publish { #[pin] fut: ServiceCall<'f, P, Message> },
+        Publish { #[pin] fut: ContainerCall<'f, P, Message> },
         Control { #[pin] fut: ControlResponse<'f, C, P> },
     }
 }
@@ -316,7 +320,7 @@ where
 {
     fn new(msg: Message, stream: StreamRef, inner: &'f Inner<C, P>) -> Self {
         let state = PublishResponseState::Publish {
-            fut: inner.publish.call(msg),
+            fut: inner.publish.container_call(msg),
         };
         Self {
             state,
@@ -386,7 +390,7 @@ pin_project_lite::pin_project! {
         Pub: 'f,
     {
         #[pin]
-        fut: ServiceCall<'f, Ctl, ControlMessage<Pub::Error>>,
+        fut: ContainerCall<'f, Ctl, ControlMessage<Pub::Error>>,
         inner: &'f Inner<Ctl, Pub>,
     }
 }
@@ -400,7 +404,7 @@ where
 {
     fn new(pkt: ControlMessage<Pub::Error>, inner: &'f Inner<Ctl, Pub>) -> Self {
         Self {
-            fut: inner.control.call(pkt),
+            fut: inner.control.container_call(pkt),
             inner,
         }
     }
