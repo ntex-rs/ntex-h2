@@ -1,7 +1,7 @@
 use std::{fmt, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
-use ntex_service::{ServiceCtx, Service, ServiceFactory};
+use ntex_service::{Service, ServiceCtx, ServiceFactory};
 use ntex_util::future::{BoxFuture, Ready};
 use ntex_util::time::{sleep, timeout_checked, Seconds};
 

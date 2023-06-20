@@ -1,5 +1,9 @@
 # Changes
 
+## [0.3.0-beta.2] - 2023-06-21
+
+* use ContainerCall instead of ServiceCall
+
 ## [0.3.0-beta.1] - 2023-06-19
 
 * Use ServiceCtx instead of Ctx
