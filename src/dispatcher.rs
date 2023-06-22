@@ -2,7 +2,7 @@ use std::{cell, fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
-use ntex_service::{Container, ContainerCall, Service, ServiceCtx};
+use ntex_service::{Pipeline, PipelineCall, Service, ServiceCtx};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
@@ -34,8 +34,8 @@ where
     Ctl: Service<ControlMessage<Pub::Error>>,
     Pub: Service<Message>,
 {
-    control: Container<Ctl>,
-    publish: Container<Pub>,
+    control: Pipeline<Ctl>,
+    publish: Pipeline<Pub>,
     connection: Rc<ConnectionState>,
     last_stream_id: StreamId,
 }
@@ -56,8 +56,8 @@ where
         Dispatcher {
             shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
-                control: Container::new(control),
-                publish: Container::new(publish),
+                control: Pipeline::new(control),
+                publish: Pipeline::new(publish),
                 last_stream_id: 0.into(),
                 connection: connection.get_state(),
             }),
@@ -306,7 +306,7 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>>
     where P: 'f
     {
-        Publish { #[pin] fut: ContainerCall<'f, P, Message> },
+        Publish { #[pin] fut: PipelineCall<'f, P, Message> },
         Control { #[pin] fut: ControlResponse<'f, C, P> },
     }
 }
@@ -320,7 +320,7 @@ where
 {
     fn new(msg: Message, stream: StreamRef, inner: &'f Inner<C, P>) -> Self {
         let state = PublishResponseState::Publish {
-            fut: inner.publish.container_call(msg),
+            fut: inner.publish.call(msg),
         };
         Self {
             state,
@@ -390,7 +390,7 @@ pin_project_lite::pin_project! {
         Pub: 'f,
     {
         #[pin]
-        fut: ContainerCall<'f, Ctl, ControlMessage<Pub::Error>>,
+        fut: PipelineCall<'f, Ctl, ControlMessage<Pub::Error>>,
         inner: &'f Inner<Ctl, Pub>,
     }
 }
@@ -404,7 +404,7 @@ where
 {
     fn new(pkt: ControlMessage<Pub::Error>, inner: &'f Inner<Ctl, Pub>) -> Self {
         Self {
-            fut: inner.control.container_call(pkt),
+            fut: inner.control.call(pkt),
             inner,
         }
     }

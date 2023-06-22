@@ -3,14 +3,14 @@ use std::{cell::Cell, marker::PhantomData, ops};
 use ntex_bytes::{ByteString, PoolId, PoolRef};
 use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_io::IoBoxed;
-use ntex_service::{Container, IntoService, Service};
+use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::timeout_checked;
 
 use crate::{client::ClientConnection, client::ClientError, config::Config};
 
 /// Mqtt client connector
 pub struct Connector<A: Address, T> {
-    connector: Container<T>,
+    connector: Pipeline<T>,
     config: Config,
     secure: bool,
     pub(super) pool: Cell<PoolRef>,
@@ -30,7 +30,7 @@ where
         F: IntoService<T, Connect<A>>,
     {
         Connector {
-            connector: Container::new(connector.into_service()),
+            connector: Pipeline::new(connector.into_service()),
             config: Config::client(),
             secure: false,
             pool: Cell::new(PoolId::P5.pool_ref()),
