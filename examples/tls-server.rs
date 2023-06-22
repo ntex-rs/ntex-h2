@@ -1,6 +1,6 @@
 use std::convert::TryFrom;
 
-use ntex::service::{fn_service, pipeline_factory};
+use ntex::service::{fn_service, ServiceFactory};
 use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_tls::openssl::Acceptor;
@@ -33,7 +33,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("http", "127.0.0.1:5928", move |_| {
-            pipeline_factory(Acceptor::new(acceptor.clone()))
+            Acceptor::new(acceptor.clone())
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
                     server::Server::build()
