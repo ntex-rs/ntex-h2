@@ -119,7 +119,7 @@ where
 
         let fut = async {
             Ok::<_, ClientError>(ClientConnection::with_params(
-                self.connector.call(Connect::new(address)).await?,
+                self.connector.clone().service_call(Connect::new(address)).await?,
                 self.config.clone(),
                 secure,
                 authority,
