@@ -2,7 +2,7 @@ use std::{cell, fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
-use ntex_service::{Pipeline, PipelineCall, Service, ServiceCtx};
+use ntex_service::{Pipeline, Service, ServiceCall, ServiceCtx};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
@@ -34,15 +34,18 @@ where
     Ctl: Service<ControlMessage<Pub::Error>>,
     Pub: Service<Message>,
 {
-    control: Pipeline<Ctl>,
-    publish: Pipeline<Pub>,
+    control: Ctl,
+    publish: Pub,
     connection: Rc<ConnectionState>,
     last_stream_id: StreamId,
 }
 
 type ServiceFut<'f, Pub, Ctl> = Either<
     PublishResponse<'f, Pub, Ctl>,
-    Either<Ready<Option<Frame>, ()>, ControlResponse<'f, Ctl, Pub>>,
+    Either<
+        ControlResponse<'f, Ctl, Pub>,
+        Either<Ready<Option<Frame>, ()>, BoxFuture<'f, Result<Option<Frame>, ()>>>,
+    >,
 >;
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
@@ -56,8 +59,8 @@ where
         Dispatcher {
             shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
-                control: Pipeline::new(control),
-                publish: Pipeline::new(publish),
+                control,
+                publish,
                 last_stream_id: 0.into(),
                 connection: connection.get_state(),
             }),
@@ -65,18 +68,22 @@ where
         }
     }
 
-    fn handle_message(
-        &self,
+    fn handle_message<'f>(
+        &'f self,
         result: Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>>,
-    ) -> ServiceFut<'_, Pub, Ctl> {
+        ctx: ServiceCtx<'f, Self>,
+    ) -> ServiceFut<'f, Pub, Ctl> {
         match result {
-            Ok(Some((stream, msg))) => Either::Left(PublishResponse::new(msg, stream, &self.inner)),
-            Ok(None) => Either::Right(Either::Left(Ready::Ok(None))),
+            Ok(Some((stream, msg))) => {
+                Either::Left(PublishResponse::new(msg, stream, &self.inner, ctx))
+            }
+            Ok(None) => Either::Right(Either::Right(Either::Left(Ready::Ok(None)))),
             Err(Either::Left(err)) => {
                 self.connection.proto_error(&err);
-                Either::Right(Either::Right(ControlResponse::new(
+                Either::Right(Either::Left(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
+                    ctx,
                 )))
             }
             Err(Either::Right(err)) => {
@@ -91,6 +98,7 @@ where
                     Message::error(kind, &stream),
                     stream,
                     &self.inner,
+                    ctx,
                 ))
             }
         }
@@ -100,9 +108,10 @@ where
         if !streams.is_empty() {
             let inner = self.inner.clone();
             spawn(async move {
+                let p = Pipeline::new(&inner.publish);
                 let futs = streams
                     .into_values()
-                    .map(|stream| inner.publish.call(Message::disconnect(err.clone(), stream)));
+                    .map(|stream| p.service_call(Message::disconnect(err.clone(), stream)));
                 let _ = join_all(futs).await;
             });
         }
@@ -118,10 +127,7 @@ where
 {
     type Response = Option<Frame>;
     type Error = ();
-    type Future<'f> = Either<
-        PublishResponse<'f, Pub, Ctl>,
-        Either<Ready<Self::Response, Self::Error>, ControlResponse<'f, Ctl, Pub>>,
-    >;
+    type Future<'f> = ServiceFut<'f, Pub, Ctl>;
 
     fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         // check publish service readiness
@@ -142,7 +148,9 @@ where
         if matches!(&*shutdown, &Shutdown::NotSet) {
             let inner = self.inner.clone();
             *shutdown = Shutdown::InProcess(Box::pin(async move {
-                let _ = inner.control.call(ControlMessage::terminated()).await;
+                let _ = Pipeline::new(&inner.control)
+                    .service_call(ControlMessage::terminated())
+                    .await;
             }));
         }
 
@@ -177,61 +185,67 @@ where
     fn call<'a>(
         &'a self,
         request: DispatchItem<Codec>,
-        _: ServiceCtx<'a, Self>,
+        ctx: ServiceCtx<'a, Self>,
     ) -> Self::Future<'a> {
         log::debug!("Handle h2 message: {:?}", request);
 
         match request {
             DispatchItem::Item(frame) => match frame {
-                Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)),
-                Frame::Data(data) => self.handle_message(self.connection.recv_data(data)),
+                Frame::Headers(hdrs) => {
+                    self.handle_message(self.connection.recv_headers(hdrs), ctx)
+                }
+                Frame::Data(data) => self.handle_message(self.connection.recv_data(data), ctx),
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
                         self.connection.proto_error(&err);
-                        Either::Right(Either::Right(ControlResponse::new(
+                        Either::Right(Either::Left(ControlResponse::new(
                             ControlMessage::proto_error(err),
                             &self.inner,
+                            ctx,
                         )))
                     }
                     Err(Either::Right(errs)) => {
-                        // handle stream errors
-                        for err in errs {
-                            let (stream, kind) = err.into_inner();
-                            stream.set_failed_stream(kind.into());
+                        Either::Right(Either::Right(Either::Right(Box::pin(async move {
+                            // handle stream errors
+                            for err in errs {
+                                let (stream, kind) = err.into_inner();
+                                stream.set_failed_stream(kind.into());
 
-                            let st = self.connection.state();
-                            let _ = st
-                                .io
-                                .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
-                            let inner = self.inner.clone();
-                            ntex_rt::spawn(async move {
+                                let st = self.connection.state();
+                                let _ = st.io.encode(
+                                    Reset::new(stream.id(), kind.reason()).into(),
+                                    &st.codec,
+                                );
+
                                 let _ = PublishResponse::<Pub, Ctl>::new(
                                     Message::error(kind, &stream),
                                     stream,
-                                    &inner,
+                                    &self.inner,
+                                    ctx,
                                 )
                                 .await;
-                            });
-                        }
-                        Either::Right(Either::Left(Ready::Ok(None)))
+                            }
+                            Ok(None)
+                        }))))
                     }
-                    Ok(_) => Either::Right(Either::Left(Ready::Ok(None))),
+                    Ok(_) => Either::Right(Either::Right(Either::Left(Ready::Ok(None)))),
                 },
-                Frame::WindowUpdate(update) => {
-                    self.handle_message(self.connection.recv_window_update(update).map(|_| None))
-                }
+                Frame::WindowUpdate(update) => self.handle_message(
+                    self.connection.recv_window_update(update).map(|_| None),
+                    ctx,
+                ),
                 Frame::Reset(reset) => {
-                    self.handle_message(self.connection.recv_rst_stream(reset).map(|_| None))
+                    self.handle_message(self.connection.recv_rst_stream(reset).map(|_| None), ctx)
                 }
                 Frame::Ping(ping) => {
                     log::trace!("processing PING: {:#?}", ping);
                     if ping.is_ack() {
                         self.connection.recv_pong(ping);
-                        Either::Right(Either::Left(Ready::Ok(None)))
+                        Either::Right(Either::Right(Either::Left(Ready::Ok(None))))
                     } else {
-                        Either::Right(Either::Left(Ready::Ok(Some(
+                        Either::Right(Either::Right(Either::Left(Ready::Ok(Some(
                             Ping::pong(ping.into_payload()).into(),
-                        ))))
+                        )))))
                     }
                 }
                 Frame::GoAway(frm) => {
@@ -239,53 +253,58 @@ where
                     let reason = frm.reason();
                     let streams = self.connection.recv_go_away(reason, frm.data());
                     self.handle_connection_error(streams, ConnectionError::GoAway(reason).into());
-                    Either::Right(Either::Right(ControlResponse::new(
+                    Either::Right(Either::Left(ControlResponse::new(
                         ControlMessage::go_away(frm),
                         &self.inner,
+                        ctx,
                     )))
                 }
                 Frame::Priority(prio) => {
                     log::debug!("PRIORITY frame is not supported: {:#?}", prio);
-                    Either::Right(Either::Left(Ready::Ok(None)))
+                    Either::Right(Either::Right(Either::Left(Ready::Ok(None))))
                 }
             },
             DispatchItem::EncoderError(err) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
-                Either::Right(Either::Right(ControlResponse::new(
+                Either::Right(Either::Left(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::DecoderError(err) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
-                Either::Right(Either::Right(ControlResponse::new(
+                Either::Right(Either::Left(ControlResponse::new(
                     ControlMessage::proto_error(err),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::KeepAliveTimeout => {
                 log::warn!("did not receive pong response in time, closing connection");
                 let streams = self.connection.ping_timeout();
                 self.handle_connection_error(streams, ConnectionError::KeepaliveTimeout.into());
-                Either::Right(Either::Right(ControlResponse::new(
+                Either::Right(Either::Left(ControlResponse::new(
                     ControlMessage::proto_error(ConnectionError::KeepaliveTimeout),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::Disconnect(err) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(streams, OperationError::Disconnected);
-                Either::Right(Either::Right(ControlResponse::new(
+                Either::Right(Either::Left(ControlResponse::new(
                     ControlMessage::peer_gone(err),
                     &self.inner,
+                    ctx,
                 )))
             }
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => {
-                Either::Right(Either::Left(Ready::Ok(None)))
+                Either::Right(Either::Right(Either::Left(Ready::Ok(None))))
             }
         }
     }
@@ -297,6 +316,7 @@ pin_project_lite::pin_project! {
         stream: StreamRef,
         #[pin]
         state: PublishResponseState<'f, P, C>,
+        ctx: ServiceCtx<'f, Dispatcher<C, P>>,
         inner: &'f Inner<C, P>,
     }
 }
@@ -306,7 +326,7 @@ pin_project_lite::pin_project! {
     enum PublishResponseState<'f, P: Service<Message>, C: Service<ControlMessage<P::Error>>>
     where P: 'f
     {
-        Publish { #[pin] fut: PipelineCall<'f, P, Message> },
+        Publish { #[pin] fut: ServiceCall<'f, P, Message> },
         Control { #[pin] fut: ControlResponse<'f, C, P> },
     }
 }
@@ -318,11 +338,17 @@ where
     C: Service<ControlMessage<P::Error>, Response = ControlResult>,
     C::Error: fmt::Debug,
 {
-    fn new(msg: Message, stream: StreamRef, inner: &'f Inner<C, P>) -> Self {
+    fn new(
+        msg: Message,
+        stream: StreamRef,
+        inner: &'f Inner<C, P>,
+        ctx: ServiceCtx<'f, Dispatcher<C, P>>,
+    ) -> Self {
         let state = PublishResponseState::Publish {
-            fut: inner.publish.call(msg),
+            fut: ctx.call(&inner.publish, msg),
         };
         Self {
+            ctx,
             state,
             stream,
             inner,
@@ -365,9 +391,9 @@ where
                                     fut: ControlResponse::new(
                                         ControlMessage::app_error(e, this.stream.clone()),
                                         this.inner,
+                                        *this.ctx,
                                     ),
                                 });
-                                //this = self.as_mut().project();
                                 continue;
                             }
                         }
@@ -390,7 +416,7 @@ pin_project_lite::pin_project! {
         Pub: 'f,
     {
         #[pin]
-        fut: PipelineCall<'f, Ctl, ControlMessage<Pub::Error>>,
+        fut: ServiceCall<'f, Ctl, ControlMessage<Pub::Error>>,
         inner: &'f Inner<Ctl, Pub>,
     }
 }
@@ -402,9 +428,13 @@ where
     Pub: Service<Message>,
     Pub::Error: fmt::Debug,
 {
-    fn new(pkt: ControlMessage<Pub::Error>, inner: &'f Inner<Ctl, Pub>) -> Self {
+    fn new(
+        pkt: ControlMessage<Pub::Error>,
+        inner: &'f Inner<Ctl, Pub>,
+        ctx: ServiceCtx<'f, Dispatcher<Ctl, Pub>>,
+    ) -> Self {
         Self {
-            fut: inner.control.call(pkt),
+            fut: ctx.call(&inner.control, pkt),
             inner,
         }
     }
