@@ -111,7 +111,7 @@ where
                 let p = Pipeline::new(&inner.publish);
                 let futs = streams
                     .into_values()
-                    .map(|stream| p.service_call(Message::disconnect(err.clone(), stream)));
+                    .map(|stream| p.call(Message::disconnect(err.clone(), stream)));
                 let _ = join_all(futs).await;
             });
         }
@@ -149,7 +149,7 @@ where
             let inner = self.inner.clone();
             *shutdown = Shutdown::InProcess(Box::pin(async move {
                 let _ = Pipeline::new(&inner.control)
-                    .service_call(ControlMessage::terminated())
+                    .call(ControlMessage::terminated())
                     .await;
             }));
         }
