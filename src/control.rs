@@ -17,6 +17,7 @@ pub enum ControlMessage<E> {
     Terminated(Terminated),
 }
 
+#[derive(Clone, Debug)]
 pub struct ControlResult {
     pub(crate) frame: Option<Frame>,
     pub(crate) disconnect: bool,

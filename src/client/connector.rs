@@ -8,6 +8,7 @@ use ntex_util::time::timeout_checked;
 
 use crate::{client::ClientConnection, client::ClientError, config::Config};
 
+#[derive(Debug)]
 /// Mqtt client connector
 pub struct Connector<A: Address, T> {
     connector: Pipeline<T>,

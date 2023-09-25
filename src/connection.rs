@@ -284,11 +284,7 @@ impl Connection {
     }
 
     pub(crate) fn max_streams(&self) -> Option<u32> {
-        if let Some(max) = self.0.local_max_concurrent_streams.get() {
-            Some(max)
-        } else {
-            None
-        }
+        self.0.local_max_concurrent_streams.get()
     }
 
     pub(crate) fn active_streams(&self) -> u32 {
