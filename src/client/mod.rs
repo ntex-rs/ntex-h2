@@ -46,3 +46,21 @@ impl From<ntex_connect::ConnectError> for ClientError {
         Self::Connect(Box::new(err))
     }
 }
+
+#[cfg(feature = "unstable")]
+pub trait Observer {
+    /// New request is prepared
+    fn on_request(&mut self, id: frame::StreamId, headers: &mut frame::Headers);
+
+    /// Bytes has been written to memory
+    fn on_request_sent(&mut self, id: frame::StreamId);
+
+    /// Payload data has been written to memory
+    fn on_request_payload(&mut self, id: frame::StreamId, data: &frame::Data);
+
+    /// Response is received
+    fn on_response(&mut self, id: frame::StreamId, headers: &mut frame::Headers);
+
+    /// Payload data has been received
+    fn on_response_payload(&mut self, id: frame::StreamId, data: &frame::Data);
+}

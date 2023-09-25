@@ -13,9 +13,11 @@ use crate::{
 
 use super::{ServerBuilder, ServerError};
 
+#[derive(Debug)]
 /// Http/2 server factory
 pub struct Server<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 
+#[derive(Debug)]
 struct ServerInner<Ctl, Pub> {
     control: Ctl,
     publish: Pub,
@@ -95,6 +97,7 @@ where
     }
 }
 
+#[derive(Debug)]
 /// Http2 connections handler
 pub struct ServerHandler<Ctl, Pub>(Rc<ServerInner<Ctl, Pub>>);
 

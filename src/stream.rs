@@ -109,6 +109,7 @@ pub enum ContentLength {
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct StreamFlags: u8 {
         const REMOTE = 0b0000_0001;
         const FAILED = 0b0000_0010;
@@ -666,10 +667,7 @@ impl StreamRef {
     }
 
     /// Check for available send capacity
-    pub fn poll_send_capacity(
-        &self,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<WindowSize, OperationError>> {
+    pub fn poll_send_capacity(&self, cx: &Context<'_>) -> Poll<Result<WindowSize, OperationError>> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Poll::Ready(Err(err))
@@ -688,7 +686,7 @@ impl StreamRef {
     }
 
     /// Check if send part of stream get reset
-    pub fn poll_send_reset(&self, cx: &mut Context<'_>) -> Poll<Result<(), OperationError>> {
+    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), OperationError>> {
         if self.0.send.get().is_closed() {
             Poll::Ready(Ok(()))
         } else if let Some(err) = self.0.error.take() {

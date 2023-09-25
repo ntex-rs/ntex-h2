@@ -38,16 +38,11 @@ pub struct LengthDelimitedCodec {
     state: Cell<DecodeState>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 enum DecodeState {
+    #[default]
     Head,
     Data(usize),
-}
-
-impl Default for DecodeState {
-    fn default() -> Self {
-        DecodeState::Head
-    }
 }
 
 // ===== impl LengthDelimitedCodec ======

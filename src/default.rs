@@ -5,6 +5,7 @@ use ntex_util::future::Ready;
 
 use super::control::{ControlMessage, ControlResult};
 
+#[derive(Copy, Clone, Debug)]
 /// Default control service
 pub struct DefaultControlService;
 

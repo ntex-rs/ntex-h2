@@ -5,6 +5,7 @@ use ntex_util::{channel::pool, time::Seconds};
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct ConfigFlags: u8 {
         const SERVER = 0b0000_0001;
         const HTTPS  = 0b0000_0010;
