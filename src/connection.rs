@@ -5,8 +5,7 @@ use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_rt::spawn;
-use ntex_util::future::Either;
-use ntex_util::{channel::pool, time, time::now, time::sleep, HashMap, HashSet};
+use ntex_util::{channel::pool, future::Either, time, time::now, time::sleep, HashMap, HashSet};
 
 use crate::config::{Config, ConfigInner};
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
@@ -18,6 +17,7 @@ use crate::{codec::Codec, consts, message::Message, window::Window};
 pub struct Connection(Rc<ConnectionState>);
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct ConnectionFlags: u8 {
         const SETTINGS_PROCESSED      = 0b0000_0001;
         const DELAY_DROP_TASK_STARTED = 0b0000_0010;

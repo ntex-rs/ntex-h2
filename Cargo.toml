@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.3.3"
+version = "0.3.4"
 license = "MIT"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -12,6 +12,12 @@ categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2018"
 
+[features]
+default = []
+
+# unstable features
+unstable = []
+
 [dependencies]
 ntex-connect = "0.3.0"
 ntex-io = "0.3.2"
@@ -22,7 +28,7 @@ ntex-service = "1.2.3"
 ntex-util = "0.3.0"
 ntex-rt = "0.4.7"
 
-bitflags = "1.3"
+bitflags = "2.4"
 fxhash = "0.2.1"
 log = "0.4"
 pin-project-lite = "0.2"

@@ -109,6 +109,7 @@ pub enum ContentLength {
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
 bitflags::bitflags! {
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct StreamFlags: u8 {
         const REMOTE = 0b0000_0001;
         const FAILED = 0b0000_0010;
