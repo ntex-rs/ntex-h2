@@ -15,6 +15,7 @@ use super::{client::Client, ClientError};
 type Fut = BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>;
 type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>>;
 
+#[derive(Clone)]
 /// Manages http client network connectivity.
 pub struct Pool {
     inner: Rc<Inner>,
@@ -23,6 +24,7 @@ pub struct Pool {
 
 /// Notify one active waiter
 fn notify(waiters: &mut VecDeque<oneshot::Sender<()>>) {
+    log::debug!("Notify waiter, total {:?}", waiters.len());
     while let Some(waiter) = waiters.pop_front() {
         if waiter.send(()).is_ok() {
             break;
@@ -70,7 +72,7 @@ impl Pool {
                 // check existing connections
                 let available = connections.iter().filter(|item| item.is_ready()).count();
                 let client = if available > 0 {
-                    let idx = WyRand::new().generate_range(0_usize..=available);
+                    let idx = WyRand::new().generate_range(0_usize..available);
                     connections
                         .iter()
                         .filter(|item| item.is_ready())
@@ -121,6 +123,7 @@ impl Pool {
                         Ok(Err(err)) => Err(ClientError::from(err)),
                         Err(_) => Err(ClientError::HandshakeTimeout),
                     };
+                    inner.connecting.set(false);
                     for waiter in waiters.borrow_mut().drain(..) {
                         let _ = waiter.send(());
                     }
@@ -132,6 +135,10 @@ impl Pool {
                     .await
                     .map_err(From::from);
             } else {
+                log::debug!(
+                    "New connection is being established {:?} or number of existing cons {} greater than allowed {}",
+                    self.inner.connecting.get(), num, self.inner.maxconn);
+
                 // wait for available connection
                 let (tx, rx) = oneshot::channel();
                 self.waiters.borrow_mut().push_back(tx);
@@ -146,13 +153,13 @@ impl Pool {
     /// Readiness depends on number of opened streams and max concurrency setting
     pub fn is_ready(&self) -> bool {
         let connections = self.inner.connections.borrow();
-
         for client in &*connections {
             if client.is_ready() {
                 return true;
             }
         }
-        false
+
+        !self.inner.connecting.get() && connections.len() < self.inner.maxconn
     }
 
     #[inline]
@@ -166,6 +173,11 @@ impl Pool {
                 let (tx, rx) = oneshot::channel();
                 self.waiters.borrow_mut().push_back(tx);
                 let _ = rx.await;
+                'inner: while let Some(tx) = self.waiters.borrow_mut().pop_front() {
+                    if tx.send(()).is_ok() {
+                        break 'inner;
+                    }
+                }
             } else {
                 break;
             }

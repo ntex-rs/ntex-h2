@@ -4,10 +4,10 @@ use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMetho
 use ntex::http::{
     test::server as test_server, uri::Scheme, HeaderMap, HttpService, Method, Response,
 };
-use ntex::service::ServiceFactory;
+use ntex::service::{fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client::Client, frame::Reason};
+use ntex_h2::{client::Client, client::Pool, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -101,6 +101,91 @@ async fn test_max_concurrent_streams() {
     sleep(Millis(50)).await;
     assert!(client.is_ready());
     assert!(opened.get());
+}
+
+#[ntex::test]
+async fn test_max_concurrent_streams_pool() {
+    env_logger::init();
+    let srv = start_server();
+    let addr = srv.addr();
+    let client = Pool::build(
+        "localhost",
+        fn_service(move |_| {
+            let addr = addr;
+            async move { Ok(connect(addr).await) }
+        }),
+    )
+    .maxconn(1)
+    .finish();
+    assert!(client.is_ready());
+
+    let (stream, _recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    sleep(Millis(150)).await;
+    assert!(!client.is_ready());
+
+    let client2 = client.clone();
+    let opened = Rc::new(Cell::new(false));
+    let opened2 = opened.clone();
+    ntex::rt::spawn(async move {
+        let _stream = client2
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        opened2.set(true);
+    });
+
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    client.ready().await;
+    sleep(Millis(150)).await;
+    assert!(client.is_ready());
+    assert!(opened.get());
+}
+
+#[ntex::test]
+async fn test_max_concurrent_streams_pool2() {
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let cnt = Rc::new(Cell::new(0));
+    let cnt2 = cnt.clone();
+    let client = Pool::build(
+        "localhost",
+        fn_service(move |_| {
+            let addr = addr;
+            cnt2.set(cnt2.get() + 1);
+            async move { Ok(connect(addr).await) }
+        }),
+    )
+    .maxconn(2)
+    .finish();
+    assert!(client.is_ready());
+
+    let (stream, _recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    sleep(Millis(150)).await;
+    assert!(client.is_ready());
+
+    let client2 = client.clone();
+    let opened = Rc::new(Cell::new(false));
+    let opened2 = opened.clone();
+    ntex::rt::spawn(async move {
+        let _stream = client2
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        opened2.set(true);
+    });
+
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    sleep(Millis(250)).await;
+    assert!(client.is_ready());
+    assert!(opened.get());
+    assert!(cnt.get() == 2);
 }
 
 #[ntex::test]

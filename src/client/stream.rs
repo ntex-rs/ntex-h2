@@ -133,10 +133,7 @@ impl RecvStream {
                     _ => false,
                 };
                 if to_remove {
-                    let id = self.0.id();
-                    self.1.notify(id);
-                    inner.remove(&id);
-                    log::debug!("Stream {:?} is closed, notify", id);
+                    inner.remove(&self.0.id());
                 }
                 Poll::Ready(Some(msg))
             } else {
@@ -154,7 +151,6 @@ impl Drop for RecvStream {
         if !self.0.recv_state().is_closed() {
             self.0.reset(Reason::CANCEL);
         }
-        self.1.notify(self.0.id());
         self.1 .0.inflight.borrow_mut().remove(&self.0.id());
     }
 }
@@ -180,9 +176,19 @@ impl Service<Message> for HandleService {
     type Error = ();
     type Future<'f> = Ready<(), ()>;
 
-    fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, mut msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         let id = msg.id();
         if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
+            let eof = match msg.kind() {
+                MessageKind::Headers { eof, .. } => *eof,
+                MessageKind::Eof(..) | MessageKind::Empty | MessageKind::Disconnect(..) => true,
+                _ => false,
+            };
+            if eof {
+                self.0.notify(id);
+                log::debug!("Stream {:?} is closed, notify", id);
+            }
+
             inflight.push(msg);
         }
         Ready::Ok(())
