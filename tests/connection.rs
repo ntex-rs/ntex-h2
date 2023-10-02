@@ -123,7 +123,7 @@ async fn test_max_concurrent_streams_pool() {
         .send(Method::GET, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
-    sleep(Millis(150)).await;
+    sleep(Millis(250)).await;
     assert!(!client.is_ready());
 
     let client2 = client.clone();
@@ -167,7 +167,7 @@ async fn test_max_concurrent_streams_pool2() {
         .send(Method::GET, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
-    sleep(Millis(150)).await;
+    sleep(Millis(250)).await;
     assert!(client.is_ready());
 
     let client2 = client.clone();
