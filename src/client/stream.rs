@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::{cell::RefCell, pin::Pin, rc::Rc};
+use std::{cell::RefCell, fmt, pin::Pin, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
@@ -12,9 +12,13 @@ use crate::frame::{Reason, StreamId, WindowSize};
 use crate::message::{Message, MessageKind};
 use crate::{Stream, StreamRef};
 
-#[derive(Clone, Debug, Default)]
-pub(super) struct InflightStorage {
-    inflight: Rc<RefCell<HashMap<StreamId, Inflight>>>,
+#[derive(Clone, Default)]
+pub(super) struct InflightStorage(Rc<InflightStorageInner>);
+
+#[derive(Default)]
+struct InflightStorageInner {
+    inflight: RefCell<HashMap<StreamId, Inflight>>,
+    cb: Option<Box<dyn Fn(StreamId)>>,
 }
 
 #[derive(Debug)]
@@ -120,7 +124,7 @@ impl RecvStream {
     /// the current task for wakeup if the value is not yet available,
     /// and returning None if the stream is exhausted.
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
-        let mut inner = self.1.inflight.borrow_mut();
+        let mut inner = self.1 .0.inflight.borrow_mut();
         if let Some(inflight) = inner.get_mut(&self.0.id()) {
             if let Some(mut msg) = inflight.pop() {
                 let to_remove = match msg.kind() {
@@ -129,7 +133,10 @@ impl RecvStream {
                     _ => false,
                 };
                 if to_remove {
-                    inner.remove(&self.0.id());
+                    let id = self.0.id();
+                    self.1.notify(id);
+                    inner.remove(&id);
+                    log::debug!("Stream {:?} is closed, notify", id);
                 }
                 Poll::Ready(Some(msg))
             } else {
@@ -147,7 +154,8 @@ impl Drop for RecvStream {
         if !self.0.recv_state().is_closed() {
             self.0.reset(Reason::CANCEL);
         }
-        self.1.inflight.borrow_mut().remove(&self.0.id());
+        self.1.notify(self.0.id());
+        self.1 .0.inflight.borrow_mut().remove(&self.0.id());
     }
 }
 
@@ -174,7 +182,7 @@ impl Service<Message> for HandleService {
 
     fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         let id = msg.id();
-        if let Some(inflight) = self.0.inflight.borrow_mut().get_mut(&id) {
+        if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
             inflight.push(msg);
         }
         Ready::Ok(())
@@ -182,6 +190,22 @@ impl Service<Message> for HandleService {
 }
 
 impl InflightStorage {
+    pub(super) fn new<F>(f: F) -> Self
+    where
+        F: Fn(StreamId) + 'static,
+    {
+        InflightStorage(Rc::new(InflightStorageInner {
+            inflight: Default::default(),
+            cb: Some(Box::new(f)),
+        }))
+    }
+
+    pub(super) fn notify(&self, id: StreamId) {
+        if let Some(ref cb) = self.0.cb {
+            (*cb)(id)
+        }
+    }
+
     pub(super) fn inflight(&self, stream: Stream) -> (SendStream, RecvStream) {
         let id = stream.id();
         let snd = SendStream(stream.clone(), self.clone());
@@ -191,7 +215,15 @@ impl InflightStorage {
             response: None,
             waker: LocalWaker::default(),
         };
-        self.inflight.borrow_mut().insert(id, inflight);
+        self.0.inflight.borrow_mut().insert(id, inflight);
         (snd, rcv)
+    }
+}
+
+impl fmt::Debug for InflightStorage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InflightStorage")
+            .field("inflight", &self.0.inflight)
+            .finish()
     }
 }

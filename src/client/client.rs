@@ -26,9 +26,17 @@ struct ClientRef {
 impl Client {
     /// Construct new `Client` instance.
     pub fn new(io: IoBoxed, config: Config, scheme: Scheme, authority: ByteString) -> Self {
-        //let io = IoBoxed::from(io);
+        Client::with_params(io, config, scheme, authority, InflightStorage::default())
+    }
+
+    pub(super) fn with_params(
+        io: IoBoxed,
+        config: Config,
+        scheme: Scheme,
+        authority: ByteString,
+        storage: InflightStorage,
+    ) -> Self {
         let codec = Codec::default();
-        let storage = InflightStorage::default();
         let con = Connection::new(io.get_ref(), codec, config, false);
         con.set_secure(scheme == Scheme::HTTPS);
 
