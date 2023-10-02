@@ -3,6 +3,7 @@
 #[allow(clippy::module_inception)]
 mod client;
 mod connector;
+mod pool;
 
 use crate::{error::ConnectionError, frame};
 

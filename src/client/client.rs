@@ -62,10 +62,6 @@ impl Client {
         }
     }
 
-    #[doc(hidden)]
-    /// Set client's authority
-    pub fn set_authority(&self, _: ByteString) {}
-
     #[inline]
     /// Check client readiness
     ///
