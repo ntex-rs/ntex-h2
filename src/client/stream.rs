@@ -48,7 +48,8 @@ impl Inflight {
                 self.response = Some(Either::Right(messages));
             }
             None => self.response = Some(Either::Left(item)),
-        }
+        };
+        self.waker.wake();
     }
 }
 
@@ -121,7 +122,15 @@ impl FutStream for RecvStream {
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let mut inner = self.1.inflight.borrow_mut();
         if let Some(inflight) = inner.get_mut(&self.0.id()) {
-            if let Some(msg) = inflight.pop() {
+            if let Some(mut msg) = inflight.pop() {
+                let to_remove = match msg.kind() {
+                    MessageKind::Headers { eof, .. } => *eof,
+                    MessageKind::Eof(..) | MessageKind::Empty | MessageKind::Disconnect(..) => true,
+                    _ => false,
+                };
+                if to_remove {
+                    inner.remove(&self.0.id());
+                }
                 Poll::Ready(Some(msg))
             } else {
                 inflight.waker.register(cx.waker());
@@ -140,23 +149,10 @@ impl Service<Message> for HandleService {
     type Error = ();
     type Future<'f> = Ready<(), ()>;
 
-    fn call<'a>(&'a self, mut msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         let id = msg.id();
-        let mut inner = self.0.inflight.borrow_mut();
-
-        if let Some(inflight) = inner.get_mut(&id) {
-            let to_remove = match msg.kind() {
-                MessageKind::Headers { eof, .. } => *eof,
-                MessageKind::Eof(..) | MessageKind::Empty | MessageKind::Disconnect(..) => true,
-                _ => false,
-            };
-
+        if let Some(inflight) = self.0.inflight.borrow_mut().get_mut(&id) {
             inflight.push(msg);
-            inflight.waker.wake();
-
-            if to_remove {
-                inner.remove(&id);
-            }
         }
         Ready::Ok(())
     }
