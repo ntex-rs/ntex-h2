@@ -296,6 +296,11 @@ impl Connection {
     }
 
     pub(crate) fn can_create_new_stream(&self) -> bool {
+        println!(
+            "================== {} {:?}",
+            self.0.active_local_streams.get(),
+            self.0.local_max_concurrent_streams.get()
+        );
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             self.0.active_local_streams.get() < max
         } else {

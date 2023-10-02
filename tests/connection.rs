@@ -1,11 +1,13 @@
 use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
-use ntex::http::{test::server as test_server, HeaderMap, HttpService, Method, Response};
-use ntex::service::{fn_service, ServiceFactory};
+use ntex::http::{
+    test::server as test_server, uri::Scheme, HeaderMap, HttpService, Method, Response,
+};
+use ntex::service::ServiceFactory;
 use ntex::time::{sleep, Millis};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client::ClientConnection, frame::Reason};
+use ntex_h2::{client::Client, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -70,20 +72,16 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 async fn test_max_concurrent_streams() {
     let srv = start_server();
     let io = connect(srv.addr()).await;
-    let connection =
-        ClientConnection::with_params(io, ntex_h2::Config::client(), true, "localhost".into());
-    let client = connection.client();
-    ntex::rt::spawn(async move {
-        let _ = connection
-            .start(fn_service(
-                |_: ntex_h2::Message| async move { Ok::<_, ()>(()) },
-            ))
-            .await;
-    });
-    sleep(Millis(150)).await;
+    let client = Client::new(
+        io,
+        ntex_h2::Config::client(),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    sleep(Millis(50)).await; // we need to get settings frame from server
 
-    let stream = client
-        .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+    let (stream, _recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
     assert!(!client.is_ready());
@@ -93,7 +91,7 @@ async fn test_max_concurrent_streams() {
     let opened2 = opened.clone();
     ntex::rt::spawn(async move {
         let _stream = client2
-            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
         opened2.set(true);
@@ -109,20 +107,16 @@ async fn test_max_concurrent_streams() {
 async fn test_max_concurrent_streams_reset() {
     let srv = start_server();
     let io = connect(srv.addr()).await;
-    let connection =
-        ClientConnection::with_params(io, ntex_h2::Config::client(), true, "localhost".into());
-    let client = connection.client();
-    ntex::rt::spawn(async move {
-        let _ = connection
-            .start(fn_service(
-                |_: ntex_h2::Message| async move { Ok::<_, ()>(()) },
-            ))
-            .await;
-    });
+    let client = Client::new(
+        io,
+        ntex_h2::Config::client(),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
     sleep(Millis(150)).await;
 
-    let stream = client
-        .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+    let (stream, _recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
     assert!(!client.is_ready());
@@ -132,8 +126,8 @@ async fn test_max_concurrent_streams_reset() {
     let client2 = client.clone();
     let opened2 = opened.clone();
     ntex::rt::spawn(async move {
-        let _stream = client2
-            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+        let (_stream, _recv_stream) = client2
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
         _stream.reset(Reason::NO_ERROR);
@@ -143,7 +137,7 @@ async fn test_max_concurrent_streams_reset() {
     let opened2 = opened.clone();
     ntex::rt::spawn(async move {
         let _stream = client2
-            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
         drop(_stream);
@@ -154,7 +148,7 @@ async fn test_max_concurrent_streams_reset() {
     let (tx, rx) = oneshot::channel();
     ntex::rt::spawn(async move {
         let _stream = client2
-            .send_request(Method::GET, "/".into(), HeaderMap::default(), false)
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
         opened2.set(opened2.get() + 1);

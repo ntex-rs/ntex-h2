@@ -137,14 +137,14 @@ pub(crate) struct StreamState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HalfState {
+pub(crate) enum HalfState {
     Idle,
     Payload,
     Closed(Option<Reason>),
 }
 
 impl HalfState {
-    fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         matches!(self, HalfState::Closed(_))
     }
 }
@@ -313,6 +313,14 @@ impl StreamRef {
     #[inline]
     pub fn is_failed(&self) -> bool {
         self.0.flags.get().contains(StreamFlags::FAILED)
+    }
+
+    pub(crate) fn send_state(&self) -> HalfState {
+        self.0.send.get()
+    }
+
+    pub(crate) fn recv_state(&self) -> HalfState {
+        self.0.recv.get()
     }
 
     /// Reset stream

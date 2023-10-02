@@ -4,7 +4,7 @@ use std::{cell::RefCell, pin::Pin, rc::Rc};
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 use ntex_service::{Service, ServiceCtx};
-use ntex_util::future::{Either, Ready};
+use ntex_util::future::{poll_fn, Either, Ready};
 use ntex_util::{task::LocalWaker, HashMap, Stream as FutStream};
 
 use crate::error::OperationError;
@@ -12,14 +12,14 @@ use crate::frame::{Reason, StreamId, WindowSize};
 use crate::message::{Message, MessageKind};
 use crate::{Stream, StreamRef};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(super) struct InflightStorage {
     inflight: Rc<RefCell<HashMap<StreamId, Inflight>>>,
 }
 
 #[derive(Debug)]
 pub(super) struct Inflight {
-    stream: Stream,
+    _stream: Stream,
     response: Option<Either<Message, Vec<Message>>>,
     waker: LocalWaker,
 }
@@ -59,8 +59,9 @@ pub struct SendStream(StreamRef, InflightStorage);
 
 impl Drop for SendStream {
     fn drop(&mut self) {
-        self.0.reset(Reason::CANCEL);
-        self.1.inflight.borrow_mut().remove(&self.0.id());
+        if !self.0.send_state().is_closed() {
+            self.0.reset(Reason::CANCEL);
+        }
     }
 }
 
@@ -109,17 +110,16 @@ impl SendStream {
 /// Receiving part of the client stream
 pub struct RecvStream(StreamRef, InflightStorage);
 
-impl Drop for RecvStream {
-    fn drop(&mut self) {
-        self.0.reset(Reason::CANCEL);
-        self.1.inflight.borrow_mut().remove(&self.0.id());
+impl RecvStream {
+    /// Attempt to pull out the next value of http/2 stream
+    pub async fn recv(&self) -> Option<Message> {
+        poll_fn(|cx| self.poll_recv(cx)).await
     }
-}
 
-impl FutStream for RecvStream {
-    type Item = Message;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    /// Attempt to pull out the next value of this http/2 stream, registering
+    /// the current task for wakeup if the value is not yet available,
+    /// and returning None if the stream is exhausted.
+    pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         let mut inner = self.1.inflight.borrow_mut();
         if let Some(inflight) = inner.get_mut(&self.0.id()) {
             if let Some(mut msg) = inflight.pop() {
@@ -142,7 +142,30 @@ impl FutStream for RecvStream {
     }
 }
 
-struct HandleService(InflightStorage);
+impl Drop for RecvStream {
+    fn drop(&mut self) {
+        if !self.0.recv_state().is_closed() {
+            self.0.reset(Reason::CANCEL);
+        }
+        self.1.inflight.borrow_mut().remove(&self.0.id());
+    }
+}
+
+impl FutStream for RecvStream {
+    type Item = Message;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.poll_recv(cx)
+    }
+}
+
+pub(super) struct HandleService(InflightStorage);
+
+impl HandleService {
+    pub(super) fn new(storage: InflightStorage) -> Self {
+        Self(storage)
+    }
+}
 
 impl Service<Message> for HandleService {
     type Response = ();
@@ -155,5 +178,20 @@ impl Service<Message> for HandleService {
             inflight.push(msg);
         }
         Ready::Ok(())
+    }
+}
+
+impl InflightStorage {
+    pub(super) fn inflight(&self, stream: Stream) -> (SendStream, RecvStream) {
+        let id = stream.id();
+        let snd = SendStream(stream.clone(), self.clone());
+        let rcv = RecvStream(stream.clone(), self.clone());
+        let inflight = Inflight {
+            _stream: stream,
+            response: None,
+            waker: LocalWaker::default(),
+        };
+        self.inflight.borrow_mut().insert(id, inflight);
+        (snd, rcv)
     }
 }
