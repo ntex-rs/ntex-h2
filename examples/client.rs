@@ -27,7 +27,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         header::HeaderValue::try_from("text/plain").unwrap(),
     );
     let (stream, recv_stream) = client
-        .send_request(Method::GET, "/test/index.html".into(), hdrs, false)
+        .send(Method::GET, "/test/index.html".into(), hdrs, false)
         .await
         .unwrap();
 
