@@ -137,14 +137,14 @@ pub(crate) struct StreamState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HalfState {
+pub(crate) enum HalfState {
     Idle,
     Payload,
     Closed(Option<Reason>),
 }
 
 impl HalfState {
-    fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(&self) -> bool {
         matches!(self, HalfState::Closed(_))
     }
 }
@@ -313,6 +313,14 @@ impl StreamRef {
     #[inline]
     pub fn is_failed(&self) -> bool {
         self.0.flags.get().contains(StreamFlags::FAILED)
+    }
+
+    pub(crate) fn send_state(&self) -> HalfState {
+        self.0.send.get()
+    }
+
+    pub(crate) fn recv_state(&self) -> HalfState {
+        self.0.recv.get()
     }
 
     /// Reset stream
@@ -531,6 +539,7 @@ impl StreamRef {
         }
     }
 
+    /// Send stream response
     pub fn send_response(
         &self,
         status: StatusCode,
@@ -564,7 +573,7 @@ impl StreamRef {
     pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
         match self.0.send.get() {
             HalfState::Payload => {
-                // check is stream is disconnected
+                // check if stream is disconnected
                 if let Some(e) = self.0.error.take() {
                     let res = e.clone();
                     self.0.error.set(Some(e));
@@ -644,6 +653,7 @@ impl StreamRef {
         }
     }
 
+    /// Send client trailers and close stream
     pub fn send_trailers(&self, map: HeaderMap) {
         if self.0.send.get() == HalfState::Payload {
             let mut hdrs = Headers::trailers(self.0.id, map);

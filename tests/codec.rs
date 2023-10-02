@@ -124,7 +124,7 @@ async fn read_continuation_frames() {
         .eos();
 
     let srv_rx = support::start_server(srv);
-    let (client, client_rx) = support::start_client(cli);
+    let client = support::start_client(cli);
 
     let srv_fut = async move {
         let msg = srv_rx.recv().await.unwrap();
@@ -140,12 +140,12 @@ async fn read_continuation_frames() {
     };
 
     let client_fut = async move {
-        let stream = client
-            .send_request(Method::GET, "/index.html".into(), HeaderMap::new(), true)
+        let (snd, rcv) = client
+            .send(Method::GET, "/index.html".into(), HeaderMap::new(), true)
             .await
             .expect("response");
 
-        let msg = client_rx.recv().await.unwrap();
+        let msg = rcv.recv().await.unwrap();
         let (pseudo, hdrs, eof) = get_headers!(msg);
 
         assert_eq!(pseudo.status, Some(StatusCode::OK));

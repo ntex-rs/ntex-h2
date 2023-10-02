@@ -2,18 +2,19 @@ use std::{cell::Cell, marker::PhantomData, ops};
 
 use ntex_bytes::{ByteString, PoolId, PoolRef};
 use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
+use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::timeout_checked;
 
-use crate::{client::ClientConnection, client::ClientError, config::Config};
+use crate::{client::Client, client::ClientError, config::Config};
 
 #[derive(Debug)]
-/// Mqtt client connector
+/// Http2 client connector
 pub struct Connector<A: Address, T> {
     connector: Pipeline<T>,
     config: Config,
-    secure: bool,
+    scheme: Scheme,
     pub(super) pool: Cell<PoolRef>,
 
     _t: PhantomData<A>,
@@ -33,7 +34,7 @@ where
         Connector {
             connector: Pipeline::new(connector.into_service()),
             config: Config::client(),
-            secure: false,
+            scheme: Scheme::HTTP,
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -49,7 +50,7 @@ where
         Connector {
             connector: DefaultConnector::default().into(),
             config: Config::client(),
-            secure: false,
+            scheme: Scheme::HTTP,
             pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
@@ -76,8 +77,8 @@ where
 {
     #[inline]
     /// Set scheme
-    pub fn secure(&mut self) -> &mut Self {
-        self.secure = true;
+    pub fn scheme(&mut self, scheme: Scheme) -> &mut Self {
+        self.scheme = scheme;
         self
     }
 
@@ -100,7 +101,7 @@ where
         Connector {
             connector: connector.into_service().into(),
             config: self.config.clone(),
-            secure: self.secure,
+            scheme: self.scheme.clone(),
             pool: self.pool.clone(),
             _t: PhantomData,
         }
@@ -114,15 +115,15 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to http2 server
-    pub async fn connect(&self, address: A) -> Result<ClientConnection, ClientError> {
-        let secure = self.secure;
+    pub async fn connect(&self, address: A) -> Result<Client, ClientError> {
+        let scheme = self.scheme.clone();
         let authority = ByteString::from(address.host());
 
         let fut = async {
-            Ok::<_, ClientError>(ClientConnection::with_params(
-                self.connector.call(Connect::new(address)).await?,
+            Ok::<_, ClientError>(Client::new(
+                self.connector.call(Connect::new(address)).await?.into(),
                 self.config.clone(),
-                secure,
+                scheme,
                 authority,
             ))
         };

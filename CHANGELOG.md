@@ -1,5 +1,11 @@
 # Changes
 
+## [0.4.0] - 2023-10-03
+
+* Refactor client api
+
+* Add client connection pool
+
 ## [0.3.3] - 2023-08-10
 
 * Update ntex deps

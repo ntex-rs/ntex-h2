@@ -3,13 +3,14 @@ use std::{fmt, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
-use ntex_service::{IntoService, Service};
 use ntex_util::time::Seconds;
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{codec::Codec, config::Config, Message, OperationError, Stream};
+use crate::{codec::Codec, config::Config, OperationError};
+
+use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
 /// Http2 client
 #[derive(Clone)]
@@ -19,28 +20,62 @@ pub struct Client(Rc<ClientRef>);
 struct ClientRef {
     con: Connection,
     authority: ByteString,
-}
-
-/// Http2 client connection
-pub struct ClientConnection {
-    io: IoBoxed,
-    client: Rc<ClientRef>,
+    storage: InflightStorage,
 }
 
 impl Client {
+    /// Construct new `Client` instance.
+    pub fn new(io: IoBoxed, config: Config, scheme: Scheme, authority: ByteString) -> Self {
+        Client::with_params(io, config, scheme, authority, InflightStorage::default())
+    }
+
+    pub(super) fn with_params(
+        io: IoBoxed,
+        config: Config,
+        scheme: Scheme,
+        authority: ByteString,
+        storage: InflightStorage,
+    ) -> Self {
+        let codec = Codec::default();
+        let con = Connection::new(io.get_ref(), codec, config, false);
+        con.set_secure(scheme == Scheme::HTTPS);
+
+        let disp = Dispatcher::new(
+            con.clone(),
+            DefaultControlService,
+            HandleService::new(storage.clone()),
+        );
+        let fut = IoDispatcher::new(io, con.state().codec.clone(), disp)
+            .keepalive_timeout(Seconds::ZERO)
+            .disconnect_timeout(con.config().disconnect_timeout.get());
+
+        ntex_rt::spawn(async move {
+            let _ = fut.await;
+        });
+
+        Client(Rc::new(ClientRef {
+            con,
+            authority,
+            storage,
+        }))
+    }
+
     #[inline]
     /// Send request to the peer
-    pub async fn send_request(
+    pub async fn send(
         &self,
         method: Method,
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<Stream, OperationError> {
-        self.0
+    ) -> Result<(SendStream, RecvStream), OperationError> {
+        let stream = self
+            .0
             .con
             .send_request(self.0.authority.clone(), method, path, headers, eof)
-            .await
+            .await?;
+
+        Ok(self.0.storage.inflight(stream))
     }
 
     #[inline]
@@ -50,21 +85,6 @@ impl Client {
     pub fn is_ready(&self) -> bool {
         self.0.con.can_create_new_stream()
     }
-
-    #[doc(hidden)]
-    #[inline]
-    /// Set client's secure state
-    pub fn set_scheme(&self, scheme: Scheme) {
-        if scheme == Scheme::HTTPS {
-            self.0.con.set_secure(true)
-        } else {
-            self.0.con.set_secure(false)
-        }
-    }
-
-    #[doc(hidden)]
-    /// Set client's authority
-    pub fn set_authority(&self, _: ByteString) {}
 
     #[inline]
     /// Check client readiness
@@ -130,75 +150,6 @@ impl fmt::Debug for Client {
         f.debug_struct("ntex_h2::Client")
             .field("authority", &self.0.authority)
             .field("connection", &self.0.con)
-            .finish()
-    }
-}
-
-impl fmt::Debug for ClientRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ntex_h2::Client")
-            .field("authority", &self.authority)
-            .field("connection", &self.con)
-            .finish()
-    }
-}
-
-impl ClientConnection {
-    /// Construct new `ClientConnection` instance.
-    pub fn new<T>(io: T, config: Config) -> Self
-    where
-        IoBoxed: From<T>,
-    {
-        Self::with_params(io, config, false, ByteString::new())
-    }
-
-    /// Construct new `ClientConnection` instance.
-    pub fn with_params<T>(io: T, config: Config, secure: bool, authority: ByteString) -> Self
-    where
-        IoBoxed: From<T>,
-    {
-        let io: IoBoxed = io.into();
-        let codec = Codec::default();
-        let con = Connection::new(io.get_ref(), codec, config, false);
-        con.set_secure(secure);
-
-        ClientConnection {
-            io,
-            client: Rc::new(ClientRef { con, authority }),
-        }
-    }
-
-    #[inline]
-    /// Get client
-    pub fn client(&self) -> Client {
-        Client(self.client.clone())
-    }
-
-    /// Run client with provided control messages handler
-    pub async fn start<F, S>(self, service: F) -> Result<(), ()>
-    where
-        F: IntoService<S, Message> + 'static,
-        S: Service<Message, Response = ()> + 'static,
-        S::Error: fmt::Debug,
-    {
-        let disp = Dispatcher::new(
-            self.client.con.clone(),
-            DefaultControlService,
-            service.into_service(),
-        );
-
-        IoDispatcher::new(self.io, self.client.con.state().codec.clone(), disp)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(self.client.con.config().disconnect_timeout.get())
-            .await
-    }
-}
-
-impl fmt::Debug for ClientConnection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ntex_h2::ClientConnection")
-            .field("authority", &self.client.authority)
-            .field("config", &self.client.con.config())
             .finish()
     }
 }

@@ -3,11 +3,15 @@
 #[allow(clippy::module_inception)]
 mod client;
 mod connector;
+mod pool;
+mod stream;
 
-use crate::{error::ConnectionError, frame};
+use crate::{error::ConnectionError, error::OperationError, frame};
 
-pub use self::client::{Client, ClientConnection};
+pub use self::client::Client;
 pub use self::connector::Connector;
+pub use self::pool::{Pool, PoolBuilder};
+pub use self::stream::{RecvStream, SendStream};
 
 /// Errors which can occur when attempting to handle http2 client connection.
 #[derive(thiserror::Error, Debug)]
@@ -15,6 +19,9 @@ pub enum ClientError {
     /// Protocol error
     #[error("Protocol error: {0}")]
     Protocol(Box<ConnectionError>),
+    /// Operation error
+    #[error("Operation error: {0}")]
+    Operation(#[from] OperationError),
     /// Http/2 frame codec error
     #[error("Http/2 codec error: {0}")]
     Frame(#[from] frame::FrameError),
@@ -32,6 +39,12 @@ pub enum ClientError {
 impl From<ConnectionError> for ClientError {
     fn from(err: ConnectionError) -> Self {
         Self::Protocol(Box::new(err))
+    }
+}
+
+impl From<ntex_util::channel::Canceled> for ClientError {
+    fn from(err: ntex_util::channel::Canceled) -> Self {
+        Self::Disconnected(Some(std::io::Error::new(std::io::ErrorKind::Other, err)))
     }
 }
 
