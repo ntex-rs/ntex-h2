@@ -531,6 +531,7 @@ impl StreamRef {
         }
     }
 
+    /// Send stream response
     pub fn send_response(
         &self,
         status: StatusCode,
@@ -564,7 +565,7 @@ impl StreamRef {
     pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
         match self.0.send.get() {
             HalfState::Payload => {
-                // check is stream is disconnected
+                // check if stream is disconnected
                 if let Some(e) = self.0.error.take() {
                     let res = e.clone();
                     self.0.error.set(Some(e));
@@ -644,6 +645,7 @@ impl StreamRef {
         }
     }
 
+    /// Send client trailers and close stream
     pub fn send_trailers(&self, map: HeaderMap) {
         if self.0.send.get() == HalfState::Payload {
             let mut hdrs = Headers::trailers(self.0.id, map);
