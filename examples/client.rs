@@ -18,7 +18,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .set_alpn_protos(b"\x02h2\x08http/1.1")
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
-    let pool = client::Pool::build(
+    let pool = client::Client::build(
         "127.0.0.1:5928",
         connect::openssl::Connector::new(builder.build()),
     )

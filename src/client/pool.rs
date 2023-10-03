@@ -10,14 +10,14 @@ use ntex_util::time::{timeout_checked, Millis, Seconds};
 use ntex_util::{channel::oneshot, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
-use super::{client::SimpleClient, ClientError};
+use super::{simple::SimpleClient, ClientError};
 
 type Fut = BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>;
 type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>>;
 
 #[derive(Clone)]
 /// Manages http client network connectivity.
-pub struct Pool {
+pub struct Client {
     inner: Rc<Inner>,
     waiters: Rc<RefCell<VecDeque<oneshot::Sender<()>>>>,
 }
@@ -32,10 +32,10 @@ fn notify(waiters: &mut VecDeque<oneshot::Sender<()>>) {
     }
 }
 
-impl Pool {
+impl Client {
     #[inline]
-    /// Configure and build connection pool
-    pub fn build<A, U, T, F>(addr: U, connector: F) -> PoolBuilder
+    /// Configure and build client
+    pub fn build<A, U, T, F>(addr: U, connector: F) -> ClientBuilder
     where
         A: Address + Clone,
         F: IntoService<T, Connect<A>>,
@@ -43,7 +43,17 @@ impl Pool {
         IoBoxed: From<T::Response>,
         Connect<A>: From<U>,
     {
-        PoolBuilder::new(addr, connector)
+        ClientBuilder::new(addr, connector)
+    }
+
+    #[inline]
+    /// Configure and build client
+    pub fn with_default<A, U>(addr: U) -> ClientBuilder
+    where
+        A: Address + Clone,
+        Connect<A>: From<U>,
+    {
+        ClientBuilder::with_default(addr)
     }
 
     #[inline]
@@ -187,9 +197,9 @@ impl Pool {
 
 /// Manages http client network connectivity.
 ///
-/// The `PoolBuilder` type uses a builder-like combinator pattern for service
+/// The `ClientBuilder` type uses a builder-like combinator pattern for service
 /// construction that finishes by calling the `.finish()` method.
-pub struct PoolBuilder(Inner);
+pub struct ClientBuilder(Inner);
 
 struct Inner {
     maxconn: usize,
@@ -206,7 +216,7 @@ struct Inner {
     connections: RefCell<Vec<SimpleClient>>,
 }
 
-impl PoolBuilder {
+impl ClientBuilder {
     fn new<A, U, T, F>(addr: U, connector: F) -> Self
     where
         A: Address + Clone,
@@ -226,7 +236,7 @@ impl PoolBuilder {
             f
         });
 
-        PoolBuilder(Inner {
+        ClientBuilder(Inner {
             authority,
             connector,
             conn_timeout: Millis(1_000),
@@ -251,7 +261,7 @@ impl PoolBuilder {
     }
 }
 
-impl PoolBuilder {
+impl ClientBuilder {
     #[inline]
     /// Set client's connection scheme
     pub fn scheme(mut self, scheme: Scheme) -> Self {
@@ -359,17 +369,17 @@ impl PoolBuilder {
     }
 
     /// Finish configuration process and create connections pool.
-    pub fn finish(self) -> Pool {
-        Pool {
+    pub fn finish(self) -> Client {
+        Client {
             inner: Rc::new(self.0),
             waiters: Default::default(),
         }
     }
 }
 
-impl fmt::Debug for Pool {
+impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Pool")
+        f.debug_struct("Client")
             .field("scheme", &self.inner.scheme)
             .field("authority", &self.inner.authority)
             .field("conn_timeout", &self.inner.conn_timeout)
@@ -383,9 +393,9 @@ impl fmt::Debug for Pool {
     }
 }
 
-impl fmt::Debug for PoolBuilder {
+impl fmt::Debug for ClientBuilder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("PoolBuilder")
+        f.debug_struct("ClientBuilder")
             .field("scheme", &self.0.scheme)
             .field("authority", &self.0.authority)
             .field("conn_timeout", &self.0.conn_timeout)

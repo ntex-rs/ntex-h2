@@ -7,7 +7,7 @@ use ntex::http::{
 use ntex::service::{fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client::Client, client::Pool, frame::Reason};
+use ntex_h2::{client::Client, client::SimpleClient, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -72,7 +72,7 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 async fn test_max_concurrent_streams() {
     let srv = start_server();
     let io = connect(srv.addr()).await;
-    let client = Client::new(
+    let client = SimpleClient::new(
         io,
         ntex_h2::Config::client(),
         Scheme::HTTP,
@@ -108,7 +108,7 @@ async fn test_max_concurrent_streams_pool() {
     env_logger::init();
     let srv = start_server();
     let addr = srv.addr();
-    let client = Pool::build(
+    let client = Client::build(
         "localhost",
         fn_service(move |_| {
             let addr = addr;
@@ -151,7 +151,7 @@ async fn test_max_concurrent_streams_pool2() {
 
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
-    let client = Pool::build(
+    let client = Client::build(
         "localhost",
         fn_service(move |_| {
             let addr = addr;
@@ -192,7 +192,7 @@ async fn test_max_concurrent_streams_pool2() {
 async fn test_max_concurrent_streams_reset() {
     let srv = start_server();
     let io = connect(srv.addr()).await;
-    let client = Client::new(
+    let client = SimpleClient::new(
         io,
         ntex_h2::Config::client(),
         Scheme::HTTP,

@@ -7,7 +7,7 @@ use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::timeout_checked;
 
-use crate::{client::SimpleClient, client::ClientError, config::Config};
+use crate::{client::ClientError, client::SimpleClient, config::Config};
 
 #[derive(Debug)]
 /// Http2 client connector

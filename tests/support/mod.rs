@@ -10,9 +10,9 @@ mod utils;
 
 pub use self::utils::*;
 
-pub fn start_client(io: IoTest) -> client::Client {
+pub fn start_client(io: IoTest) -> client::SimpleClient {
     io.remote_buffer_cap(1000000);
-    client::Client::new(
+    client::SimpleClient::new(
         Io::new(io),
         Config::client(),
         Scheme::HTTP,
