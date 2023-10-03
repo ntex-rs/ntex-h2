@@ -838,9 +838,9 @@ mod test {
     fn test_peek_u8() {
         let b = 0xff;
         let mut buf = Cursor::new(vec![b]);
-        assert_eq!(peek_u8(&mut buf), Some(b));
+        assert_eq!(peek_u8(&buf), Some(b));
         assert_eq!(buf.get_u8(), b);
-        assert_eq!(peek_u8(&mut buf), None);
+        assert_eq!(peek_u8(&buf), None);
     }
 
     #[test]
@@ -852,6 +852,7 @@ mod test {
     }
 
     #[test]
+    #[allow(clippy::unit_cmp, clippy::let_unit_value)]
     fn test_decode_empty() {
         let mut de = Decoder::new(0);
         let mut buf = BytesMut::new();
@@ -870,11 +871,10 @@ mod test {
         buf.extend(huff_encode(b"bar"));
 
         let mut res = vec![];
-        let _ = de
-            .decode(&mut Cursor::new(&mut buf), |h| {
-                res.push(h);
-            })
-            .unwrap();
+        de.decode(&mut Cursor::new(&mut buf), |h| {
+            res.push(h);
+        })
+        .unwrap();
 
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);
@@ -920,11 +920,10 @@ mod test {
 
         // extend buf with the remaining header value
         buf.extend(&value[1..]);
-        let _ = de
-            .decode(&mut Cursor::new(&mut buf), |h| {
-                res.push(h);
-            })
-            .unwrap();
+        de.decode(&mut Cursor::new(&mut buf), |h| {
+            res.push(h);
+        })
+        .unwrap();
 
         assert_eq!(res.len(), 1);
         assert_eq!(de.table.size(), 0);

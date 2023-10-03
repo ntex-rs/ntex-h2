@@ -25,8 +25,17 @@ struct ClientRef {
 
 impl Client {
     /// Construct new `Client` instance.
-    pub fn new(io: IoBoxed, config: Config, scheme: Scheme, authority: ByteString) -> Self {
-        Client::with_params(io, config, scheme, authority, InflightStorage::default())
+    pub fn new<T>(io: T, config: Config, scheme: Scheme, authority: ByteString) -> Self
+    where
+        IoBoxed: From<T>,
+    {
+        Client::with_params(
+            io.into(),
+            config,
+            scheme,
+            authority,
+            InflightStorage::default(),
+        )
     }
 
     pub(super) fn with_params(

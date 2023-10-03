@@ -32,8 +32,8 @@ pub enum ClientError {
     #[error("Connect error: {0}")]
     Connect(Box<ntex_connect::ConnectError>),
     /// Peer disconnected
-    #[error("Peer disconnected err: {0:?}")]
-    Disconnected(Option<std::io::Error>),
+    #[error("Peer disconnected err: {0}")]
+    Disconnected(#[from] std::io::Error),
 }
 
 impl From<ConnectionError> for ClientError {
@@ -44,19 +44,28 @@ impl From<ConnectionError> for ClientError {
 
 impl From<ntex_util::channel::Canceled> for ClientError {
     fn from(err: ntex_util::channel::Canceled) -> Self {
-        Self::Disconnected(Some(std::io::Error::new(std::io::ErrorKind::Other, err)))
-    }
-}
-
-impl From<std::io::Error> for ClientError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Disconnected(Some(err))
+        Self::Disconnected(std::io::Error::new(std::io::ErrorKind::Other, err))
     }
 }
 
 impl From<ntex_connect::ConnectError> for ClientError {
     fn from(err: ntex_connect::ConnectError) -> Self {
         Self::Connect(Box::new(err))
+    }
+}
+
+impl Clone for ClientError {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Protocol(err) => Self::Protocol(err.clone()),
+            Self::Operation(err) => Self::Operation(err.clone()),
+            Self::Frame(err) => Self::Frame(*err),
+            Self::HandshakeTimeout => Self::HandshakeTimeout,
+            Self::Connect(err) => Self::Connect(err.clone()),
+            Self::Disconnected(err) => {
+                Self::Disconnected(std::io::Error::new(err.kind(), format!("{}", err)))
+            }
+        }
     }
 }
 

@@ -5,8 +5,8 @@ use ntex_bytes::Bytes;
 use ntex_h2::frame::{self, Frame, Protocol, PseudoHeaders, StreamId};
 use ntex_http::{self as http, HeaderMap, StatusCode};
 
-pub const SETTINGS: &'static [u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
-pub const SETTINGS_ACK: &'static [u8] = &[0, 0, 0, 4, 1, 0, 0, 0, 0];
+pub const SETTINGS: &[u8] = &[0, 0, 0, 4, 0, 0, 0, 0, 0];
+pub const SETTINGS_ACK: &[u8] = &[0, 0, 0, 4, 1, 0, 0, 0, 0];
 
 // ==== helper functions to easily construct h2 Frames ====
 

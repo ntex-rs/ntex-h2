@@ -13,7 +13,7 @@ pub use self::utils::*;
 pub fn start_client(io: IoTest) -> client::Client {
     io.remote_buffer_cap(1000000);
     client::Client::new(
-        Io::new(io).into(),
+        Io::new(io),
         Config::client(),
         Scheme::HTTP,
         "localhost".into(),

@@ -121,7 +121,7 @@ where
 
         let fut = async {
             Ok::<_, ClientError>(Client::new(
-                self.connector.call(Connect::new(address)).await?.into(),
+                self.connector.call(Connect::new(address)).await?,
                 self.config.clone(),
                 scheme,
                 authority,
