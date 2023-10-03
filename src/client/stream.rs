@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::{cell::RefCell, fmt, pin::Pin, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt, pin::Pin, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
@@ -24,7 +24,7 @@ struct InflightStorageInner {
 #[derive(Debug)]
 pub(super) struct Inflight {
     _stream: Stream,
-    response: Option<Either<Message, Vec<Message>>>,
+    response: Option<Either<Message, VecDeque<Message>>>,
     waker: LocalWaker,
 }
 
@@ -34,8 +34,7 @@ impl Inflight {
             None => None,
             Some(Either::Left(msg)) => Some(msg),
             Some(Either::Right(mut msgs)) => {
-                let msg = msgs.pop();
-
+                let msg = msgs.pop_front();
                 if !msgs.is_empty() {
                     self.response = Some(Either::Right(msgs));
                 }
@@ -46,9 +45,14 @@ impl Inflight {
 
     fn push(&mut self, item: Message) {
         match self.response.take() {
-            Some(Either::Left(msg)) => self.response = Some(Either::Right(vec![msg, item])),
+            Some(Either::Left(msg)) => {
+                let mut msgs = VecDeque::new();
+                msgs.push_back(msg);
+                msgs.push_back(item);
+                self.response = Some(Either::Right(msgs));
+            }
             Some(Either::Right(mut messages)) => {
-                messages.push(item);
+                messages.push_back(item);
                 self.response = Some(Either::Right(messages));
             }
             None => self.response = Some(Either::Left(item)),
@@ -188,7 +192,6 @@ impl Service<Message> for HandleService {
                 self.0.notify(id);
                 log::debug!("Stream {:?} is closed, notify", id);
             }
-
             inflight.push(msg);
         }
         Ready::Ok(())

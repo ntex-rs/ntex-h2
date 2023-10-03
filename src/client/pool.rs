@@ -230,6 +230,7 @@ impl ClientBuilder {
         let connector = Pipeline::new(connector.into_service());
 
         let connector = Box::new(move || {
+            log::trace!("Opening http/2 connection to {}", connect.host());
             let connect = connect.clone();
             let svc = connector.clone();
             let f: Fut = Box::pin(async move { svc.call(connect).await.map(IoBoxed::from) });
