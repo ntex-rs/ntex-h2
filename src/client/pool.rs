@@ -10,7 +10,7 @@ use ntex_util::time::{timeout_checked, Millis, Seconds};
 use ntex_util::{channel::oneshot, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
-use super::{client::Client, ClientError};
+use super::{client::SimpleClient, ClientError};
 
 type Fut = BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>;
 type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, connect::ConnectError>>>;
@@ -110,7 +110,7 @@ impl Pool {
                             });
                             // construct client
                             io.set_memory_pool(inner.pool);
-                            let client = Client::with_params(
+                            let client = SimpleClient::with_params(
                                 io,
                                 inner.config.clone(),
                                 inner.scheme.clone(),
@@ -203,7 +203,7 @@ struct Inner {
     connector: Connector,
     pool: PoolRef,
     connecting: Cell<bool>,
-    connections: RefCell<Vec<Client>>,
+    connections: RefCell<Vec<SimpleClient>>,
 }
 
 impl PoolBuilder {

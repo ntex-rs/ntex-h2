@@ -8,7 +8,7 @@ mod stream;
 
 use crate::{error::ConnectionError, error::OperationError, frame};
 
-pub use self::client::Client;
+pub use self::client::SimpleClient;
 pub use self::connector::Connector;
 pub use self::pool::{Pool, PoolBuilder};
 pub use self::stream::{RecvStream, SendStream};
