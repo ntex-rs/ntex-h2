@@ -1,16 +1,15 @@
 //! Http2 client
 
-#[allow(clippy::module_inception)]
-mod client;
 mod connector;
 mod pool;
+mod simple;
 mod stream;
 
 use crate::{error::ConnectionError, error::OperationError, frame};
 
-pub use self::client::Client;
 pub use self::connector::Connector;
-pub use self::pool::{Pool, PoolBuilder};
+pub use self::pool::{Client, ClientBuilder};
+pub use self::simple::SimpleClient;
 pub use self::stream::{RecvStream, SendStream};
 
 /// Errors which can occur when attempting to handle http2 client connection.

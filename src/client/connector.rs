@@ -7,7 +7,7 @@ use ntex_io::IoBoxed;
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::timeout_checked;
 
-use crate::{client::Client, client::ClientError, config::Config};
+use crate::{client::ClientError, client::SimpleClient, config::Config};
 
 #[derive(Debug)]
 /// Http2 client connector
@@ -115,12 +115,12 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Connect to http2 server
-    pub async fn connect(&self, address: A) -> Result<Client, ClientError> {
+    pub async fn connect(&self, address: A) -> Result<SimpleClient, ClientError> {
         let scheme = self.scheme.clone();
         let authority = ByteString::from(address.host());
 
         let fut = async {
-            Ok::<_, ClientError>(Client::new(
+            Ok::<_, ClientError>(SimpleClient::new(
                 self.connector.call(Connect::new(address)).await?,
                 self.config.clone(),
                 scheme,

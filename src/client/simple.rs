@@ -14,7 +14,7 @@ use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
 /// Http2 client
 #[derive(Clone)]
-pub struct Client(Rc<ClientRef>);
+pub struct SimpleClient(Rc<ClientRef>);
 
 /// Http2 client
 struct ClientRef {
@@ -23,13 +23,13 @@ struct ClientRef {
     storage: InflightStorage,
 }
 
-impl Client {
+impl SimpleClient {
     /// Construct new `Client` instance.
     pub fn new<T>(io: T, config: Config, scheme: Scheme, authority: ByteString) -> Self
     where
         IoBoxed: From<T>,
     {
-        Client::with_params(
+        SimpleClient::with_params(
             io.into(),
             config,
             scheme,
@@ -62,7 +62,7 @@ impl Client {
             let _ = fut.await;
         });
 
-        Client(Rc::new(ClientRef {
+        SimpleClient(Rc::new(ClientRef {
             con,
             authority,
             storage,
@@ -145,7 +145,7 @@ impl Client {
     }
 }
 
-impl Drop for Client {
+impl Drop for SimpleClient {
     fn drop(&mut self) {
         if Rc::strong_count(&self.0) == 1 {
             log::debug!("Last h2 client has been dropped, disconnecting");
@@ -154,9 +154,9 @@ impl Drop for Client {
     }
 }
 
-impl fmt::Debug for Client {
+impl fmt::Debug for SimpleClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ntex_h2::Client")
+        f.debug_struct("ntex_h2::SimpleClient")
             .field("authority", &self.0.authority)
             .field("connection", &self.0.con)
             .finish()
