@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.1] - 2023-10-06
+
+* Refactor Message type, remove MessageKind::Empty
+
 ## [0.4.0] - 2023-10-03
 
 * Refactor client api
