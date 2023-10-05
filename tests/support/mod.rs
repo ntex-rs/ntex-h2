@@ -49,14 +49,13 @@ macro_rules! get_headers {
     ($msg: ident) => {{
         use ntex_h2::MessageKind;
 
-        let mut t = $msg;
-        match t.take() {
+        match $msg.kind {
             MessageKind::Headers {
                 pseudo,
                 headers,
                 eof,
             } => (pseudo, headers, eof),
-            _ => panic!("unexpected message kind; actual={:?}", t),
+            _ => panic!("unexpected message kind; actual={:?}", $msg),
         }
     }};
 }
