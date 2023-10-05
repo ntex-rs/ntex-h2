@@ -1,5 +1,3 @@
-use std::mem;
-
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 
@@ -9,8 +7,8 @@ use crate::stream::{Capacity, StreamRef};
 
 #[derive(Debug)]
 pub struct Message {
-    stream: StreamRef,
-    kind: MessageKind,
+    pub stream: StreamRef,
+    pub kind: MessageKind,
 }
 
 #[derive(Debug)]
@@ -23,7 +21,6 @@ pub enum MessageKind {
     Data(Bytes, Capacity),
     Eof(StreamEof),
     Disconnect(OperationError),
-    Empty,
 }
 
 #[derive(Debug, Clone)]
@@ -91,24 +88,12 @@ impl Message {
     }
 
     #[inline]
-    pub fn kind(&mut self) -> &mut MessageKind {
-        &mut self.kind
+    pub fn kind(&self) -> &MessageKind {
+        &self.kind
     }
 
     #[inline]
     pub fn stream(&self) -> &StreamRef {
         &self.stream
-    }
-
-    #[inline]
-    pub fn take(&mut self) -> MessageKind {
-        self.kind().take()
-    }
-}
-
-impl MessageKind {
-    #[inline]
-    pub fn take(&mut self) -> MessageKind {
-        mem::replace(self, MessageKind::Empty)
     }
 }

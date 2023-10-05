@@ -41,8 +41,9 @@ async fn main() -> std::io::Result<()> {
                             println!("Control message: {:?}", msg);
                             Ok::<_, ()>(msg.ack())
                         })
-                        .finish(fn_service(|mut msg: Message| async move {
-                            match msg.kind().take() {
+                        .finish(fn_service(|msg: Message| async move {
+                            let Message { stream, kind } = msg;
+                            match kind {
                                 MessageKind::Headers {
                                     pseudo,
                                     headers,
@@ -58,17 +59,15 @@ async fn main() -> std::io::Result<()> {
                                         header::CONTENT_TYPE,
                                         header::HeaderValue::try_from("text/plain").unwrap(),
                                     );
-                                    msg.stream().send_response(StatusCode::OK, hdrs, false)?;
-                                    msg.stream()
-                                        .send_payload("hello world".into(), false)
-                                        .await?;
+                                    stream.send_response(StatusCode::OK, hdrs, false)?;
+                                    stream.send_payload("hello world".into(), false).await?;
 
                                     let mut hdrs = HeaderMap::default();
                                     hdrs.insert(
                                         header::CONTENT_TYPE,
                                         header::HeaderValue::try_from("blah").unwrap(),
                                     );
-                                    msg.stream().send_trailers(hdrs);
+                                    stream.send_trailers(hdrs);
                                 }
                                 MessageKind::Data(data, _cap) => {
                                     println!("Got data: {:?}", data.len());
@@ -79,7 +78,6 @@ async fn main() -> std::io::Result<()> {
                                 MessageKind::Disconnect(err) => {
                                     log::trace!("Disconnect: {:?}", err);
                                 }
-                                MessageKind::Empty => {}
                             }
                             Ok::<_, OperationError>(())
                         })),

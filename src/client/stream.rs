@@ -130,10 +130,10 @@ impl RecvStream {
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         let mut inner = self.1 .0.inflight.borrow_mut();
         if let Some(inflight) = inner.get_mut(&self.0.id()) {
-            if let Some(mut msg) = inflight.pop() {
+            if let Some(msg) = inflight.pop() {
                 let to_remove = match msg.kind() {
                     MessageKind::Headers { eof, .. } => *eof,
-                    MessageKind::Eof(..) | MessageKind::Empty | MessageKind::Disconnect(..) => true,
+                    MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
                     _ => false,
                 };
                 if to_remove {
@@ -180,12 +180,12 @@ impl Service<Message> for HandleService {
     type Error = ();
     type Future<'f> = Ready<(), ()>;
 
-    fn call<'a>(&'a self, mut msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
         let id = msg.id();
         if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
             let eof = match msg.kind() {
                 MessageKind::Headers { eof, .. } => *eof,
-                MessageKind::Eof(..) | MessageKind::Empty | MessageKind::Disconnect(..) => true,
+                MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
                 _ => false,
             };
             if eof {

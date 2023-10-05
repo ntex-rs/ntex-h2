@@ -19,8 +19,9 @@ async fn main() -> std::io::Result<()> {
                     log::trace!("Control message: {:?}", msg);
                     Ok::<_, ()>(msg.ack())
                 })
-                .finish(fn_service(|mut msg: Message| async move {
-                    match msg.kind().take() {
+                .finish(fn_service(|msg: Message| async move {
+                    let Message { stream, kind } = msg;
+                    match kind {
                         MessageKind::Headers {
                             pseudo,
                             headers,
@@ -28,7 +29,7 @@ async fn main() -> std::io::Result<()> {
                         } => {
                             log::trace!(
                                 "{:?} got request (eof: {}): {:#?}\nheaders: {:#?}",
-                                msg.id(),
+                                stream.id(),
                                 eof,
                                 pseudo,
                                 headers
@@ -39,14 +40,12 @@ async fn main() -> std::io::Result<()> {
                                 header::CONTENT_TYPE,
                                 header::HeaderValue::try_from("text/plain").unwrap(),
                             );
-                            msg.stream().send_response(StatusCode::OK, hdrs, false)?;
+                            stream.send_response(StatusCode::OK, hdrs, false)?;
 
                             if eof {
                                 sleep(Millis(150)).await;
-                                log::trace!("Sending payload for {:?}", msg.id(),);
-                                msg.stream()
-                                    .send_payload("hello world".into(), true)
-                                    .await?;
+                                log::trace!("Sending payload for {:?}", stream.id(),);
+                                stream.send_payload("hello world".into(), true).await?;
                             }
                         }
                         MessageKind::Data(data, _cap) => {
@@ -54,14 +53,11 @@ async fn main() -> std::io::Result<()> {
                         }
                         MessageKind::Eof(data) => {
                             log::trace!("Got eof: {:?}", data);
-                            msg.stream()
-                                .send_payload("hello world".into(), true)
-                                .await?;
+                            stream.send_payload("hello world".into(), true).await?;
                         }
                         MessageKind::Disconnect(err) => {
                             log::trace!("Disconnect: {:?}", err);
                         }
-                        MessageKind::Empty => {}
                     }
                     Ok::<_, OperationError>(())
                 }))
