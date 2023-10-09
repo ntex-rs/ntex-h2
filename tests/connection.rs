@@ -7,7 +7,7 @@ use ntex::http::{
 use ntex::service::{fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client::Client, client::SimpleClient, frame::Reason};
+use ntex_h2::{client, client::Client, client::SimpleClient, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -71,13 +71,20 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 #[ntex::test]
 async fn test_max_concurrent_streams() {
     let srv = start_server();
-    let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(
-        io,
-        ntex_h2::Config::client(),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let addr = srv.addr();
+    let client = client::Connector::new(fn_service(move |_| {
+        let addr = addr;
+        async move { Ok(connect(addr).await) }
+    }))
+    .scheme(Scheme::HTTP)
+    .connector(fn_service(move |_| {
+        let addr = addr;
+        async move { Ok(connect(addr).await) }
+    }))
+    .connect("localhost")
+    .await
+    .unwrap();
+
     sleep(Millis(50)).await; // we need to get settings frame from server
 
     let (stream, _recv_stream) = client
