@@ -88,7 +88,7 @@ async fn test_max_concurrent_streams() {
     loop {
         sleep(Millis(150)).await; // we need to get settings frame from server
         if client.max_streams() == Some(1) {
-            break
+            break;
         }
     }
 
