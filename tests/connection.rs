@@ -86,12 +86,14 @@ async fn test_max_concurrent_streams() {
     .unwrap();
 
     sleep(Millis(50)).await; // we need to get settings frame from server
+    assert!(client.max_streams() == Some(1));
 
     let (stream, _recv_stream) = client
         .send(Method::GET, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
     assert!(!client.is_ready());
+    assert!(client.active_streams() == 1);
 
     let client2 = client.clone();
     let opened = Rc::new(Cell::new(false));
