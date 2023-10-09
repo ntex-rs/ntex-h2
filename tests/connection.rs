@@ -85,7 +85,7 @@ async fn test_max_concurrent_streams() {
     .await
     .unwrap();
 
-    sleep(Millis(50)).await; // we need to get settings frame from server
+    sleep(Millis(150)).await; // we need to get settings frame from server
     assert!(client.max_streams() == Some(1));
 
     let (stream, _recv_stream) = client
