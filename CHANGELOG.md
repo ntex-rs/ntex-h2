@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.2] - 2023-10-09
+
+* Add client streams helper methods
+
 ## [0.4.1] - 2023-10-09
 
 * Refactor Message type, remove MessageKind::Empty

@@ -712,6 +712,12 @@ impl StreamRef {
     }
 }
 
+impl PartialEq for StreamRef {
+    fn eq(&self, other: &StreamRef) -> bool {
+        Rc::as_ptr(&self.0) == Rc::as_ptr(&other.0)
+    }
+}
+
 impl ops::Deref for Stream {
     type Target = StreamRef;
 

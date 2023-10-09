@@ -75,6 +75,16 @@ impl Drop for SendStream {
 
 impl SendStream {
     #[inline]
+    pub fn id(&self) -> StreamId {
+        self.0.id()
+    }
+
+    #[inline]
+    pub fn stream(&self) -> &StreamRef {
+        &self.0
+    }
+
+    #[inline]
     pub fn available_send_capacity(&self) -> WindowSize {
         self.0.available_send_capacity()
     }
@@ -119,6 +129,16 @@ impl SendStream {
 pub struct RecvStream(StreamRef, InflightStorage);
 
 impl RecvStream {
+    #[inline]
+    pub fn id(&self) -> StreamId {
+        self.0.id()
+    }
+
+    #[inline]
+    pub fn stream(&self) -> &StreamRef {
+        &self.0
+    }
+
     /// Attempt to pull out the next value of http/2 stream
     pub async fn recv(&self) -> Option<Message> {
         poll_fn(|cx| self.poll_recv(cx)).await
