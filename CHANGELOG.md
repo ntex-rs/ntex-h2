@@ -1,8 +1,10 @@
 # Changes
 
-## [0.4.1] - 2023-10-06
+## [0.4.1] - 2023-10-09
 
 * Refactor Message type, remove MessageKind::Empty
+
+* Refactor client pool limits
 
 ## [0.4.0] - 2023-10-03
 
