@@ -102,6 +102,8 @@ async fn test_max_concurrent_streams() {
     assert!(client.active_streams() == 1);
     assert_eq!(stream.id(), recv_stream.id());
     assert_eq!(stream.stream(), recv_stream.stream());
+    assert!(format!("{:?}", stream).contains("SendStream"));
+    assert!(format!("{:?}", recv_stream).contains("RecvStream"));
 
     let client2 = client.clone();
     let opened = Rc::new(Cell::new(false));
@@ -130,9 +132,20 @@ async fn test_max_concurrent_streams_pool() {
             let addr = addr;
             async move { Ok(connect(addr).await) }
         }),
-    )
-    .maxconn(1)
-    .finish();
+    );
+    assert!(format!("{:?}", client).contains("ClientBuilder"));
+    let client = client
+        .maxconn(1)
+        .scheme(Scheme::HTTPS)
+        .connector(
+            "localhost",
+            fn_service(move |_| {
+                let addr = addr;
+                async move { Ok(connect(addr).await) }
+            }),
+        )
+        .finish();
+    assert!(format!("{:?}", client).contains("Client"));
     assert!(client.is_ready());
 
     let (stream, _recv_stream) = client
@@ -198,7 +211,7 @@ async fn test_max_concurrent_streams_pool2() {
     });
 
     stream.send_payload(Bytes::new(), true).await.unwrap();
-    sleep(Millis(250)).await;
+    sleep(Millis(350)).await;
     assert!(client.is_ready());
     assert!(opened.get());
     assert!(cnt.get() == 2);

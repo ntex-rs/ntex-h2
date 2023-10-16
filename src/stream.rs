@@ -205,6 +205,15 @@ impl StreamState {
         self.review_state();
     }
 
+    fn check_error(&self) -> Result<(), OperationError> {
+        if let Some(err) = self.error.take() {
+            self.error.set(Some(err.clone()));
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
     fn review_state(&self) {
         if self.recv.get().is_closed() {
             self.send_reset.wake();
@@ -558,11 +567,8 @@ impl StreamRef {
         match self.0.send.get() {
             HalfState::Payload => {
                 // check if stream is disconnected
-                if let Some(e) = self.0.error.take() {
-                    let res = e.clone();
-                    self.0.error.set(Some(e));
-                    return Err(res);
-                }
+                self.0.check_error()?;
+
                 log::debug!(
                     "{:?} sending {} bytes, eof: {}, send: {:?}",
                     self.0.id,
@@ -650,19 +656,15 @@ impl StreamRef {
 
     /// Check for available send capacity
     pub fn poll_send_capacity(&self, cx: &Context<'_>) -> Poll<Result<WindowSize, OperationError>> {
-        if let Some(err) = self.0.error.take() {
-            self.0.error.set(Some(err.clone()));
-            Poll::Ready(Err(err))
-        } else {
-            self.0.con.check_error()?;
+        self.0.check_error()?;
+        self.0.con.check_error()?;
 
-            let win = self.0.send_window.get().window_size();
-            if win > 0 {
-                Poll::Ready(Ok(win))
-            } else {
-                self.0.send_cap.register(cx.waker());
-                Poll::Pending
-            }
+        let win = self.0.send_window.get().window_size();
+        if win > 0 {
+            Poll::Ready(Ok(win))
+        } else {
+            self.0.send_cap.register(cx.waker());
+            Poll::Pending
         }
     }
 
@@ -670,10 +672,8 @@ impl StreamRef {
     pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), OperationError>> {
         if self.0.send.get().is_closed() {
             Poll::Ready(Ok(()))
-        } else if let Some(err) = self.0.error.take() {
-            self.0.error.set(Some(err.clone()));
-            Poll::Ready(Err(err))
         } else {
+            self.0.check_error()?;
             self.0.con.check_error()?;
             self.0.send_reset.register(cx.waker());
             Poll::Pending
@@ -723,6 +723,7 @@ impl fmt::Debug for StreamState {
             .field("recv_size", &self.recv_size.get())
             .field("send", &self.send.get())
             .field("send_window", &self.send_window.get())
+            .field("flags", &self.flags.get())
             .finish()
     }
 }
@@ -730,19 +731,18 @@ impl fmt::Debug for StreamState {
 pub fn parse_u64(src: &[u8]) -> Option<u64> {
     if src.len() > 19 {
         // At danger for overflow...
-        return None;
-    }
+        None
+    } else {
+        let mut ret = 0;
+        for &d in src {
+            if !d.is_ascii_digit() {
+                return None;
+            }
 
-    let mut ret = 0;
-
-    for &d in src {
-        if !d.is_ascii_digit() {
-            return None;
+            ret *= 10;
+            ret += (d - b'0') as u64;
         }
 
-        ret *= 10;
-        ret += (d - b'0') as u64;
+        Some(ret)
     }
-
-    Some(ret)
 }
