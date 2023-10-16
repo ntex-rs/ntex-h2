@@ -26,6 +26,7 @@ bitflags::bitflags! {
         const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
+        const STREAM_REFUSED          = 0b0010_0000;
     }
 }
 
@@ -426,8 +427,15 @@ impl RecvHalfConnection {
         } else {
             if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
-                    self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
-                    return Ok(None);
+                    // check if client opened more streams than allowed
+                    // in that case close connection
+                    return if self.flags().contains(ConnectionFlags::STREAM_REFUSED) {
+                        Err(Either::Left(ConnectionError::ConcurrencyOverflow))
+                    } else {
+                        self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
+                        self.set_flags(ConnectionFlags::STREAM_REFUSED);
+                        Ok(None)
+                    };
                 }
             }
 
@@ -483,6 +491,7 @@ impl RecvHalfConnection {
             ));
             Ok(None)
         } else {
+            println!("66664");
             Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Received data",
             )))

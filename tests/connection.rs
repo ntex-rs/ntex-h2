@@ -7,7 +7,7 @@ use ntex::http::{
 use ntex::service::{fn_service, ServiceFactory};
 use ntex::time::{sleep, Millis};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client, client::Client, client::SimpleClient, frame::Reason};
+use ntex_h2::{client, client::Client, client::SimpleClient, frame, frame::Reason, Codec};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -122,7 +122,6 @@ async fn test_max_concurrent_streams() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_pool() {
-    env_logger::init();
     let srv = start_server();
     let addr = srv.addr();
     let client = Client::build(
@@ -264,4 +263,56 @@ async fn test_max_concurrent_streams_reset() {
     let _ = rx.await;
     assert!(client.is_ready());
     assert_eq!(opened.get(), 3);
+}
+
+const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+#[ntex::test]
+async fn test_goaway_on_overflow() {
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let settings = frame::Settings::default();
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    io.send(hdrs.clone().into(), &codec).await.unwrap();
+
+    let id = id.next_id().unwrap();
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    io.send(hdrs.clone().into(), &codec).await.unwrap();
+    let res = if let frame::Frame::Reset(rst) = io.recv(&codec).await.unwrap().unwrap() {
+        rst
+    } else {
+        panic!()
+    };
+    assert_eq!(res.reason(), Reason::REFUSED_STREAM);
+
+    let id = id.next_id().unwrap();
+    let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
+    io.send(hdrs.clone().into(), &codec).await.unwrap();
+    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
+        rst
+    } else {
+        panic!()
+    };
+    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert!(io.recv(&codec).await.unwrap().is_none());
 }

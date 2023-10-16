@@ -110,8 +110,6 @@ fn read_data_stream_id_zero() {
 
 #[ntex::test]
 async fn read_continuation_frames() {
-    let _ = env_logger::try_init();
-
     let (cli, srv) = IoTest::create();
 
     let large = build_large_headers();

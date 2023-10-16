@@ -1,8 +1,8 @@
 # Changes
 
-## [0.4.3] - 2023-10-xx
+## [0.4.3] - 2023-10-16
 
-* ...
+* Drop connection if client overflows concurrent streams number multiple times
 
 ## [0.4.2] - 2023-10-09
 
