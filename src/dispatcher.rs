@@ -6,7 +6,7 @@ use ntex_service::{Pipeline, Service, ServiceCall, ServiceCtx};
 use ntex_util::future::{join_all, BoxFuture, Either, Ready};
 use ntex_util::{ready, HashMap};
 
-use crate::connection::{Connection, ConnectionState};
+use crate::connection::{Connection, RecvHalfConnection};
 use crate::control::{ControlMessage, ControlResult};
 use crate::error::{ConnectionError, OperationError, StreamErrorInner};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
@@ -19,7 +19,7 @@ where
     Pub: Service<Message>,
 {
     inner: Rc<Inner<Ctl, Pub>>,
-    connection: Connection,
+    connection: RecvHalfConnection,
     shutdown: cell::RefCell<Shutdown<BoxFuture<'static, ()>>>,
 }
 
@@ -36,7 +36,7 @@ where
 {
     control: Ctl,
     publish: Pub,
-    connection: Rc<ConnectionState>,
+    connection: Connection,
     last_stream_id: StreamId,
 }
 
@@ -57,14 +57,14 @@ where
 {
     pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
         Dispatcher {
+            connection: connection.recv_half(),
             shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
                 control,
                 publish,
+                connection,
                 last_stream_id: 0.into(),
-                connection: connection.get_state(),
             }),
-            connection,
         }
     }
 
@@ -90,10 +90,8 @@ where
                 let (stream, kind) = err.into_inner();
                 stream.set_failed_stream(kind.into());
 
-                let st = self.connection.state();
-                let _ = st
-                    .io
-                    .encode(Reset::new(stream.id(), kind.reason()).into(), &st.codec);
+                self.connection
+                    .encode(Reset::new(stream.id(), kind.reason()));
                 Either::Left(PublishResponse::new(
                     Message::error(kind, &stream),
                     stream,
@@ -211,12 +209,8 @@ where
                                 let (stream, kind) = err.into_inner();
                                 stream.set_failed_stream(kind.into());
 
-                                let st = self.connection.state();
-                                let _ = st.io.encode(
-                                    Reset::new(stream.id(), kind.reason()).into(),
-                                    &st.codec,
-                                );
-
+                                self.connection
+                                    .encode(Reset::new(stream.id(), kind.reason()));
                                 let _ = PublishResponse::<Pub, Ctl>::new(
                                     Message::error(kind, &stream),
                                     stream,
@@ -384,18 +378,14 @@ where
                     match fut.poll(cx) {
                         Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
                         Poll::Ready(Err(e)) => {
-                            if this.inner.connection.is_disconnected() {
-                                Poll::Ready(Ok(None))
-                            } else {
-                                this.state.set(PublishResponseState::Control {
-                                    fut: ControlResponse::new(
-                                        ControlMessage::app_error(e, this.stream.clone()),
-                                        this.inner,
-                                        *this.ctx,
-                                    ),
-                                });
-                                continue;
-                            }
+                            this.state.set(PublishResponseState::Control {
+                                fut: ControlResponse::new(
+                                    ControlMessage::app_error(e, this.stream.clone()),
+                                    this.inner,
+                                    *this.ctx,
+                                ),
+                            });
+                            continue;
                         }
                         Poll::Pending => Poll::Pending,
                     }
@@ -462,26 +452,20 @@ where
                     }
                 }
                 if let Some(frm) = res.frame {
-                    let _ = this
-                        .inner
-                        .connection
-                        .io
-                        .encode(frm, &this.inner.connection.codec);
+                    this.inner.connection.encode(frm);
                 }
                 if res.disconnect {
-                    this.inner.connection.io.close();
+                    this.inner.connection.close();
                 }
             }
             Err(err) => {
                 log::error!("control service has failed with {:?}", err);
                 // we cannot handle control service errors, close connection
-                let _ = this.inner.connection.io.encode(
+                this.inner.connection.encode(
                     GoAway::new(Reason::INTERNAL_ERROR)
-                        .set_last_stream_id(this.inner.last_stream_id)
-                        .into(),
-                    &this.inner.connection.codec,
+                        .set_last_stream_id(this.inner.last_stream_id),
                 );
-                this.inner.connection.io.close();
+                this.inner.connection.close();
             }
         }
         Poll::Ready(Ok(None))

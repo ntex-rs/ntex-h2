@@ -8,7 +8,7 @@ use crate::error::{OperationError, StreamError};
 use crate::frame::{
     Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
-use crate::{connection::ConnectionState, frame, message::Message, window::Window};
+use crate::{connection::Connection, frame, message::Message, window::Window};
 
 /// HTTP/2 Stream
 pub struct Stream(StreamRef);
@@ -131,7 +131,7 @@ pub(crate) struct StreamState {
     send_cap: LocalWaker,
     send_reset: LocalWaker,
     /// Connection config
-    con: Rc<ConnectionState>,
+    con: Connection,
     /// error state
     error: Cell<Option<OperationError>>,
 }
@@ -213,10 +213,10 @@ impl StreamState {
                 // stream is closed
                 if reason.is_some() {
                     log::trace!("{:?} is closed with local reset, dropping stream", self.id);
-                    self.con.drop_stream(self.id, &self.con);
+                    self.con.drop_stream(self.id);
                 } else {
                     log::trace!("{:?} both sides are closed, dropping stream", self.id);
-                    self.con.drop_stream(self.id, &self.con);
+                    self.con.drop_stream(self.id);
                 }
             }
         }
@@ -259,16 +259,13 @@ impl StreamState {
                 self.con.config().window_sz.get(),
             );
             self.recv_window.set(window);
-            self.con
-                .io
-                .encode(WindowUpdate::new(self.id, val).into(), &self.con.codec)
-                .unwrap();
+            self.con.encode(WindowUpdate::new(self.id, val));
         }
     }
 }
 
 impl StreamRef {
-    pub(crate) fn new(id: StreamId, remote: bool, con: Rc<ConnectionState>) -> Self {
+    pub(crate) fn new(id: StreamId, remote: bool, con: Connection) -> Self {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_window = if con.settings_processed() {
@@ -276,7 +273,7 @@ impl StreamRef {
         } else {
             Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
         };
-        let send_window = Window::new(con.remote_window_sz.get() as i32);
+        let send_window = Window::new(con.remote_window_size() as i32);
 
         StreamRef(Rc::new(StreamState {
             id,
@@ -327,11 +324,7 @@ impl StreamRef {
     #[inline]
     pub fn reset(&self, reason: Reason) {
         if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
-            self.0
-                .con
-                .io
-                .encode(Reset::new(self.0.id, reason).into(), &self.0.con.codec)
-                .unwrap();
+            self.0.con.encode(Reset::new(self.0.id, reason));
             self.0.reset_stream(Some(reason));
         }
     }
@@ -366,11 +359,7 @@ impl StreamRef {
         {
             self.0.content_length.set(ContentLength::Head)
         }
-        self.0
-            .con
-            .io
-            .encode(hdrs.into(), &self.0.con.codec)
-            .unwrap();
+        self.0.con.encode(hdrs);
     }
 
     pub(crate) fn set_failed(&self, reason: Option<Reason>) {
@@ -557,11 +546,7 @@ impl StreamRef {
                 } else {
                     self.0.state_send_payload();
                 }
-                self.0
-                    .con
-                    .io
-                    .encode(hdrs.into(), &self.0.con.codec)
-                    .unwrap();
+                self.0.con.encode(hdrs);
                 Ok(())
             }
             HalfState::Payload => Err(OperationError::Payload),
@@ -594,11 +579,7 @@ impl StreamRef {
                     self.0.state_send_close(None);
 
                     // write to io buffer
-                    self.0
-                        .con
-                        .io
-                        .encode(data.into(), &self.0.con.codec)
-                        .unwrap();
+                    self.0.con.encode(data);
                     return Ok(());
                 }
 
@@ -629,11 +610,7 @@ impl StreamRef {
                             .send_window
                             .set(self.0.send_window.get().dec(size as u32));
                         // write to io buffer
-                        self.0
-                            .con
-                            .io
-                            .encode(data.into(), &self.0.con.codec)
-                            .unwrap();
+                        self.0.con.encode(data);
                         if res.is_empty() {
                             return Ok(());
                         }
@@ -659,11 +636,7 @@ impl StreamRef {
             let mut hdrs = Headers::trailers(self.0.id, map);
             hdrs.set_end_headers();
             hdrs.set_end_stream();
-            self.0
-                .con
-                .io
-                .encode(hdrs.into(), &self.0.con.codec)
-                .unwrap();
+            self.0.con.encode(hdrs);
             self.0.state_send_close(None);
         }
     }
@@ -681,10 +654,9 @@ impl StreamRef {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Poll::Ready(Err(err))
-        } else if let Some(err) = self.0.con.error.take() {
-            self.0.con.error.set(Some(err.clone()));
-            Poll::Ready(Err(err))
         } else {
+            self.0.con.check_error()?;
+
             let win = self.0.send_window.get().window_size();
             if win > 0 {
                 Poll::Ready(Ok(win))
@@ -702,10 +674,8 @@ impl StreamRef {
         } else if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Poll::Ready(Err(err))
-        } else if let Some(err) = self.0.con.error.take() {
-            self.0.con.error.set(Some(err.clone()));
-            Poll::Ready(Err(err))
         } else {
+            self.0.con.check_error()?;
             self.0.send_reset.register(cx.waker());
             Poll::Pending
         }

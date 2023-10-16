@@ -198,9 +198,9 @@ fn create_connection(io: &IoBoxed, config: &Config) -> (Codec, Connection) {
     // slow request timeout
     let timeout = config.0.client_timeout.get();
     if !timeout.is_zero() {
-        con.state().set_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
+        con.set_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
 
-        let state = con.get_state();
+        let state = con.clone();
         ntex_rt::spawn(async move {
             sleep(timeout).await;
 
@@ -208,7 +208,7 @@ fn create_connection(io: &IoBoxed, config: &Config) -> (Codec, Connection) {
                 .flags()
                 .contains(ConnectionFlags::SLOW_REQUEST_TIMEOUT)
             {
-                state.io.close()
+                state.close()
             }
         });
     }
