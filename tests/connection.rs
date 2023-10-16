@@ -316,3 +316,119 @@ async fn test_goaway_on_overflow() {
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
+
+#[ntex::test]
+async fn test_goaway_on_reset() {
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let settings = frame::Settings::default();
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let mut id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+        id = id.next_id().unwrap();
+        io.send(hdrs.into(), &codec).await.unwrap();
+        io.recv(&codec).await.unwrap().unwrap(); // headers
+        io.recv(&codec).await.unwrap().unwrap(); // data
+        io.recv(&codec).await.unwrap().unwrap(); // data eof
+    }
+
+    for _ in 0..4 {
+        let rst = frame::Reset::new(id, Reason::NO_ERROR);
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+        id = id.next_id().unwrap();
+        io.encode(hdrs.into(), &codec).unwrap();
+        io.send(rst.into(), &codec).await.unwrap();
+        io.recv(&codec).await.unwrap().unwrap(); // headers
+    }
+    let rst = frame::Reset::new(id, Reason::NO_ERROR);
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    io.encode(hdrs.into(), &codec).unwrap();
+    io.send(rst.into(), &codec).await.unwrap();
+    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
+        rst
+    } else {
+        panic!()
+    };
+    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert!(io.recv(&codec).await.unwrap().is_none());
+}
+
+#[ntex::test]
+async fn test_goaway_on_reset2() {
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let settings = frame::Settings::default();
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let mut id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    for _ in 0..5 {
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+        id = id.next_id().unwrap();
+        io.send(hdrs.into(), &codec).await.unwrap();
+        io.recv(&codec).await.unwrap().unwrap(); // headers
+        io.recv(&codec).await.unwrap().unwrap(); // data
+        io.recv(&codec).await.unwrap().unwrap(); // data eof
+    }
+
+    for _ in 0..4 {
+        let rst = frame::Reset::new(id, Reason::NO_ERROR);
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+        id = id.next_id().unwrap();
+        io.encode(hdrs.into(), &codec).unwrap();
+        io.send(rst.into(), &codec).await.unwrap();
+        io.recv(&codec).await.unwrap().unwrap(); // headers
+        io.recv(&codec).await.unwrap().unwrap(); // data
+        io.recv(&codec).await.unwrap().unwrap(); // data eof
+    }
+    let rst = frame::Reset::new(id, Reason::NO_ERROR);
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+    io.encode(hdrs.into(), &codec).unwrap();
+    io.send(rst.into(), &codec).await.unwrap();
+    io.recv(&codec).await.unwrap().unwrap(); // headers
+    io.recv(&codec).await.unwrap().unwrap(); // data
+    io.recv(&codec).await.unwrap().unwrap(); // data eof
+
+    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
+        rst
+    } else {
+        panic!()
+    };
+    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert!(io.recv(&codec).await.unwrap().is_none());
+}

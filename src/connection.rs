@@ -41,6 +41,9 @@ struct ConnectionState {
     active_local_streams: Cell<u32>,
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
 
+    rst_count: Cell<u32>,
+    total_count: Cell<u32>,
+
     // Local config
     local_config: Config,
     // Maximum number of locally initiated streams
@@ -94,6 +97,8 @@ impl Connection {
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
+            rst_count: Cell::new(0),
+            total_count: Cell::new(0),
             readiness: RefCell::new(VecDeque::new()),
             next_stream_id: Cell::new(StreamId::new(1)),
             local_config: config,
@@ -463,6 +468,7 @@ impl RecvHalfConnection {
             } else {
                 let stream = StreamRef::new(id, true, Connection(self.0.clone()));
                 self.0.next_stream_id.set(id);
+                self.0.total_count.set(self.0.total_count.get() + 1);
                 self.0.streams.borrow_mut().insert(id, stream.clone());
                 self.0
                     .active_remote_streams
@@ -491,7 +497,6 @@ impl RecvHalfConnection {
             ));
             Ok(None)
         } else {
-            println!("66664");
             Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Received data",
             )))
@@ -632,6 +637,17 @@ impl RecvHalfConnection {
         }
     }
 
+    fn update_rst_count(&self) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
+        let count = self.0.rst_count.get() + 1;
+        let total_count = self.0.total_count.get();
+        if total_count >= 10 && count >= total_count >> 1 {
+            Err(Either::Left(ConnectionError::ConcurrencyOverflow))
+        } else {
+            self.0.rst_count.set(count);
+            Ok(())
+        }
+    }
+
     pub(crate) fn recv_rst_stream(
         &self,
         frm: frame::Reset,
@@ -642,13 +658,16 @@ impl RecvHalfConnection {
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         } else if let Some(stream) = self.query(frm.stream_id()) {
             stream.recv_rst_stream(&frm);
+            self.update_rst_count()?;
+
             Err(Either::Right(StreamErrorInner::new(
                 stream,
                 StreamError::Reset(frm.reason()),
             )))
         } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
-            Ok(())
+            self.update_rst_count()
         } else {
+            self.update_rst_count()?;
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
         }
     }
@@ -745,7 +764,6 @@ impl fmt::Debug for Connection {
 async fn delay_drop_task(state: Connection) {
     state.set_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 
-    #[allow(clippy::while_let_loop)]
     loop {
         let next = if let Some(item) = state.0.local_reset_queue.borrow().front() {
             item.1 - now()

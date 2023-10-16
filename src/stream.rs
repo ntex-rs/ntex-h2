@@ -213,11 +213,10 @@ impl StreamState {
                 // stream is closed
                 if reason.is_some() {
                     log::trace!("{:?} is closed with local reset, dropping stream", self.id);
-                    self.con.drop_stream(self.id);
                 } else {
                     log::trace!("{:?} both sides are closed, dropping stream", self.id);
-                    self.con.drop_stream(self.id);
                 }
+                self.con.drop_stream(self.id);
             }
         }
     }
