@@ -122,7 +122,6 @@ async fn test_max_concurrent_streams() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_pool() {
-    env_logger::init();
     let srv = start_server();
     let addr = srv.addr();
     let client = Client::build(
@@ -270,7 +269,6 @@ const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]
 async fn test_goaway_on_overflow() {
-    env_logger::init();
     let srv = start_server();
     let addr = srv.addr();
 
