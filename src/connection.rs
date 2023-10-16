@@ -13,8 +13,10 @@ use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpd
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, consts, message::Message, window::Window};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Connection(Rc<ConnectionState>);
+
+pub(crate) struct RecvHalfConnection(Rc<ConnectionState>);
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -22,16 +24,16 @@ bitflags::bitflags! {
         const SETTINGS_PROCESSED      = 0b0000_0001;
         const DELAY_DROP_TASK_STARTED = 0b0000_0010;
         const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
-        const DISCONNECT_WHEN_READY   = 0b0001_0000;
-        const SECURE                  = 0b0010_0000;
+        const DISCONNECT_WHEN_READY   = 0b0000_1000;
+        const SECURE                  = 0b0001_0000;
     }
 }
 
-pub(crate) struct ConnectionState {
-    pub(crate) io: IoRef,
-    pub(crate) codec: Codec,
-    pub(crate) send_window: Cell<Window>,
-    pub(crate) recv_window: Cell<Window>,
+struct ConnectionState {
+    io: IoRef,
+    codec: Codec,
+    send_window: Cell<Window>,
+    recv_window: Cell<Window>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
@@ -39,149 +41,20 @@ pub(crate) struct ConnectionState {
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
 
     // Local config
-    pub(crate) local_config: Config,
+    local_config: Config,
     // Maximum number of locally initiated streams
-    pub(crate) local_max_concurrent_streams: Cell<Option<u32>>,
+    local_max_concurrent_streams: Cell<Option<u32>>,
     // Initial window size of remote initiated streams
-    pub(crate) remote_window_sz: Cell<WindowSize>,
+    remote_window_sz: Cell<WindowSize>,
     // Max frame size
-    pub(crate) remote_frame_size: Cell<u32>,
+    remote_frame_size: Cell<u32>,
     // Locally reset streams
     local_reset_queue: RefCell<VecDeque<(StreamId, Instant)>>,
     local_reset_ids: RefCell<HashSet<StreamId>>,
     // protocol level error
-    pub(crate) error: Cell<Option<OperationError>>,
+    error: Cell<Option<OperationError>>,
     // connection state flags
     flags: Cell<ConnectionFlags>,
-}
-
-impl ConnectionState {
-    /// added new capacity, update recevice window size
-    pub(crate) fn add_capacity(&self, size: u32) {
-        let mut recv_window = self.recv_window.get().dec(size);
-
-        // update connection window size
-        if let Some(val) = recv_window.update(
-            0,
-            self.local_config.0.connection_window_sz.get(),
-            self.local_config.0.connection_window_sz_threshold.get(),
-        ) {
-            self.io
-                .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec)
-                .unwrap();
-        }
-        self.recv_window.set(recv_window);
-    }
-
-    #[inline]
-    pub(crate) fn flags(&self) -> ConnectionFlags {
-        self.flags.get()
-    }
-
-    #[inline]
-    pub(crate) fn set_flags(&self, f: ConnectionFlags) {
-        let mut flags = self.flags.get();
-        flags.insert(f);
-        self.flags.set(flags);
-    }
-
-    #[inline]
-    pub(crate) fn unset_flags(&self, f: ConnectionFlags) {
-        let mut flags = self.flags.get();
-        flags.remove(f);
-        self.flags.set(flags);
-    }
-
-    #[inline]
-    pub(crate) fn config(&self) -> &ConfigInner {
-        &self.local_config.0
-    }
-
-    #[inline]
-    pub(crate) fn remote_frame_size(&self) -> usize {
-        self.remote_frame_size.get() as usize
-    }
-
-    pub(crate) fn settings_processed(&self) -> bool {
-        self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED)
-    }
-
-    pub(crate) fn drop_stream(&self, id: StreamId, state: &Rc<ConnectionState>) {
-        let empty = {
-            let mut streams = self.streams.borrow_mut();
-            if let Some(stream) = streams.remove(&id) {
-                log::trace!("Dropping stream {:?} remote: {:?}", id, stream.is_remote());
-                if stream.is_remote() {
-                    self.active_remote_streams
-                        .set(self.active_remote_streams.get() - 1)
-                } else {
-                    let local = self.active_local_streams.get();
-                    self.active_local_streams.set(local - 1);
-                    if let Some(max) = self.local_max_concurrent_streams.get() {
-                        if local == max {
-                            while let Some(tx) = self.readiness.borrow_mut().pop_front() {
-                                if !tx.is_canceled() {
-                                    let _ = tx.send(());
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            streams.is_empty()
-        };
-        let flags = self.flags();
-
-        // Close connection
-        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
-            log::debug!("All streams are closed, disconnecting");
-            self.io.close();
-            return;
-        }
-
-        let mut ids = self.local_reset_ids.borrow_mut();
-        let mut queue = self.local_reset_queue.borrow_mut();
-
-        // check queue size
-        if queue.len() >= self.local_config.0.reset_max.get() {
-            if let Some((id, _)) = queue.pop_front() {
-                ids.remove(&id);
-            }
-        }
-        ids.insert(id);
-        queue.push_back((id, now() + self.local_config.0.reset_duration.get()));
-        if !flags.contains(ConnectionFlags::DELAY_DROP_TASK_STARTED) {
-            spawn(delay_drop_task(state.clone()));
-        }
-    }
-
-    #[inline]
-    pub(crate) fn rst_stream(&self, id: StreamId, reason: frame::Reason) {
-        let stream = self.streams.borrow_mut().get(&id).cloned();
-        if let Some(stream) = stream {
-            stream.set_failed(Some(reason))
-        }
-    }
-
-    pub(crate) fn disconnect_when_ready(&self) {
-        if self.streams.borrow().is_empty() {
-            log::debug!("All streams are closed, disconnecting");
-            self.io.close();
-        } else {
-            log::debug!("Not all streams are closed, set disconnect flag");
-            self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
-        }
-    }
-
-    pub(crate) fn is_disconnected(&self) -> bool {
-        if let Some(e) = self.error.take() {
-            self.error.set(Some(e));
-            true
-        } else {
-            false
-        }
-    }
 }
 
 impl Connection {
@@ -234,25 +107,34 @@ impl Connection {
                 ConnectionFlags::empty()
             }),
         });
+        let con = Connection(state);
 
         // start ping/pong
-        if state.local_config.0.ping_timeout.get().non_zero() {
+        if con.0.local_config.0.ping_timeout.get().non_zero() {
             spawn(ping(
-                state.clone(),
-                state.local_config.0.ping_timeout.get(),
+                con.clone(),
+                con.0.local_config.0.ping_timeout.get(),
                 io,
             ));
         }
 
-        Connection(state)
+        con
+    }
+
+    pub(crate) fn io(&self) -> &IoRef {
+        &self.0.io
+    }
+
+    pub(crate) fn codec(&self) -> &Codec {
+        &self.0.codec
     }
 
     pub(crate) fn config(&self) -> &ConfigInner {
         &self.0.local_config.0
     }
 
-    pub(crate) fn state(&self) -> &ConnectionState {
-        self.0.as_ref()
+    pub(crate) fn flags(&self) -> ConnectionFlags {
+        self.0.flags.get()
     }
 
     pub(crate) fn close(&self) {
@@ -263,24 +145,67 @@ impl Connection {
         self.0.io.is_closed()
     }
 
-    pub(crate) fn disconnect_when_ready(&self) {
-        self.0.disconnect_when_ready()
-    }
-
     pub(crate) fn set_secure(&self, secure: bool) {
         if secure {
-            self.0.set_flags(ConnectionFlags::SECURE)
+            self.set_flags(ConnectionFlags::SECURE)
         } else {
-            self.0.unset_flags(ConnectionFlags::SECURE)
+            self.unset_flags(ConnectionFlags::SECURE)
         }
     }
 
-    pub(crate) fn get_state(&self) -> Rc<ConnectionState> {
-        self.0.clone()
+    pub(crate) fn set_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.0.flags.get();
+        flags.insert(f);
+        self.0.flags.set(flags);
     }
 
-    fn query(&self, id: StreamId) -> Option<StreamRef> {
-        self.0.streams.borrow_mut().get(&id).cloned()
+    pub(crate) fn unset_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.0.flags.get();
+        flags.remove(f);
+        self.0.flags.set(flags);
+    }
+
+    pub(crate) fn encode<T>(&self, item: T)
+    where
+        frame::Frame: From<T>,
+    {
+        let _ = self.0.io.encode(item.into(), &self.0.codec);
+    }
+
+    pub(crate) fn check_error(&self) -> Result<(), OperationError> {
+        if let Some(err) = self.0.error.take() {
+            self.0.error.set(Some(err.clone()));
+            Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// added new capacity, update recevice window size
+    pub(crate) fn add_capacity(&self, size: u32) {
+        let mut recv_window = self.0.recv_window.get().dec(size);
+
+        // update connection window size
+        if let Some(val) = recv_window.update(
+            0,
+            self.0.local_config.0.connection_window_sz.get(),
+            self.0.local_config.0.connection_window_sz_threshold.get(),
+        ) {
+            self.encode(WindowUpdate::new(StreamId::CON, val));
+        }
+        self.0.recv_window.set(recv_window);
+    }
+
+    pub(crate) fn remote_window_size(&self) -> WindowSize {
+        self.0.remote_window_sz.get()
+    }
+
+    pub(crate) fn remote_frame_size(&self) -> usize {
+        self.0.remote_frame_size.get() as usize
+    }
+
+    pub(crate) fn settings_processed(&self) -> bool {
+        self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED)
     }
 
     pub(crate) fn max_streams(&self) -> Option<u32> {
@@ -305,10 +230,8 @@ impl Connection {
 
     pub(crate) async fn ready(&self) -> Result<(), OperationError> {
         loop {
-            return if let Some(err) = self.0.error.take() {
-                self.0.error.set(Some(err.clone()));
-                Err(err)
-            } else if let Some(max) = self.0.local_max_concurrent_streams.get() {
+            self.check_error()?;
+            return if let Some(max) = self.0.local_max_concurrent_streams.get() {
                 if self.0.active_local_streams.get() < max {
                     Ok(())
                 } else {
@@ -325,6 +248,16 @@ impl Connection {
         }
     }
 
+    pub(crate) fn disconnect_when_ready(&self) {
+        if self.0.streams.borrow().is_empty() {
+            log::debug!("All streams are closed, disconnecting");
+            self.0.io.close();
+        } else {
+            log::debug!("Not all streams are closed, set disconnect flag");
+            self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
+        }
+    }
+
     pub(crate) async fn send_request(
         &self,
         authority: ByteString,
@@ -333,10 +266,7 @@ impl Connection {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, OperationError> {
-        if let Some(err) = self.0.error.take() {
-            self.0.error.set(Some(err.clone()));
-            return Err(err);
-        }
+        self.check_error()?;
 
         if !self.can_create_new_stream() {
             log::warn!("Cannot create new stream, waiting for available streams");
@@ -345,7 +275,7 @@ impl Connection {
 
         let stream = {
             let id = self.0.next_stream_id.get();
-            let stream = StreamRef::new(id, false, self.0.clone());
+            let stream = StreamRef::new(id, false, self.clone());
             self.0.streams.borrow_mut().insert(id, stream.clone());
             self.0
                 .active_local_streams
@@ -372,6 +302,97 @@ impl Connection {
         Ok(stream.into_stream())
     }
 
+    pub(crate) fn rst_stream(&self, id: StreamId, reason: frame::Reason) {
+        let stream = self.0.streams.borrow_mut().get(&id).cloned();
+        if let Some(stream) = stream {
+            stream.set_failed(Some(reason))
+        }
+    }
+
+    pub(crate) fn drop_stream(&self, id: StreamId) {
+        let empty = {
+            let mut streams = self.0.streams.borrow_mut();
+            if let Some(stream) = streams.remove(&id) {
+                log::trace!("Dropping stream {:?} remote: {:?}", id, stream.is_remote());
+                if stream.is_remote() {
+                    self.0
+                        .active_remote_streams
+                        .set(self.0.active_remote_streams.get() - 1)
+                } else {
+                    let local = self.0.active_local_streams.get();
+                    self.0.active_local_streams.set(local - 1);
+                    if let Some(max) = self.0.local_max_concurrent_streams.get() {
+                        if local == max {
+                            while let Some(tx) = self.0.readiness.borrow_mut().pop_front() {
+                                if !tx.is_canceled() {
+                                    let _ = tx.send(());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            streams.is_empty()
+        };
+        let flags = self.flags();
+
+        // Close connection
+        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
+            log::debug!("All streams are closed, disconnecting");
+            self.0.io.close();
+            return;
+        }
+
+        let mut ids = self.0.local_reset_ids.borrow_mut();
+        let mut queue = self.0.local_reset_queue.borrow_mut();
+
+        // check queue size
+        if queue.len() >= self.0.local_config.0.reset_max.get() {
+            if let Some((id, _)) = queue.pop_front() {
+                ids.remove(&id);
+            }
+        }
+        ids.insert(id);
+        queue.push_back((id, now() + self.0.local_config.0.reset_duration.get()));
+        if !flags.contains(ConnectionFlags::DELAY_DROP_TASK_STARTED) {
+            spawn(delay_drop_task(self.clone()));
+        }
+    }
+
+    pub(crate) fn recv_half(&self) -> RecvHalfConnection {
+        RecvHalfConnection(self.0.clone())
+    }
+}
+
+impl RecvHalfConnection {
+    fn query(&self, id: StreamId) -> Option<StreamRef> {
+        self.0.streams.borrow_mut().get(&id).cloned()
+    }
+
+    fn flags(&self) -> ConnectionFlags {
+        self.0.flags.get()
+    }
+
+    fn set_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.0.flags.get();
+        flags.insert(f);
+        self.0.flags.set(flags);
+    }
+
+    fn unset_flags(&self, f: ConnectionFlags) {
+        let mut flags = self.0.flags.get();
+        flags.remove(f);
+        self.0.flags.set(flags);
+    }
+
+    pub(crate) fn encode<T>(&self, item: T)
+    where
+        frame::Frame: From<T>,
+    {
+        let _ = self.0.io.encode(item.into(), &self.0.codec);
+    }
+
     pub(crate) fn recv_headers(
         &self,
         frm: Headers,
@@ -379,7 +400,7 @@ impl Connection {
         let id = frm.stream_id();
 
         if self.0.local_config.is_server() {
-            self.0.unset_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
+            self.unset_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
 
             if !id.is_client_initiated() {
                 return Err(Either::Left(ConnectionError::InvalidStreamId(
@@ -405,13 +426,7 @@ impl Connection {
         } else {
             if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
-                    self.0
-                        .io
-                        .encode(
-                            frame::Reset::new(id, frame::Reason::REFUSED_STREAM).into(),
-                            &self.0.codec,
-                        )
-                        .unwrap();
+                    self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
                     return Ok(None);
                 }
             }
@@ -438,7 +453,7 @@ impl Connection {
             } else if frm.pseudo().status.is_some() {
                 Err(Either::Left(ConnectionError::UnexpectedPseudo("scheme")))
             } else {
-                let stream = StreamRef::new(id, true, self.0.clone());
+                let stream = StreamRef::new(id, true, Connection(self.0.clone()));
                 self.0.next_stream_id.set(id);
                 self.0.streams.borrow_mut().insert(id, stream.clone());
                 self.0
@@ -462,19 +477,11 @@ impl Connection {
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
-            self.0
-                .io
-                .encode(
-                    frame::Reset::new(frm.stream_id(), frame::Reason::STREAM_CLOSED).into(),
-                    &self.0.codec,
-                )
-                .unwrap();
-            Ok(None)
-        } else if self.0.local_reset_ids.borrow().contains(&frm.stream_id()) {
-            Err(Either::Left(ConnectionError::StreamClosed(
+            self.encode(frame::Reset::new(
                 frm.stream_id(),
-                "Received data",
-            )))
+                frame::Reason::STREAM_CLOSED,
+            ));
+            Ok(None)
         } else {
             Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Received data",
@@ -489,8 +496,8 @@ impl Connection {
         log::trace!("processing incoming settings: {:#?}", settings);
 
         if settings.is_ack() {
-            if !self.0.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
-                self.0.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
+            if !self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
+                self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
                 if let Some(max) = self.0.local_config.0.settings.get().max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
                 }
@@ -512,10 +519,7 @@ impl Connection {
                     };
                     if let Some(val) = val {
                         // send window size update to the peer
-                        self.0
-                            .io
-                            .encode(WindowUpdate::new(stream.id(), val).into(), &self.0.codec)
-                            .unwrap();
+                        self.encode(WindowUpdate::new(stream.id(), val));
                     }
                 }
                 if !stream_errors.is_empty() {
@@ -527,10 +531,7 @@ impl Connection {
             }
         } else {
             // Ack settings to the peer
-            self.0
-                .io
-                .encode(frame::Settings::ack().into(), &self.0.codec)
-                .map_err(|e| Either::Left(e.into()))?;
+            self.encode(frame::Settings::ack());
 
             if let Some(max) = settings.max_frame_size() {
                 self.0.codec.set_send_frame_size(max as usize);
@@ -680,10 +681,7 @@ impl Connection {
             stream.set_failed_stream(ConnectionError::KeepaliveTimeout.into())
         }
 
-        let _ = self.0.io.encode(
-            frame::GoAway::new(frame::Reason::NO_ERROR).into(),
-            &self.0.codec,
-        );
+        self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
         self.0.io.close();
         streams
     }
@@ -714,46 +712,46 @@ impl Connection {
     }
 }
 
-impl fmt::Debug for ConnectionState {
+impl fmt::Debug for Connection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut builder = f.debug_struct("ConnectionState");
+        let mut builder = f.debug_struct("Connection");
         builder
-            .field("io", &self.io)
-            .field("codec", &self.codec)
-            .field("recv_window", &self.recv_window.get())
-            .field("send_window", &self.send_window.get())
+            .field("io", &self.0.io)
+            .field("codec", &self.0.codec)
+            .field("recv_window", &self.0.recv_window.get())
+            .field("send_window", &self.0.send_window.get())
             .field("settings_processed", &self.settings_processed())
-            .field("next_stream_id", &self.next_stream_id.get())
-            .field("local_config", &self.local_config)
+            .field("next_stream_id", &self.0.next_stream_id.get())
+            .field("local_config", &self.0.local_config)
             .field(
                 "local_max_concurrent_streams",
-                &self.local_max_concurrent_streams.get(),
+                &self.0.local_max_concurrent_streams.get(),
             )
-            .field("remote_window_sz", &self.remote_window_sz.get())
-            .field("remote_frame_size", &self.remote_frame_size.get())
+            .field("remote_window_sz", &self.0.remote_window_sz.get())
+            .field("remote_frame_size", &self.0.remote_frame_size.get())
             .finish()
     }
 }
 
-async fn delay_drop_task(state: Rc<ConnectionState>) {
+async fn delay_drop_task(state: Connection) {
     state.set_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 
     #[allow(clippy::while_let_loop)]
     loop {
-        let next = if let Some(item) = state.local_reset_queue.borrow().front() {
+        let next = if let Some(item) = state.0.local_reset_queue.borrow().front() {
             item.1 - now()
         } else {
             break;
         };
         sleep(next).await;
 
-        if state.is_disconnected() {
+        if state.is_closed() {
             return;
         }
 
         let now = now();
-        let mut ids = state.local_reset_ids.borrow_mut();
-        let mut queue = state.local_reset_queue.borrow_mut();
+        let mut ids = state.0.local_reset_ids.borrow_mut();
+        let mut queue = state.0.local_reset_queue.borrow_mut();
         loop {
             if let Some(item) = queue.front() {
                 if item.1 <= now {
@@ -772,26 +770,24 @@ async fn delay_drop_task(state: Rc<ConnectionState>) {
     state.unset_flags(ConnectionFlags::DELAY_DROP_TASK_STARTED);
 }
 
-async fn ping(st: Rc<ConnectionState>, timeout: time::Seconds, io: IoRef) {
+async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
     log::debug!("start http client ping/pong task");
 
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
     let timeout = timeout.into();
     loop {
-        if st.is_disconnected() {
+        if st.is_closed() {
             log::debug!("http client connection is closed, stopping keep-alive task");
             break;
         }
         sleep(keepalive).await;
-        if st.is_disconnected() {
+        if st.is_closed() {
             break;
         }
 
-        io.start_keepalive_timer(timeout);
         counter += 1;
-        let _ = st
-            .io
-            .encode(frame::Ping::new(counter.to_be_bytes()).into(), &st.codec);
+        io.start_keepalive_timer(timeout);
+        st.encode(frame::Ping::new(counter.to_be_bytes()));
     }
 }

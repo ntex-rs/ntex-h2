@@ -54,7 +54,7 @@ impl SimpleClient {
             DefaultControlService,
             HandleService::new(storage.clone()),
         );
-        let fut = IoDispatcher::new(io, con.state().codec.clone(), disp)
+        let fut = IoDispatcher::new(io, con.codec().clone(), disp)
             .keepalive_timeout(Seconds::ZERO)
             .disconnect_timeout(con.config().disconnect_timeout.get());
 
@@ -125,7 +125,7 @@ impl SimpleClient {
     #[inline]
     /// Notify when connection get closed
     pub fn on_disconnect(&self) -> OnDisconnect {
-        self.0.con.state().io.on_disconnect()
+        self.0.con.io().on_disconnect()
     }
 
     #[inline]
