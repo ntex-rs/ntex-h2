@@ -4,6 +4,8 @@
 
 * Drop connection if client overflows concurrent streams number multiple times
 
+* Drop connection number of resets more than 50% of total requests
+
 ## [0.4.2] - 2023-10-09
 
 * Add client streams helper methods
