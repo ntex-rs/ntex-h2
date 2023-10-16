@@ -22,6 +22,9 @@ impl StreamId {
     /// Stream ID 0.
     pub const CON: StreamId = StreamId(0);
 
+    /// Stream ID 1.
+    pub const CLIENT: StreamId = StreamId(1);
+
     /// The maximum allowed stream ID.
     pub const MAX: StreamId = StreamId(u32::MAX >> 1);
 

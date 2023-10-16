@@ -31,6 +31,8 @@ pub enum ConnectionError {
     ZeroWindowUpdateValue,
     #[error("Window value is overflowed")]
     WindowValueOverflow,
+    #[error("Max concurrent streams count achieved")]
+    ConcurrencyOverflow,
     /// Keep-alive timeout
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
@@ -65,6 +67,8 @@ impl ConnectionError {
                 .set_data("Zero value for window update frame is not allowed"),
             ConnectionError::WindowValueOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
                 .set_data("Updated value for window is overflowed"),
+            ConnectionError::ConcurrencyOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
+                .set_data("Max concurrent streams count achieved"),
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
