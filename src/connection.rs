@@ -714,6 +714,19 @@ impl RecvHalfConnection {
         streams
     }
 
+    pub(crate) fn read_timeout(&self) -> HashMap<StreamId, StreamRef> {
+        self.0.error.set(Some(ConnectionError::ReadTimeout.into()));
+
+        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        for stream in streams.values() {
+            stream.set_failed_stream(ConnectionError::ReadTimeout.into())
+        }
+
+        self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
+        self.0.io.close();
+        streams
+    }
+
     pub(crate) fn proto_error(&self, err: &ConnectionError) -> HashMap<StreamId, StreamRef> {
         self.0.error.set(Some((*err).into()));
         self.0.readiness.borrow_mut().clear();

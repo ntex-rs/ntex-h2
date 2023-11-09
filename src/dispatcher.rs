@@ -288,6 +288,16 @@ where
                     ctx,
                 )))
             }
+            DispatchItem::ReadTimeout => {
+                log::warn!("did not receive complete frame in time, closing connection");
+                let streams = self.connection.read_timeout();
+                self.handle_connection_error(streams, ConnectionError::ReadTimeout.into());
+                Either::Right(Either::Left(ControlResponse::new(
+                    ControlMessage::proto_error(ConnectionError::ReadTimeout),
+                    &self.inner,
+                    ctx,
+                )))
+            }
             DispatchItem::Disconnect(err) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(streams, OperationError::Disconnected);

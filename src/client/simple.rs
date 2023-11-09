@@ -3,7 +3,6 @@ use std::{fmt, rc::Rc};
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
-use ntex_util::time::Seconds;
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
@@ -54,10 +53,13 @@ impl SimpleClient {
             DefaultControlService,
             HandleService::new(storage.clone()),
         );
-        let fut = IoDispatcher::new(io, con.codec().clone(), disp)
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(con.config().disconnect_timeout.get());
 
+        let fut = IoDispatcher::with_config(
+            io,
+            con.codec().clone(),
+            disp,
+            &con.config().dispatcher_config,
+        );
         ntex_rt::spawn(async move {
             let _ = fut.await;
         });

@@ -36,6 +36,9 @@ pub enum ConnectionError {
     /// Keep-alive timeout
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
+    /// Read timeout
+    #[error("Read timeout")]
+    ReadTimeout,
 }
 
 impl ConnectionError {
@@ -71,6 +74,9 @@ impl ConnectionError {
                 .set_data("Max concurrent streams count achieved"),
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
+            }
+            ConnectionError::ReadTimeout => {
+                GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout")
             }
         }
     }

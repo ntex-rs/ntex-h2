@@ -1,5 +1,6 @@
 use std::{cell::Cell, fmt, rc::Rc, time::Duration};
 
+use ntex_io::DispatcherConfig;
 use ntex_util::{channel::pool, time::Seconds};
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
@@ -35,8 +36,8 @@ pub(crate) struct ConfigInner {
     /// Connection timeouts
     pub(crate) handshake_timeout: Cell<Seconds>,
     pub(crate) client_timeout: Cell<Seconds>,
-    pub(crate) disconnect_timeout: Cell<Seconds>,
     pub(crate) ping_timeout: Cell<Seconds>,
+    pub(crate) dispatcher_config: DispatcherConfig,
 
     /// Config flags
     flags: Cell<ConfigFlags>,
@@ -73,19 +74,24 @@ impl Config {
             Cell::new(ConfigFlags::empty())
         };
 
+        let dispatcher_config = DispatcherConfig::default();
+        dispatcher_config
+            .set_keepalive_timeout(Seconds(0))
+            .set_disconnect_timeout(Seconds(3));
+
         Config(Rc::new(ConfigInner {
             flags,
             window_sz,
             window_sz_threshold,
             connection_window_sz,
             connection_window_sz_threshold,
+            dispatcher_config,
             settings: Cell::new(settings),
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
             client_timeout: Cell::new(Seconds(0)),
             handshake_timeout: Cell::new(Seconds(5)),
-            disconnect_timeout: Cell::new(Seconds(3)),
             ping_timeout: Cell::new(Seconds(10)),
             pool: pool::new(),
         }))
@@ -290,7 +296,7 @@ impl Config {
     ///
     /// By default disconnect timeout is set to 3 seconds.
     pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
-        self.0.disconnect_timeout.set(val);
+        self.0.dispatcher_config.set_disconnect_timeout(val);
         self
     }
 
@@ -305,6 +311,10 @@ impl Config {
     /// Check if configuration defined for server.
     pub fn is_server(&self) -> bool {
         self.0.flags.get().contains(ConfigFlags::SERVER)
+    }
+
+    pub(crate) fn inner(&self) -> &ConfigInner {
+        self.0.as_ref()
     }
 }
 

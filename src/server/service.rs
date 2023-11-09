@@ -3,7 +3,7 @@ use std::{fmt, rc::Rc};
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 use ntex_util::future::{BoxFuture, Ready};
-use ntex_util::time::{sleep, timeout_checked, Seconds};
+use ntex_util::time::{sleep, timeout_checked};
 
 use crate::connection::{Connection, ConnectionFlags};
 use crate::control::{ControlMessage, ControlResult};
@@ -143,11 +143,14 @@ where
         let (codec, con) = create_connection(&io, &inner.config);
 
         // start protocol dispatcher
-        IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_srv, pub_srv))
-            .keepalive_timeout(Seconds::ZERO)
-            .disconnect_timeout(inner.config.0.disconnect_timeout.get())
-            .await
-            .map_err(|_| ServerError::Dispatcher)
+        IoDispatcher::with_config(
+            io,
+            codec,
+            Dispatcher::new(con, ctl_srv, pub_srv),
+            &inner.config.inner().dispatcher_config,
+        )
+        .await
+        .map_err(|_| ServerError::Dispatcher)
     }
 }
 
@@ -267,9 +270,12 @@ where
     let (codec, con) = create_connection(&io, &config);
 
     // start protocol dispatcher
-    IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_svc, pub_svc))
-        .keepalive_timeout(Seconds::ZERO)
-        .disconnect_timeout(config.0.disconnect_timeout.get())
-        .await
-        .map_err(|_| ServerError::Dispatcher)
+    IoDispatcher::with_config(
+        io,
+        codec,
+        Dispatcher::new(con, ctl_svc, pub_svc),
+        &config.inner().dispatcher_config,
+    )
+    .await
+    .map_err(|_| ServerError::Dispatcher)
 }

@@ -1,5 +1,9 @@
 # Changes
 
+## [0.4.4] - 2023-11-09
+
+* Update ntex-io
+
 ## [0.4.3] - 2023-10-16
 
 * Drop connection if client overflows concurrent streams number multiple times
