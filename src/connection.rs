@@ -827,7 +827,7 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         }
 
         counter += 1;
-        io.start_keepalive_timer(timeout);
+        io.start_timer(timeout);
         st.encode(frame::Ping::new(counter.to_be_bytes()));
     }
 }
