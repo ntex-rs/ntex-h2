@@ -56,6 +56,3 @@ ntex-connect = { version = "0.3.2", features = ["openssl", "tokio"] }
 
 [patch.crates-io]
 ntex-h2 = { path = "." }
-
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
