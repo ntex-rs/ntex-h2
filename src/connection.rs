@@ -27,6 +27,7 @@ bitflags::bitflags! {
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
         const STREAM_REFUSED          = 0b0010_0000;
+        const KA_TIMER                = 0b0100_0000;
     }
 }
 
@@ -673,7 +674,7 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn recv_pong(&self, _: frame::Ping) {
-        self.0.io.stop_keepalive_timer();
+        self.0.io.stop_timer();
     }
 
     pub(crate) fn recv_go_away(

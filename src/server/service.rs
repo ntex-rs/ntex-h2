@@ -2,7 +2,6 @@ use std::{fmt, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
-use ntex_util::future::{BoxFuture, Ready};
 use ntex_util::time::{sleep, timeout_checked};
 
 use crate::connection::{Connection, ConnectionFlags};
@@ -69,10 +68,9 @@ where
     type Error = ServerError<()>;
     type Service = ServerHandler<Ctl, Pub>;
     type InitError = ();
-    type Future<'f> = Ready<Self::Service, Self::InitError>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Ready::Ok(ServerHandler(self.0.clone()))
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        Ok(ServerHandler(self.0.clone()))
     }
 }
 
@@ -90,10 +88,9 @@ where
     type Error = ServerError<()>;
     type Service = ServerHandler<Ctl, Pub>;
     type InitError = ();
-    type Future<'f> = Ready<Self::Service, Self::InitError>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Ready::Ok(ServerHandler(self.0.clone()))
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        Ok(ServerHandler(self.0.clone()))
     }
 }
 
@@ -143,7 +140,7 @@ where
         let (codec, con) = create_connection(&io, &inner.config);
 
         // start protocol dispatcher
-        IoDispatcher::with_config(
+        IoDispatcher::new(
             io,
             codec,
             Dispatcher::new(con, ctl_srv, pub_srv),
@@ -165,11 +162,13 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
-    fn call<'a>(&'a self, io: IoBoxed, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        let slf = ServerHandler(self.0.clone());
-        Box::pin(async move { slf.run(io).await })
+    async fn call<'a>(
+        &'a self,
+        io: IoBoxed,
+        _: ServiceCtx<'a, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        self.run(io).await
     }
 }
 
@@ -185,11 +184,13 @@ where
 {
     type Response = ();
     type Error = ServerError<()>;
-    type Future<'f> = BoxFuture<'f, Result<Self::Response, Self::Error>>;
 
-    fn call<'a>(&'a self, req: Io<F>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
-        let slf = ServerHandler(self.0.clone());
-        Box::pin(async move { slf.run(req.into()).await })
+    async fn call<'a>(
+        &'a self,
+        req: Io<F>,
+        _: ServiceCtx<'a, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        self.run(req.into()).await
     }
 }
 
@@ -270,7 +271,7 @@ where
     let (codec, con) = create_connection(&io, &config);
 
     // start protocol dispatcher
-    IoDispatcher::with_config(
+    IoDispatcher::new(
         io,
         codec,
         Dispatcher::new(con, ctl_svc, pub_svc),
