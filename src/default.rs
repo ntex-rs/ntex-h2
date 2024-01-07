@@ -23,10 +23,10 @@ impl<E: fmt::Debug + 'static> Service<ControlMessage<E>> for DefaultControlServi
     type Response = ControlResult;
     type Error = E;
 
-    async fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         msg: ControlMessage<E>,
-        _: ServiceCtx<'a, Self>,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("Default control service is used: {:?}", msg);
         Ok(msg.ack())

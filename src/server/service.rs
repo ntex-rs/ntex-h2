@@ -163,10 +163,10 @@ where
     type Response = ();
     type Error = ServerError<()>;
 
-    async fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         io: IoBoxed,
-        _: ServiceCtx<'a, Self>,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         self.run(io).await
     }
@@ -185,10 +185,10 @@ where
     type Response = ();
     type Error = ServerError<()>;
 
-    async fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         req: Io<F>,
-        _: ServiceCtx<'a, Self>,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         self.run(req.into()).await
     }

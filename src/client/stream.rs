@@ -199,7 +199,7 @@ impl Service<Message> for HandleService {
     type Response = ();
     type Error = ();
 
-    async fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Result<(), ()> {
+    async fn call(&self, msg: Message, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
         let id = msg.id();
         if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
             let eof = match msg.kind() {

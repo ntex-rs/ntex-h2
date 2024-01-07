@@ -160,10 +160,10 @@ where
         }
     }
 
-    async fn call<'a>(
-        &'a self,
+    async fn call(
+        &self,
         request: DispatchItem<Codec>,
-        ctx: ServiceCtx<'a, Self>,
+        ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::debug!("Handle h2 message: {:?}", request);
 
