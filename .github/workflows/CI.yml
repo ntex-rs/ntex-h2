@@ -107,7 +107,7 @@ jobs:
     strategy:
       matrix:
         rust:
-          - 1.66 # never go past ntex's msrv
+          - 1.75 # never go past ntex's msrv
 
         os:
           - ubuntu-latest
