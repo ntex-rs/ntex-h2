@@ -61,6 +61,7 @@ impl Inflight {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 /// Send part of the client stream
 pub struct SendStream(StreamRef, InflightStorage);

@@ -816,7 +816,6 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
 
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
-    let timeout = timeout.into();
     loop {
         if st.is_closed() {
             log::debug!("http client connection is closed, stopping keep-alive task");
