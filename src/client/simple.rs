@@ -54,7 +54,7 @@ impl SimpleClient {
             HandleService::new(storage.clone()),
         );
 
-        let fut = IoDispatcher::with_config(
+        let fut = IoDispatcher::new(
             io,
             con.codec().clone(),
             disp,

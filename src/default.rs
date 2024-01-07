@@ -1,7 +1,6 @@
 use std::fmt;
 
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
-use ntex_util::future::Ready;
 
 use super::control::{ControlMessage, ControlResult};
 
@@ -14,21 +13,22 @@ impl<E: fmt::Debug + 'static> ServiceFactory<ControlMessage<E>> for DefaultContr
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService;
-    type Future<'f> = Ready<Self::Service, Self::InitError>;
 
-    fn create(&self, _: ()) -> Self::Future<'_> {
-        Ready::Ok(DefaultControlService)
+    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+        Ok(DefaultControlService)
     }
 }
 
 impl<E: fmt::Debug + 'static> Service<ControlMessage<E>> for DefaultControlService {
     type Response = ControlResult;
     type Error = E;
-    type Future<'f> = Ready<Self::Response, Self::Error>;
 
-    #[inline]
-    fn call<'a>(&'a self, msg: ControlMessage<E>, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(
+        &self,
+        msg: ControlMessage<E>,
+        _: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         log::trace!("Default control service is used: {:?}", msg);
-        Ready::Ok(msg.ack())
+        Ok(msg.ack())
     }
 }

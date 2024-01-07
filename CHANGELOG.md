@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.0-b.0] - 2024-01-07
+
+* Use "async fn" in trait for Service definition
+
 ## [0.4.4] - 2023-11-11
 
 * Update ntex-io

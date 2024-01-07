@@ -1,10 +1,10 @@
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, fmt, pin::Pin, rc::Rc};
+use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 use ntex_service::{Service, ServiceCtx};
-use ntex_util::future::{poll_fn, Either, Ready};
+use ntex_util::future::Either;
 use ntex_util::{task::LocalWaker, HashMap, Stream as FutStream};
 
 use crate::error::OperationError;
@@ -198,9 +198,8 @@ impl HandleService {
 impl Service<Message> for HandleService {
     type Response = ();
     type Error = ();
-    type Future<'f> = Ready<(), ()>;
 
-    fn call<'a>(&'a self, msg: Message, _: ServiceCtx<'a, Self>) -> Self::Future<'a> {
+    async fn call(&self, msg: Message, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
         let id = msg.id();
         if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
             let eof = match msg.kind() {
@@ -214,7 +213,7 @@ impl Service<Message> for HandleService {
             }
             inflight.push(msg);
         }
-        Ready::Ok(())
+        Ok(())
     }
 }
 

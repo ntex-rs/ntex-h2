@@ -1,8 +1,11 @@
-use std::{cell::Cell, cmp, cmp::Ordering, fmt, mem, ops, rc::Rc, task::Context, task::Poll};
+use std::{
+    cell::Cell, cmp, cmp::Ordering, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context,
+    task::Poll,
+};
 
 use ntex_bytes::Bytes;
 use ntex_http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
-use ntex_util::{future::poll_fn, task::LocalWaker};
+use ntex_util::task::LocalWaker;
 
 use crate::error::{OperationError, StreamError};
 use crate::frame::{
