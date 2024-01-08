@@ -3,8 +3,8 @@ use std::convert::TryFrom;
 use ntex::service::{fn_service, ServiceFactory};
 use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};
-use ntex_tls::openssl::Acceptor;
-use openssl::ssl::{AlpnError, SslAcceptor, SslFiletype, SslMethod};
+use ntex_tls::openssl::SslAcceptor;
+use openssl::ssl::{self, AlpnError, SslFiletype, SslMethod};
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
@@ -14,7 +14,7 @@ async fn main() -> std::io::Result<()> {
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
     //   openssl rsa -in examples/key8.pem -out examples/key.pem
-    let mut builder = SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
+    let mut builder = ssl::SslAcceptor::mozilla_intermediate(SslMethod::tls()).unwrap();
     builder
         .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
         .unwrap();
@@ -33,7 +33,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::Server::build()
         .bind("http", "127.0.0.1:5928", move |_| {
-            Acceptor::new(acceptor.clone())
+            SslAcceptor::new(acceptor.clone())
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
                     server::Server::build()
