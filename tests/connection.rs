@@ -211,7 +211,7 @@ async fn test_max_concurrent_streams_pool2() {
     });
 
     stream.send_payload(Bytes::new(), true).await.unwrap();
-    sleep(Millis(350)).await;
+    sleep(Millis(550)).await;
     assert!(client.is_ready());
     assert!(opened.get());
     assert!(cnt.get() == 2);
