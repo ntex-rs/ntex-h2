@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.0] - 2024-01-09
+
+* Release
+
 ## [0.5.0-b.0] - 2024-01-07
 
 * Use "async fn" in trait for Service definition
