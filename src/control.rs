@@ -3,9 +3,9 @@ use std::io;
 use crate::frame::{Frame, Reason, Reset};
 use crate::{error, frame, stream::StreamRef};
 
-#[doc(hiddel)]
+#[doc(hidden)]
 pub type ControlMessage<E> = Control<E>;
-#[doc(hiddel)]
+#[doc(hidden)]
 pub type ControlResult = ControlAck;
 
 #[derive(Debug)]
@@ -56,11 +56,11 @@ impl<E> Control<E> {
     /// Default ack impl
     pub fn ack(self) -> ControlAck {
         match self {
-            ControlAck::AppError(item) => item.ack(),
-            ControlAck::ConnectionError(item) => item.ack(),
-            ControlAck::GoAway(item) => item.ack(),
-            ControlAck::PeerGone(item) => item.ack(),
-            ControlAck::Terminated(item) => item.ack(),
+            Control::AppError(item) => item.ack(),
+            Control::ConnectionError(item) => item.ack(),
+            Control::GoAway(item) => item.ack(),
+            Control::PeerGone(item) => item.ack(),
+            Control::Terminated(item) => item.ack(),
         }
     }
 }
