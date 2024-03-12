@@ -1,5 +1,5 @@
-#![allow(dead_code, unused_variables)]
-use std::{convert::TryInto, fmt};
+#![allow(dead_code)]
+use std::fmt;
 
 use ntex_bytes::Bytes;
 use ntex_h2::frame::{self, Frame, Protocol, PseudoHeaders, StreamId};

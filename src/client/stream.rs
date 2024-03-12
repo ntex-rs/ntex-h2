@@ -61,10 +61,9 @@ impl Inflight {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug)]
 /// Send part of the client stream
-pub struct SendStream(StreamRef, InflightStorage);
+pub struct SendStream(StreamRef, ());
 
 impl Drop for SendStream {
     fn drop(&mut self) {
@@ -237,7 +236,7 @@ impl InflightStorage {
 
     pub(super) fn inflight(&self, stream: Stream) -> (SendStream, RecvStream) {
         let id = stream.id();
-        let snd = SendStream(stream.clone(), self.clone());
+        let snd = SendStream(stream.clone(), ());
         let rcv = RecvStream(stream.clone(), self.clone());
         let inflight = Inflight {
             _stream: stream,

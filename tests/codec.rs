@@ -1,6 +1,3 @@
-#![allow(dead_code, unused_variables)]
-use std::convert::TryFrom;
-
 mod support;
 
 use ntex_bytes::BytesMut;
@@ -132,19 +129,19 @@ async fn read_continuation_frames() {
             .send_response(StatusCode::OK, hdrs, true)
             .unwrap();
 
-        let (pseudo, hdrs, eof) = get_headers!(msg);
+        let (pseudo, _hdrs, eof) = get_headers!(msg);
         assert_eq!(pseudo.path, Some("/index.html".into()));
         assert!(eof);
     };
 
     let client_fut = async move {
-        let (snd, rcv) = client
+        let (_snd, rcv) = client
             .send(Method::GET, "/index.html".into(), HeaderMap::new(), true)
             .await
             .expect("response");
 
         let msg = rcv.recv().await.unwrap();
-        let (pseudo, hdrs, eof) = get_headers!(msg);
+        let (pseudo, hdrs, _eof) = get_headers!(msg);
 
         assert_eq!(pseudo.status, Some(StatusCode::OK));
         let expected = large
