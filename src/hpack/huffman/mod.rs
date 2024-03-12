@@ -112,7 +112,7 @@ mod test {
     #[test]
     fn decode_single_byte() {
         assert_eq!("o", decode(&[0b00111111]).unwrap());
-        assert_eq!("0", decode(&[0x0 + 7]).unwrap());
+        assert_eq!("0", decode(&[7]).unwrap());
         assert_eq!("A", decode(&[(0x21 << 2) + 3]).unwrap());
     }
 
@@ -138,7 +138,7 @@ mod test {
 
         dst.clear();
         encode(b"0", &mut dst);
-        assert_eq!(&dst[..], &[0x0 + 7]);
+        assert_eq!(&dst[..], &[7]);
 
         dst.clear();
         encode(b"A", &mut dst);

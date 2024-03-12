@@ -205,7 +205,7 @@ fn create_connection(io: &IoBoxed, config: &Config) -> (Codec, Connection) {
         con.set_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
 
         let state = con.clone();
-        ntex_rt::spawn(async move {
+        let _ = ntex_rt::spawn(async move {
             sleep(timeout).await;
 
             if state

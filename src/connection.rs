@@ -118,7 +118,7 @@ impl Connection {
 
         // start ping/pong
         if con.0.local_config.0.ping_timeout.get().non_zero() {
-            spawn(ping(
+            let _ = spawn(ping(
                 con.clone(),
                 con.0.local_config.0.ping_timeout.get(),
                 io,
@@ -363,7 +363,7 @@ impl Connection {
         ids.insert(id);
         queue.push_back((id, now() + self.0.local_config.0.reset_duration.get()));
         if !flags.contains(ConnectionFlags::DELAY_DROP_TASK_STARTED) {
-            spawn(delay_drop_task(self.clone()));
+            let _ = spawn(delay_drop_task(self.clone()));
         }
     }
 

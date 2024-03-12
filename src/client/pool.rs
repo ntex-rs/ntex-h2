@@ -126,7 +126,7 @@ impl Client {
                 let (tx, rx) = oneshot::channel();
                 let inner = self.inner.clone();
                 let waiters = self.waiters.clone();
-                ntex_rt::spawn(async move {
+                let _ = ntex_rt::spawn(async move {
                     let res = match timeout_checked(inner.conn_timeout, (*inner.connector)()).await
                     {
                         Ok(Ok(io)) => {

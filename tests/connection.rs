@@ -39,7 +39,7 @@ fn ssl_acceptor() -> SslAcceptor {
 fn start_server() -> ntex::http::test::TestServer {
     test_server(move || {
         HttpService::build()
-            .configure_http2(|cfg| {
+            .h2_configure(|cfg| {
                 cfg.max_concurrent_streams(1);
             })
             .h2(|mut req: ntex::http::Request| async move {
@@ -72,18 +72,13 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 async fn test_max_concurrent_streams() {
     let srv = start_server();
     let addr = srv.addr();
-    let client = client::Connector::new(fn_service(move |_| {
-        let addr = addr;
-        async move { Ok(connect(addr).await) }
-    }))
-    .scheme(Scheme::HTTP)
-    .connector(fn_service(move |_| {
-        let addr = addr;
-        async move { Ok(connect(addr).await) }
-    }))
-    .connect("localhost")
-    .await
-    .unwrap();
+    let client =
+        client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
+            .scheme(Scheme::HTTP)
+            .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
+            .connect("localhost")
+            .await
+            .unwrap();
     assert!(format!("{:?}", client).contains("SimpleClient"));
     assert_eq!(client.authority(), "localhost");
 
@@ -128,10 +123,7 @@ async fn test_max_concurrent_streams_pool() {
     let addr = srv.addr();
     let client = Client::build(
         "localhost",
-        fn_service(move |_| {
-            let addr = addr;
-            async move { Ok(connect(addr).await) }
-        }),
+        fn_service(move |_| async move { Ok(connect(addr).await) }),
     );
     assert!(format!("{:?}", client).contains("ClientBuilder"));
     let client = client
@@ -139,10 +131,7 @@ async fn test_max_concurrent_streams_pool() {
         .scheme(Scheme::HTTPS)
         .connector(
             "localhost",
-            fn_service(move |_| {
-                let addr = addr;
-                async move { Ok(connect(addr).await) }
-            }),
+            fn_service(move |_| async move { Ok(connect(addr).await) }),
         )
         .finish();
     assert!(format!("{:?}", client).contains("Client"));
@@ -183,7 +172,6 @@ async fn test_max_concurrent_streams_pool2() {
     let client = Client::build(
         "localhost",
         fn_service(move |_| {
-            let addr = addr;
             cnt2.set(cnt2.get() + 1);
             async move { Ok(connect(addr).await) }
         }),

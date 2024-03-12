@@ -73,6 +73,7 @@
 
 #![cfg_attr(test, deny(warnings))]
 #![deny(rust_2018_idioms, missing_debug_implementations)]
+#![allow(clippy::let_underscore_future)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {
