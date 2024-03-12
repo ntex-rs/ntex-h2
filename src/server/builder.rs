@@ -2,7 +2,7 @@ use std::{fmt, marker};
 
 use ntex_service::{IntoServiceFactory, ServiceFactory};
 
-use crate::control::{ControlMessage, ControlResult};
+use crate::control::{Control, ControlAck};
 use crate::{config::Config, default::DefaultControlService, message::Message, server::Server};
 
 /// Builds server with custom configuration values.
@@ -51,8 +51,8 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
     /// Service to call with control frames
     pub fn control<S, F>(&self, service: F) -> ServerBuilder<E, S>
     where
-        F: IntoServiceFactory<S, ControlMessage<E>>,
-        S: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
+        F: IntoServiceFactory<S, Control<E>>,
+        S: ServiceFactory<Control<E>, Response = ControlAck> + 'static,
         S::Error: fmt::Debug,
         S::InitError: fmt::Debug,
     {
@@ -67,7 +67,7 @@ impl<E: fmt::Debug, Ctl> ServerBuilder<E, Ctl> {
 impl<E, Ctl> ServerBuilder<E, Ctl>
 where
     E: fmt::Debug,
-    Ctl: ServiceFactory<ControlMessage<E>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<E>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
 {

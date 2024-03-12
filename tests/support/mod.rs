@@ -1,4 +1,4 @@
-use ntex_h2::{client, server, Config, ControlMessage, Message};
+use ntex_h2::{client, server, Config, Control, Message};
 use ntex_http::uri::Scheme;
 use ntex_io::{testing::IoTest, Io};
 use ntex_service::fn_service;
@@ -26,7 +26,7 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
     ntex_rt::spawn(async move {
         let _ = server::Server::new(
             Config::server(),
-            fn_service(|msg: ControlMessage<()>| async move {
+            fn_service(|msg: Control<()>| async move {
                 log::trace!("Control message: {:?}", msg);
                 Ok::<_, ()>(msg.ack())
             }),
