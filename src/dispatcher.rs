@@ -86,7 +86,7 @@ where
     fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: OperationError) {
         if !streams.is_empty() {
             let inner = self.inner.clone();
-            spawn(async move {
+            let _ = spawn(async move {
                 let p = Pipeline::new(&inner.publish);
                 let futs = streams
                     .into_values()

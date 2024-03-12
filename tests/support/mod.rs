@@ -1,4 +1,3 @@
-#![allow(dead_code, unused_variables)]
 use ntex_h2::{client, server, Config, ControlMessage, Message};
 use ntex_http::uri::Scheme;
 use ntex_io::{testing::IoTest, Io};

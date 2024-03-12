@@ -1,4 +1,4 @@
-use std::{convert::TryFrom, error::Error};
+use std::error::Error;
 
 use ntex_bytes::Bytes;
 use ntex_connect as connect;

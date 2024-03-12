@@ -297,7 +297,6 @@ mod test {
     use ntex_http::*;
 
     use super::*;
-    use crate::hpack::Header;
 
     #[test]
     fn test_encode_method_get() {

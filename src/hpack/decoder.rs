@@ -832,7 +832,6 @@ pub fn get_static(idx: usize) -> Header {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::hpack::Header;
 
     #[test]
     fn test_peek_u8() {
@@ -903,7 +902,7 @@ mod test {
         let value = huff_encode(b"bar");
         let mut buf = BytesMut::new();
         // header name is non_huff encoded
-        buf.extend(&[0b01000000, 0x00 | 3]);
+        buf.extend(&[0b01000000, 3]);
         buf.extend(b"foo");
         // header value is partial
         buf.extend(&[0x80 | 3]);

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.5.0"
+version = "0.5.1"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -10,7 +10,7 @@ readme = "README.md"
 keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
-edition = "2018"
+edition = "2021"
 
 [features]
 default = []
@@ -46,13 +46,13 @@ walkdir = "2.3.2"
 serde = "1.0.0"
 serde_json = "1.0.0"
 
-ntex = { version = "1.0.0-b.0", features = ["openssl", "tokio"] }
-ntex-tls = { version = "1.0.0", features = ["openssl"] }
+ntex = { version = "1.1", features = ["openssl", "tokio"] }
+ntex-tls = { version = "1.0", features = ["openssl"] }
 openssl = "0.10"
 
 # Examples
-env_logger = { version = "0.10", default-features = false }
-ntex-connect = { version = "1.0.0", features = ["openssl", "tokio"] }
+env_logger = { version = "0.11", default-features = false }
+ntex-connect = { version = "1.0", features = ["openssl", "tokio"] }
 
 [patch.crates-io]
 ntex-h2 = { path = "." }

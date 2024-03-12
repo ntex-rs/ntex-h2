@@ -1,5 +1,3 @@
-use std::convert::TryFrom;
-
 use ntex::service::{fn_service, ServiceFactory};
 use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};

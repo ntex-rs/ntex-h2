@@ -1,5 +1,4 @@
 #![allow(clippy::len_without_is_empty)]
-use std::convert::TryFrom;
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
