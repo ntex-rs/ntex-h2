@@ -3,8 +3,13 @@ use std::io;
 use crate::frame::{Frame, Reason, Reset};
 use crate::{error, frame, stream::StreamRef};
 
+#[doc(hiddel)]
+pub type ControlMessage<E> = Control<E>;
+#[doc(hiddel)]
+pub type ControlResult = ControlAck;
+
 #[derive(Debug)]
-pub enum ControlMessage<E> {
+pub enum Control<E> {
     /// Application level error from publish service
     AppError(AppError<E>),
     /// Protocol level error
@@ -18,44 +23,44 @@ pub enum ControlMessage<E> {
 }
 
 #[derive(Clone, Debug)]
-pub struct ControlResult {
+pub struct ControlAck {
     pub(crate) frame: Option<Frame>,
     pub(crate) disconnect: bool,
 }
 
-impl<E> ControlMessage<E> {
-    /// Create a new `ControlMessage` for app level errors
+impl<E> Control<E> {
+    /// Create a new `Control` message for app level errors
     pub(super) fn app_error(err: E, stream: StreamRef) -> Self {
-        ControlMessage::AppError(AppError::new(err, stream))
+        Control::AppError(AppError::new(err, stream))
     }
 
-    /// Create a new `ControlMessage` from GOAWAY packet.
+    /// Create a new `Control` message from GOAWAY packet.
     pub(super) fn go_away(frm: frame::GoAway) -> Self {
-        ControlMessage::GoAway(GoAway(frm))
+        Control::GoAway(GoAway(frm))
     }
 
-    /// Create a new `ControlMessage` from DISCONNECT packet.
+    /// Create a new `Control` message from DISCONNECT packet.
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        ControlMessage::PeerGone(PeerGone(err))
+        Control::PeerGone(PeerGone(err))
     }
 
     pub(super) fn terminated() -> Self {
-        ControlMessage::Terminated(Terminated)
+        Control::Terminated(Terminated)
     }
 
-    /// Create a new `ControlMessage` for protocol level errors
+    /// Create a new `Control` message for protocol level errors
     pub(super) fn proto_error(err: error::ConnectionError) -> Self {
-        ControlMessage::ConnectionError(ConnectionError::new(err))
+        Control::ConnectionError(ConnectionError::new(err))
     }
 
     /// Default ack impl
-    pub fn ack(self) -> ControlResult {
+    pub fn ack(self) -> ControlAck {
         match self {
-            ControlMessage::AppError(item) => item.ack(),
-            ControlMessage::ConnectionError(item) => item.ack(),
-            ControlMessage::GoAway(item) => item.ack(),
-            ControlMessage::PeerGone(item) => item.ack(),
-            ControlMessage::Terminated(item) => item.ack(),
+            ControlAck::AppError(item) => item.ack(),
+            ControlAck::ConnectionError(item) => item.ack(),
+            ControlAck::GoAway(item) => item.ack(),
+            ControlAck::PeerGone(item) => item.ack(),
+            ControlAck::Terminated(item) => item.ack(),
         }
     }
 }
@@ -92,8 +97,8 @@ impl<E> AppError<E> {
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             frame: Some(Reset::new(self.stream.id(), self.reason).into()),
             disconnect: false,
         }
@@ -107,8 +112,8 @@ pub struct Terminated;
 impl Terminated {
     #[inline]
     /// convert packet to a result
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             frame: None,
             disconnect: true,
         }
@@ -145,8 +150,8 @@ impl ConnectionError {
 
     #[inline]
     /// Ack protocol error, return disconnect packet and close connection.
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             frame: Some(self.frm.into()),
             disconnect: true,
         }
@@ -167,8 +172,8 @@ impl PeerGone {
         self.0.take()
     }
 
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             frame: None,
             disconnect: true,
         }
@@ -184,8 +189,8 @@ impl GoAway {
         &self.0
     }
 
-    pub fn ack(self) -> ControlResult {
-        ControlResult {
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
             frame: None,
             disconnect: true,
         }

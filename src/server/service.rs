@@ -5,7 +5,7 @@ use ntex_service::{Service, ServiceCtx, ServiceFactory};
 use ntex_util::time::{sleep, timeout_checked};
 
 use crate::connection::{Connection, ConnectionFlags};
-use crate::control::{ControlMessage, ControlResult};
+use crate::control::{Control, ControlAck};
 use crate::{
     codec::Codec, config::Config, consts, dispatcher::Dispatcher, frame, message::Message,
 };
@@ -33,7 +33,7 @@ impl Server<(), ()> {
 
 impl<Ctl, Pub> Server<Ctl, Pub>
 where
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -57,7 +57,7 @@ where
 
 impl<Ctl, Pub> ServiceFactory<IoBoxed> for Server<Ctl, Pub>
 where
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -77,7 +77,7 @@ where
 impl<F, Ctl, Pub> ServiceFactory<Io<F>> for Server<Ctl, Pub>
 where
     F: Filter,
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -106,7 +106,7 @@ impl<Ctl, Pub> Clone for ServerHandler<Ctl, Pub> {
 
 impl<Ctl, Pub> ServerHandler<Ctl, Pub>
 where
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -153,7 +153,7 @@ where
 
 impl<Ctl, Pub> Service<IoBoxed> for ServerHandler<Ctl, Pub>
 where
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -175,7 +175,7 @@ where
 impl<F, Ctl, Pub> Service<Io<F>> for ServerHandler<Ctl, Pub>
 where
     F: Filter,
-    Ctl: ServiceFactory<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, Response = ()> + 'static,
@@ -255,7 +255,7 @@ pub async fn handle_one<Ctl, Pub>(
     pub_svc: Pub,
 ) -> Result<(), ServerError<()>>
 where
-    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: Service<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,

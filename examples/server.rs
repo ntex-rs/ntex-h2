@@ -1,5 +1,5 @@
 use ntex::service::fn_service;
-use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
+use ntex_h2::{server, Control, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_util::time::{sleep, Millis};
 
@@ -13,7 +13,7 @@ async fn main() -> std::io::Result<()> {
         .bind("http", "127.0.0.1:5928", move |_| {
             server::Server::build()
                 .configure(|cfg| cfg.max_concurrent_streams(10))
-                .control(|msg: ControlMessage<_>| async move {
+                .control(|msg: Control<_>| async move {
                     log::trace!("Control message: {:?}", msg);
                     Ok::<_, ()>(msg.ack())
                 })

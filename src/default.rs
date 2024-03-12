@@ -2,14 +2,14 @@ use std::fmt;
 
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
-use super::control::{ControlMessage, ControlResult};
+use super::control::{Control, ControlAck};
 
 #[derive(Copy, Clone, Debug)]
 /// Default control service
 pub struct DefaultControlService;
 
-impl<E: fmt::Debug + 'static> ServiceFactory<ControlMessage<E>> for DefaultControlService {
-    type Response = ControlResult;
+impl<E: fmt::Debug + 'static> ServiceFactory<Control<E>> for DefaultControlService {
+    type Response = ControlAck;
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService;
@@ -19,13 +19,13 @@ impl<E: fmt::Debug + 'static> ServiceFactory<ControlMessage<E>> for DefaultContr
     }
 }
 
-impl<E: fmt::Debug + 'static> Service<ControlMessage<E>> for DefaultControlService {
-    type Response = ControlResult;
+impl<E: fmt::Debug + 'static> Service<Control<E>> for DefaultControlService {
+    type Response = ControlAck;
     type Error = E;
 
     async fn call(
         &self,
-        msg: ControlMessage<E>,
+        msg: Control<E>,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         log::trace!("Default control service is used: {:?}", msg);

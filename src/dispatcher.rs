@@ -7,7 +7,7 @@ use ntex_util::future::{join_all, BoxFuture, Either};
 use ntex_util::HashMap;
 
 use crate::connection::{Connection, RecvHalfConnection};
-use crate::control::{ControlMessage, ControlResult};
+use crate::control::{Control, ControlAck};
 use crate::error::{ConnectionError, OperationError, StreamErrorInner};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
@@ -15,7 +15,7 @@ use crate::{codec::Codec, message::Message, stream::StreamRef};
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<ControlMessage<Pub::Error>>,
+    Ctl: Service<Control<Pub::Error>>,
     Pub: Service<Message>,
 {
     inner: Rc<Inner<Ctl, Pub>>,
@@ -31,7 +31,7 @@ enum Shutdown<F> {
 
 struct Inner<Ctl, Pub>
 where
-    Ctl: Service<ControlMessage<Pub::Error>>,
+    Ctl: Service<Control<Pub::Error>>,
     Pub: Service<Message>,
 {
     control: Ctl,
@@ -42,7 +42,7 @@ where
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: Service<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
@@ -70,7 +70,7 @@ where
             Ok(None) => Ok(None),
             Err(Either::Left(err)) => {
                 self.connection.proto_error(&err);
-                control(ControlMessage::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner, ctx).await
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
@@ -99,7 +99,7 @@ where
 
 impl<Ctl, Pub> Service<DispatchItem<Codec>> for Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult> + 'static,
+    Ctl: Service<Control<Pub::Error>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
@@ -127,7 +127,7 @@ where
             let inner = self.inner.clone();
             *shutdown = Shutdown::InProcess(Box::pin(async move {
                 let _ = Pipeline::new(&inner.control)
-                    .call(ControlMessage::terminated())
+                    .call(Control::terminated())
                     .await;
             }));
         }
@@ -180,7 +180,7 @@ where
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
                         self.connection.proto_error(&err);
-                        control(ControlMessage::proto_error(err), &self.inner, ctx).await
+                        control(Control::proto_error(err), &self.inner, ctx).await
                     }
                     Err(Either::Right(errs)) => {
                         // handle stream errors
@@ -227,7 +227,7 @@ where
                     let reason = frm.reason();
                     let streams = self.connection.recv_go_away(reason, frm.data());
                     self.handle_connection_error(streams, ConnectionError::GoAway(reason).into());
-                    control(ControlMessage::go_away(frm), &self.inner, ctx).await
+                    control(Control::go_away(frm), &self.inner, ctx).await
                 }
                 Frame::Priority(prio) => {
                     log::debug!("PRIORITY frame is not supported: {:#?}", prio);
@@ -238,20 +238,20 @@ where
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
-                control(ControlMessage::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner, ctx).await
             }
             DispatchItem::DecoderError(err) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
-                control(ControlMessage::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner, ctx).await
             }
             DispatchItem::KeepAliveTimeout => {
                 log::warn!("did not receive pong response in time, closing connection");
                 let streams = self.connection.ping_timeout();
                 self.handle_connection_error(streams, ConnectionError::KeepaliveTimeout.into());
                 control(
-                    ControlMessage::proto_error(ConnectionError::KeepaliveTimeout),
+                    Control::proto_error(ConnectionError::KeepaliveTimeout),
                     &self.inner,
                     ctx,
                 )
@@ -262,7 +262,7 @@ where
                 let streams = self.connection.read_timeout();
                 self.handle_connection_error(streams, ConnectionError::ReadTimeout.into());
                 control(
-                    ControlMessage::proto_error(ConnectionError::ReadTimeout),
+                    Control::proto_error(ConnectionError::ReadTimeout),
                     &self.inner,
                     ctx,
                 )
@@ -271,7 +271,7 @@ where
             DispatchItem::Disconnect(err) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(streams, OperationError::Disconnected);
-                control(ControlMessage::peer_gone(err), &self.inner, ctx).await
+                control(Control::peer_gone(err), &self.inner, ctx).await
             }
             DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => Ok(None),
         }
@@ -287,7 +287,7 @@ async fn publish<'f, P, C>(
 where
     P: Service<Message, Response = ()>,
     P::Error: fmt::Debug,
-    C: Service<ControlMessage<P::Error>, Response = ControlResult>,
+    C: Service<Control<P::Error>, Response = ControlAck>,
     C::Error: fmt::Debug,
 {
     let fut = ctx.call(&inner.publish, msg);
@@ -313,17 +313,17 @@ where
 
     match result {
         Ok(v) => Ok(v),
-        Err(e) => control(ControlMessage::app_error(e, stream), inner, ctx).await,
+        Err(e) => control(Control::app_error(e, stream), inner, ctx).await,
     }
 }
 
 async fn control<'f, Ctl, Pub>(
-    pkt: ControlMessage<Pub::Error>,
+    pkt: Control<Pub::Error>,
     inner: &'f Inner<Ctl, Pub>,
     ctx: ServiceCtx<'f, Dispatcher<Ctl, Pub>>,
 ) -> Result<Option<Frame>, ()>
 where
-    Ctl: Service<ControlMessage<Pub::Error>, Response = ControlResult>,
+    Ctl: Service<Control<Pub::Error>, Response = ControlAck>,
     Ctl::Error: fmt::Debug,
     Pub: Service<Message>,
     Pub::Error: fmt::Debug,

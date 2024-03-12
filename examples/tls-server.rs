@@ -1,5 +1,5 @@
 use ntex::service::{fn_service, ServiceFactory};
-use ntex_h2::{server, ControlMessage, Message, MessageKind, OperationError};
+use ntex_h2::{server, Control, Message, MessageKind, OperationError};
 use ntex_http::{header, HeaderMap, StatusCode};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, AlpnError, SslFiletype, SslMethod};
@@ -35,7 +35,7 @@ async fn main() -> std::io::Result<()> {
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
                     server::Server::build()
-                        .control(|msg: ControlMessage<_>| async move {
+                        .control(|msg: Control<_>| async move {
                             println!("Control message: {:?}", msg);
                             Ok::<_, ()>(msg.ack())
                         })

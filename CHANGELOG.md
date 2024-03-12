@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.1] - 2024-03-12
+
+* Rename `ControlMessage` to `Control`
+
 ## [0.5.0] - 2024-01-09
 
 * Release
