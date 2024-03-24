@@ -3,7 +3,6 @@ use std::error::Error;
 use ntex_bytes::Bytes;
 use ntex_h2::{client, MessageKind};
 use ntex_http::{header, uri::Scheme, HeaderMap, Method};
-use ntex_net::connect;
 use ntex_util::time::{sleep, Seconds};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
@@ -20,7 +19,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     let pool = client::Client::build(
         "127.0.0.1:5928",
-        connect::openssl::Connector::new(builder.build()),
+        ntex_tls::openssl::SslConnector::new(builder.build()),
     )
     .scheme(Scheme::HTTPS)
     .finish();
