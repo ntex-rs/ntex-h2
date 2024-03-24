@@ -1,9 +1,9 @@
 use std::{cell::Cell, marker::PhantomData, ops};
 
 use ntex_bytes::{ByteString, PoolId, PoolRef};
-use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
+use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::timeout_checked;
 

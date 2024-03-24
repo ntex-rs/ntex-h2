@@ -2,9 +2,9 @@ use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, rc::Rc, time::D
 
 use nanorand::{Rng, WyRand};
 use ntex_bytes::{ByteString, PoolId, PoolRef};
-use ntex_connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::IoBoxed;
+use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 use ntex_util::{channel::oneshot, future::BoxFuture};

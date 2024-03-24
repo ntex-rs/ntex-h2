@@ -9,7 +9,7 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_BACKTRACE", "1");
     env_logger::init();
 
-    ntex::server::Server::build()
+    ntex::server::build()
         .bind("http", "127.0.0.1:5928", move |_| {
             server::Server::build()
                 .configure(|cfg| cfg.max_concurrent_streams(10))
