@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.2] - 2024-03-24
+
+* Use ntex-net
+
 ## [0.5.1] - 2024-03-12
 
 * Rename `ControlMessage` to `Control`

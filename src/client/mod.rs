@@ -29,7 +29,7 @@ pub enum ClientError {
     HandshakeTimeout,
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(Box<ntex_connect::ConnectError>),
+    Connect(Box<ntex_net::connect::ConnectError>),
     /// Peer disconnected
     #[error("Peer disconnected err: {0}")]
     Disconnected(#[from] std::io::Error),
@@ -47,8 +47,8 @@ impl From<ntex_util::channel::Canceled> for ClientError {
     }
 }
 
-impl From<ntex_connect::ConnectError> for ClientError {
-    fn from(err: ntex_connect::ConnectError) -> Self {
+impl From<ntex_net::connect::ConnectError> for ClientError {
+    fn from(err: ntex_net::connect::ConnectError) -> Self {
         Self::Connect(Box::new(err))
     }
 }
