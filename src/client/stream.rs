@@ -46,7 +46,7 @@ impl Inflight {
     fn push(&mut self, item: Message) {
         match self.response.take() {
             Some(Either::Left(msg)) => {
-                let mut msgs = VecDeque::new();
+                let mut msgs = VecDeque::with_capacity(8);
                 msgs.push_back(msg);
                 msgs.push_back(item);
                 self.response = Some(Either::Right(msgs));

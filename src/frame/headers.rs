@@ -1,4 +1,4 @@
-use std::{fmt, io::Cursor};
+use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{ByteString, BytesMut};
 use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
@@ -426,6 +426,10 @@ impl fmt::Debug for HeadersFlag {
 
 // ===== HeaderBlock =====
 
+thread_local! {
+    static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(1024));
+}
+
 impl HeaderBlock {
     fn load(
         &mut self,
@@ -542,28 +546,37 @@ impl HeaderBlock {
         dst: &mut BytesMut,
         max_size: usize,
     ) {
-        // encode hpack
-        let mut hpack = BytesMut::new();
-        let headers = Iter {
-            pseudo: Some(self.pseudo),
-            fields: self.fields.into_iter(),
-        };
-        encoder.encode(headers, &mut hpack);
+        HDRS_BUF.with(|buf| {
+            let mut b = buf.borrow_mut();
+            let hpack = &mut b;
+            hpack.clear();
 
-        let mut head = *head;
-        loop {
-            // encode the header payload
-            if hpack.len() > max_size {
-                Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id())
-                    .encode(max_size, dst);
-                dst.extend_from_slice(&hpack.split_to(max_size));
-                head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
-            } else {
-                head.encode(hpack.len(), dst);
-                dst.extend_from_slice(&hpack);
-                break;
+            // encode hpack
+            let headers = Iter {
+                pseudo: Some(self.pseudo),
+                fields: self.fields.into_iter(),
+            };
+            encoder.encode(headers, hpack);
+
+            let mut head = *head;
+            let mut start = 0;
+            loop {
+                let end = cmp::min(start + max_size, hpack.len());
+
+                // encode the header payload
+                if hpack.len() > end {
+                    Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id())
+                        .encode(max_size, dst);
+                    dst.extend_from_slice(&hpack[start..end]);
+                    head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
+                    start = end;
+                } else {
+                    head.encode(end - start, dst);
+                    dst.extend_from_slice(&hpack[start..end]);
+                    break;
+                }
             }
-        }
+        });
     }
 
     /// Calculates the size of the currently decoded header list.

@@ -290,29 +290,26 @@ where
     C: Service<Control<P::Error>, Response = ControlAck>,
     C::Error: fmt::Debug,
 {
-    let fut = ctx.call(&inner.publish, msg);
-    let mut pinned = std::pin::pin!(fut);
-    let result = poll_fn(|cx| {
-        if stream.is_remote() {
+    let result = if stream.is_remote() {
+        let fut = ctx.call(&inner.publish, msg);
+        let mut pinned = std::pin::pin!(fut);
+        poll_fn(|cx| {
             match stream.poll_send_reset(cx) {
                 Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
                     log::trace!("Stream is closed {:?}", stream.id());
-                    return Poll::Ready(Ok(None));
+                    return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => (),
             }
-        }
-
-        match pinned.as_mut().poll(cx) {
-            Poll::Ready(Ok(_)) => Poll::Ready(Ok(None)),
-            Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-            Poll::Pending => Poll::Pending,
-        }
-    })
-    .await;
+            pinned.as_mut().poll(cx)
+        })
+        .await
+    } else {
+        ctx.call(&inner.publish, msg).await
+    };
 
     match result {
-        Ok(v) => Ok(v),
+        Ok(_) => Ok(None),
         Err(e) => control(Control::app_error(e, stream), inner, ctx).await,
     }
 }
