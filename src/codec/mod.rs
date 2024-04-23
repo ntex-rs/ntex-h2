@@ -130,24 +130,21 @@ macro_rules! header_block {
             }
         }?;
 
-        let is_end_headers = frame.is_end_headers();
-
-        // Load the HPACK encoded headers
-        match frame.load_hpack(&mut $bytes, $slf.decoder_max_header_list_size, &mut $slf.decoder_hpack) {
-            Ok(_) => {},
-            Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_))) if !is_end_headers => {},
-            Err(frame::FrameError::MalformedMessage) => {
-                let id = $head.stream_id();
-                proto_err!(stream: "malformed header block; stream={:?}", id);
-                return Err(frame::FrameError::MalformedMessage)
-            },
-            Err(e) => {
-                proto_err!(conn: "failed HPACK decoding; err={:?}", e);
-                return Err(e);
+        if frame.is_end_headers() {
+            // Load the HPACK encoded headers
+            match frame.load_hpack(&mut $bytes, &mut $slf.decoder_hpack) {
+                Ok(_) => {},
+                Err(frame::FrameError::MalformedMessage) => {
+                    let id = $head.stream_id();
+                    proto_err!(stream: "malformed header block; stream={:?}", id);
+                    return Err(frame::FrameError::MalformedMessage)
+                },
+                Err(e) => {
+                    proto_err!(conn: "failed HPACK decoding; err={:?}", e);
+                    return Err(e);
+                }
             }
-        }
 
-        if is_end_headers {
             frame.into()
         } else {
             log::trace!("loaded partial header block");
@@ -263,9 +260,6 @@ impl Decoder for Codec {
                     }
                 }
                 Kind::Continuation => {
-                    let is_end_headers = (head.flag() & 0x4) == 0x4;
-
-                    // get partial frame
                     let mut partial = inner.partial.take().ok_or_else(|| {
                         proto_err!(conn: "received unexpected CONTINUATION frame");
                         frame::FrameError::Continuation(frame::FrameContinuationError::Unexpected)
@@ -283,50 +277,44 @@ impl Decoder for Codec {
                     if partial.buf.is_empty() {
                         partial.buf = bytes.split_off(frame::HEADER_LEN);
                     } else {
-                        if partial.frame.is_over_size() {
-                            // If there was left over bytes previously, they may be
-                            // needed to continue decoding, even though we will
-                            // be ignoring this frame. This is done to keep the HPACK
-                            // decoder state up-to-date.
-                            //
-                            // Still, we need to be careful, because if a malicious
-                            // attacker were to try to send a gigantic string, such
-                            // that it fits over multiple header blocks.
-                            //
-                            // Instead, we use a simple heuristic to determine if
-                            // we should continue to ignore decoding, or to tell
-                            // the attacker to go away.
-                            if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size
-                            {
-                                proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
-                                return Err(frame::FrameError::Continuation(
-                                    frame::FrameContinuationError::MaxLeftoverSize,
-                                ));
-                            }
+                        // If there was left over bytes previously, they may be
+                        // needed to continue decoding, even though we will
+                        // be ignoring this frame. This is done to keep the HPACK
+                        // decoder state up-to-date.
+                        //
+                        // Still, we need to be careful, because if a malicious
+                        // attacker were to try to send a gigantic string, such
+                        // that it fits over multiple header blocks.
+                        //
+                        // Instead, we use a simple heuristic to determine if
+                        // we should continue to ignore decoding, or to tell
+                        // the attacker to go away.
+                        if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size {
+                            proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
+                            return Err(frame::FrameError::Continuation(
+                                frame::FrameContinuationError::MaxLeftoverSize,
+                            ));
                         }
                         partial.buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
                     }
 
-                    match partial.frame.load_hpack(
-                        &mut partial.buf,
-                        inner.decoder_max_header_list_size,
-                        &mut inner.decoder_hpack,
-                    ) {
-                        Ok(_) => {}
-                        Err(frame::FrameError::Hpack(hpack::DecoderError::NeedMore(_)))
-                            if !is_end_headers => {}
-                        Err(frame::FrameError::MalformedMessage) => {
-                            let id = head.stream_id();
-                            proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);
-                            return Err(frame::FrameContinuationError::Malformed.into());
+                    if (head.flag() & 0x4) == 0x4 {
+                        match partial
+                            .frame
+                            .load_hpack(&mut partial.buf, &mut inner.decoder_hpack)
+                        {
+                            Ok(_) => {}
+                            Err(frame::FrameError::MalformedMessage) => {
+                                let id = head.stream_id();
+                                proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);
+                                return Err(frame::FrameContinuationError::Malformed.into());
+                            }
+                            Err(e) => {
+                                proto_err!(conn: "failed HPACK decoding; err={:?}", e);
+                                return Err(e);
+                            }
                         }
-                        Err(e) => {
-                            proto_err!(conn: "failed HPACK decoding; err={:?}", e);
-                            return Err(e);
-                        }
-                    }
 
-                    if is_end_headers {
                         partial.frame.into()
                     } else {
                         inner.partial = Some(partial);
