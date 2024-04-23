@@ -184,6 +184,10 @@ pub enum FrameContinuationError {
     #[error("Max left over size")]
     MaxLeftoverSize,
 
+    /// Max count of Continuations
+    #[error("Max count of Continuations")]
+    MaxContinuations,
+
     /// Malformed frame
     #[error("Malformed frame")]
     Malformed,

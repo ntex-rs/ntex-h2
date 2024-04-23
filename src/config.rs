@@ -31,6 +31,8 @@ pub(crate) struct ConfigInner {
     pub(crate) connection_window_sz_threshold: Cell<WindowSize>,
     /// Maximum number of remote initiated streams
     pub(crate) remote_max_concurrent_streams: Cell<Option<u32>>,
+    /// Limit number of continuation frames for headers
+    pub(crate) max_header_continuations: Cell<usize>,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
@@ -91,6 +93,7 @@ impl Config {
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
+            max_header_continuations: Cell::new(consts::DEFAULT_MAX_COUNTINUATIONS),
             handshake_timeout: Cell::new(Seconds(5)),
             ping_timeout: Cell::new(Seconds(10)),
             pool: pool::new(),
@@ -169,6 +172,14 @@ impl Config {
         let mut s = self.0.settings.get();
         s.set_max_header_list_size(Some(max));
         self.0.settings.set(s);
+        self
+    }
+
+    /// Sets the max number of continuation frames for HEADERS
+    ///
+    /// By default value is set to 5
+    pub fn max_header_continuation_frames(&self, max: usize) -> &Self {
+        self.0.max_header_continuations.set(max);
         self
     }
 
