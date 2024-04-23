@@ -23,7 +23,6 @@ bitflags::bitflags! {
     pub(crate) struct ConnectionFlags: u8 {
         const SETTINGS_PROCESSED      = 0b0000_0001;
         const DELAY_DROP_TASK_STARTED = 0b0000_0010;
-        const SLOW_REQUEST_TIMEOUT    = 0b0000_0100;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
         const STREAM_REFUSED          = 0b0010_0000;
@@ -392,12 +391,6 @@ impl RecvHalfConnection {
         self.0.flags.set(flags);
     }
 
-    fn unset_flags(&self, f: ConnectionFlags) {
-        let mut flags = self.0.flags.get();
-        flags.remove(f);
-        self.0.flags.set(flags);
-    }
-
     pub(crate) fn encode<T>(&self, item: T)
     where
         frame::Frame: From<T>,
@@ -412,8 +405,6 @@ impl RecvHalfConnection {
         let id = frm.stream_id();
 
         if self.0.local_config.is_server() {
-            self.unset_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
-
             if !id.is_client_initiated() {
                 return Err(Either::Left(ConnectionError::InvalidStreamId(
                     "Invalid id in received headers frame",
