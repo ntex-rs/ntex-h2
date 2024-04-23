@@ -2,6 +2,8 @@
 
 ## [0.5.3] - 2024-04-23
 
+* Add frame read rate support
+
 * Limit "max headers size" to 48kb
 
 * Do not decode partial headers frame

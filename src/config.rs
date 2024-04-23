@@ -35,7 +35,6 @@ pub(crate) struct ConfigInner {
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
     pub(crate) handshake_timeout: Cell<Seconds>,
-    pub(crate) client_timeout: Cell<Seconds>,
     pub(crate) ping_timeout: Cell<Seconds>,
     pub(crate) dispatcher_config: DispatcherConfig,
 
@@ -78,7 +77,8 @@ impl Config {
         let dispatcher_config = DispatcherConfig::default();
         dispatcher_config
             .set_keepalive_timeout(Seconds(0))
-            .set_disconnect_timeout(Seconds(3));
+            .set_disconnect_timeout(Seconds(3))
+            .set_frame_read_rate(Seconds(1), Seconds::ZERO, 256);
 
         Config(Rc::new(ConfigInner {
             flags,
@@ -91,7 +91,6 @@ impl Config {
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
-            client_timeout: Cell::new(Seconds(0)),
             handshake_timeout: Cell::new(Seconds(5)),
             ping_timeout: Cell::new(Seconds(10)),
             pool: pool::new(),
@@ -276,6 +275,8 @@ impl Config {
         self
     }
 
+    #[deprecated()]
+    #[doc(hidden)]
     /// Set server client timeout for first request.
     ///
     /// Defines a timeout for reading client request header. If a client does not transmit
@@ -285,8 +286,21 @@ impl Config {
     /// To disable timeout set value to 0.
     ///
     /// By default client timeout is set to 3 seconds.
-    pub fn client_timeout(&self, timeout: Seconds) -> &Self {
-        self.0.client_timeout.set(timeout);
+    pub fn client_timeout(&self, _: Seconds) -> &Self {
+        self
+    }
+
+    /// Set read rate parameters for single frame.
+    ///
+    /// Set read timeout, max timeout and rate for reading payload. If the client
+    /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
+    /// But no more than `max_timeout` timeout.
+    ///
+    /// By default frame read rate is 256 bytes every seconds with no max timeout.
+    pub fn frame_read_rate(self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> Self {
+        self.0
+            .dispatcher_config
+            .set_frame_read_rate(timeout, max_timeout, rate);
         self
     }
 

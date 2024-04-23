@@ -2,9 +2,9 @@ use std::{fmt, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
-use ntex_util::time::{sleep, timeout_checked};
+use ntex_util::time::timeout_checked;
 
-use crate::connection::{Connection, ConnectionFlags};
+use crate::connection::Connection;
 use crate::control::{Control, ControlAck};
 use crate::{
     codec::Codec, config::Config, consts, dispatcher::Dispatcher, frame, message::Message,
@@ -137,7 +137,8 @@ where
         .map_err(|_| ServerError::HandshakeTimeout)??;
 
         // create h2 codec
-        let (codec, con) = create_connection(&io, &inner.config);
+        let codec = Codec::default();
+        let con = Connection::new(io.get_ref(), codec.clone(), inner.config.clone(), true);
 
         // start protocol dispatcher
         IoDispatcher::new(
@@ -194,32 +195,6 @@ where
     }
 }
 
-fn create_connection(io: &IoBoxed, config: &Config) -> (Codec, Connection) {
-    // create h2 codec
-    let codec = Codec::default();
-    let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true);
-
-    // slow request timeout
-    let timeout = config.0.client_timeout.get();
-    if !timeout.is_zero() {
-        con.set_flags(ConnectionFlags::SLOW_REQUEST_TIMEOUT);
-
-        let state = con.clone();
-        let _ = ntex_rt::spawn(async move {
-            sleep(timeout).await;
-
-            if state
-                .flags()
-                .contains(ConnectionFlags::SLOW_REQUEST_TIMEOUT)
-            {
-                state.close()
-            }
-        });
-    }
-
-    (codec, con)
-}
-
 async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
     loop {
         let ready = io.with_read_buf(|buf| {
@@ -268,7 +243,8 @@ where
     .map_err(|_| ServerError::HandshakeTimeout)??;
 
     // create h2 codec
-    let (codec, con) = create_connection(&io, &config);
+    let codec = Codec::default();
+    let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true);
 
     // start protocol dispatcher
     IoDispatcher::new(
