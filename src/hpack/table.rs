@@ -1,4 +1,4 @@
-use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem, usize};
+use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem};
 
 use fxhash::FxHasher;
 use ntex_http::{header, Method};

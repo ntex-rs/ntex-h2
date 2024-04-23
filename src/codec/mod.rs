@@ -9,10 +9,7 @@ mod length_delimited;
 pub use self::error::EncoderError;
 
 use self::length_delimited::LengthDelimitedCodec;
-use crate::{frame, frame::Frame, frame::Kind, hpack};
-
-// 16 MB "sane default" taken from golang http2
-const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: usize = 16 << 20;
+use crate::{consts, frame, frame::Frame, frame::Kind, hpack};
 
 // Push promise frame kind
 const PUSH_PROMISE: u8 = 5;
@@ -58,7 +55,7 @@ impl Default for Codec {
         Codec(Rc::new(RefCell::new(CodecInner {
             decoder,
             decoder_hpack: hpack::Decoder::new(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
-            decoder_max_header_list_size: DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE,
+            decoder_max_header_list_size: consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE as usize,
             partial: None,
 
             encoder_hpack: hpack::Encoder::default(),
@@ -90,6 +87,8 @@ impl Codec {
     }
 
     /// Set the max header list size that can be received.
+    ///
+    /// By default value is set to 48kb
     pub fn set_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
     }
