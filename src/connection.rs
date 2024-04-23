@@ -405,12 +405,10 @@ impl RecvHalfConnection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
 
-        if self.0.local_config.is_server() {
-            if !id.is_client_initiated() {
-                return Err(Either::Left(ConnectionError::InvalidStreamId(
-                    "Invalid id in received headers frame",
-                )));
-            }
+        if self.0.local_config.is_server() && !id.is_client_initiated() {
+            return Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Invalid id in received headers frame",
+            )));
         }
 
         if let Some(stream) = self.query(id) {

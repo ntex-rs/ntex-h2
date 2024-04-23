@@ -280,13 +280,15 @@ impl Decoder for Codec {
                         ));
                     }
 
-                    // Check count of continuation frames
-                    partial.count += 1;
-                    if partial.count > inner.decoder_max_header_continuations {
-                        proto_err!(conn: "received excessive amount of CONTINUATION frames");
-                        return Err(frame::FrameError::Continuation(
-                            frame::FrameContinuationError::MaxContinuations,
-                        ));
+                    if inner.decoder_max_header_continuations > 0 {
+                        // Check count of continuation frames
+                        partial.count += 1;
+                        if partial.count > inner.decoder_max_header_continuations {
+                            proto_err!(conn: "received excessive amount of CONTINUATION frames");
+                            return Err(frame::FrameError::Continuation(
+                                frame::FrameContinuationError::MaxContinuations,
+                            ));
+                        }
                     }
 
                     // Extend the buf
