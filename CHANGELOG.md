@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.4] - 2024-04-23
+
+* Fix Config::frame_read_rate() method
+
 ## [0.5.3] - 2024-04-23
 
 * Add frame read rate support

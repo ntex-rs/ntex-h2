@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.5.3"
+version = "0.5.4"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"

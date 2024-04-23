@@ -308,7 +308,7 @@ impl Config {
     /// But no more than `max_timeout` timeout.
     ///
     /// By default frame read rate is 256 bytes every seconds with no max timeout.
-    pub fn frame_read_rate(self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> Self {
+    pub fn frame_read_rate(&self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> &Self {
         self.0
             .dispatcher_config
             .set_frame_read_rate(timeout, max_timeout, rate);
