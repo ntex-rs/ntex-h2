@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.3] - 2024-04-23
+
+* Optimize headers encoding
+
 ## [0.5.2] - 2024-03-24
 
 * Use ntex-net

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "0.5.2"
+version = "0.5.3"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -28,12 +28,12 @@ ntex-service = "2.0"
 ntex-util = "1.0.0"
 ntex-rt = "0.4.11"
 
-bitflags = "2.4"
+bitflags = "2"
 fxhash = "0.2.1"
 log = "0.4"
 pin-project-lite = "0.2"
-thiserror = "1.0"
-nanorand = { version = "0.7.0", default-features = false, features = ["std", "wyrand"] }
+thiserror = "1"
+nanorand = { version = "0.7", default-features = false, features = ["std", "wyrand"] }
 
 [dev-dependencies]
 # Fuzzing

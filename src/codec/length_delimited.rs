@@ -141,9 +141,6 @@ impl Decoder for LengthDelimitedCodec {
                 // Update the decode state
                 self.state.set(DecodeState::Head);
 
-                // Make sure the buffer has enough space to read the next head
-                src.reserve(self.builder.num_head_bytes());
-
                 Ok(Some(data))
             }
             None => Ok(None),
