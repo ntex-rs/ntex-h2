@@ -6,6 +6,8 @@
 
 * Limit "max headers size" to 48kb
 
+* Limit number of continuation frames
+
 * Do not decode partial headers frame
 
 * Optimize headers encoding

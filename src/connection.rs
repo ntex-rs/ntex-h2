@@ -90,6 +90,7 @@ impl Connection {
         if let Some(max) = config.0.settings.get().max_header_list_size() {
             codec.set_recv_header_list_size(max as usize);
         }
+        codec.set_max_header_continuations(config.0.max_header_continuations.get());
 
         let remote_frame_size = Cell::new(codec.send_frame_size());
 
@@ -404,12 +405,10 @@ impl RecvHalfConnection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
 
-        if self.0.local_config.is_server() {
-            if !id.is_client_initiated() {
-                return Err(Either::Left(ConnectionError::InvalidStreamId(
-                    "Invalid id in received headers frame",
-                )));
-            }
+        if self.0.local_config.is_server() && !id.is_client_initiated() {
+            return Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Invalid id in received headers frame",
+            )));
         }
 
         if let Some(stream) = self.query(id) {
