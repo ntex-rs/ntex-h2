@@ -87,6 +87,11 @@ impl Connection {
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
+
+        if let Some(max) = config.0.settings.get().max_header_list_size() {
+            codec.set_recv_header_list_size(max as usize);
+        }
+
         let remote_frame_size = Cell::new(codec.send_frame_size());
 
         let state = Rc::new(ConnectionState {
@@ -515,9 +520,6 @@ impl RecvHalfConnection {
                 self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
                 if let Some(max) = self.0.local_config.0.settings.get().max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
-                }
-                if let Some(max) = self.0.local_config.0.settings.get().max_header_list_size() {
-                    self.0.codec.set_recv_header_list_size(max as usize);
                 }
 
                 let upd = (self.0.local_config.0.window_sz.get() as i32)

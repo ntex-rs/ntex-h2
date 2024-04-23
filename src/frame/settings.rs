@@ -211,13 +211,11 @@ impl Settings {
     }
 
     pub fn encode(&self, dst: &mut BytesMut) {
+        log::trace!("encoding SETTINGS; len={:?}", self);
+
         // Create & encode an appropriate frame head
         let head = Head::new(Kind::Settings, self.flags.into(), StreamId::zero());
         let payload_len = self.payload_len();
-
-        //log::trace!("encoding SETTINGS; len={}", payload_len);
-        log::trace!("encoding SETTINGS; len={:?}", self);
-
         head.encode(payload_len, dst);
 
         // Encode the settings

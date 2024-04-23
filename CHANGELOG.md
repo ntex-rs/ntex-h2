@@ -2,6 +2,10 @@
 
 ## [0.5.3] - 2024-04-23
 
+* Limit "max headers size" to 48kb
+
+* Do not decode partial headers frame
+
 * Optimize headers encoding
 
 ## [0.5.2] - 2024-03-24

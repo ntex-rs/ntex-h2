@@ -67,6 +67,7 @@ impl Config {
         let mut settings = Settings::default();
         settings.set_max_concurrent_streams(Some(256));
         settings.set_enable_push(false);
+        settings.set_max_header_list_size(Some(consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE));
 
         let flags = if server {
             Cell::new(ConfigFlags::SERVER)
@@ -163,6 +164,8 @@ impl Config {
     ///
     /// This setting is also used to limit the maximum amount of data that is
     /// buffered to decode HEADERS frames.
+    ///
+    /// By default value is set to 48Kb.
     pub fn max_header_list_size(&self, max: u32) -> &Self {
         let mut s = self.0.settings.get();
         s.set_max_header_list_size(Some(max));

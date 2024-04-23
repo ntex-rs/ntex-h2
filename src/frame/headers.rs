@@ -52,9 +52,6 @@ struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
 
-    /// Set to true if decoding went over the max header list size.
-    is_over_size: bool,
-
     /// Pseudo headers, these are broken out as they must be sent as part of the
     /// headers frame.
     pseudo: PseudoHeaders,
@@ -78,11 +75,7 @@ impl Headers {
         Headers {
             flags,
             stream_id,
-            header_block: HeaderBlock {
-                fields,
-                pseudo,
-                is_over_size: false,
-            },
+            header_block: HeaderBlock { fields, pseudo },
         }
     }
 
@@ -95,7 +88,6 @@ impl Headers {
             flags,
             header_block: HeaderBlock {
                 fields,
-                is_over_size: false,
                 pseudo: PseudoHeaders::default(),
             },
         }
@@ -152,7 +144,6 @@ impl Headers {
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
-                is_over_size: false,
                 pseudo: PseudoHeaders::default(),
             },
         })
@@ -161,10 +152,9 @@ impl Headers {
     pub fn load_hpack(
         &mut self,
         src: &mut BytesMut,
-        max_header_list_size: usize,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), FrameError> {
-        self.header_block.load(src, max_header_list_size, decoder)
+        self.header_block.load(src, decoder)
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -185,10 +175,6 @@ impl Headers {
 
     pub fn set_end_stream(&mut self) {
         self.flags.set_end_stream()
-    }
-
-    pub fn is_over_size(&self) -> bool {
-        self.header_block.is_over_size
     }
 
     pub fn into_parts(self) -> (PseudoHeaders, HeaderMap) {
@@ -431,18 +417,12 @@ thread_local! {
 }
 
 impl HeaderBlock {
-    fn load(
-        &mut self,
-        src: &mut BytesMut,
-        max_header_list_size: usize,
-        decoder: &mut hpack::Decoder,
-    ) -> Result<(), FrameError> {
+    fn load(&mut self, src: &mut BytesMut, decoder: &mut hpack::Decoder) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
-        let mut headers_size = self.calculate_header_list_size();
 
         macro_rules! set_pseudo {
-            ($field:ident, $len:expr, $val:expr) => {{
+            ($field:ident, $val:expr) => {{
                 if reg {
                     log::trace!("load_hpack; header malformed -- pseudo not at head of block");
                     malformed = true;
@@ -450,14 +430,7 @@ impl HeaderBlock {
                     log::trace!("load_hpack; header malformed -- repeated pseudo");
                     malformed = true;
                 } else {
-                    let __val = $val;
-                    headers_size += decoded_header_size(stringify!($field).len() + 1, $len);
-                    if headers_size < max_header_list_size {
-                        self.pseudo.$field = Some(__val.into());
-                    } else if !self.is_over_size {
-                        log::trace!("load_hpack; header list size over max");
-                        self.is_over_size = true;
-                    }
+                    self.pseudo.$field = Some($val.into());
                 }
             }};
         }
@@ -489,39 +462,26 @@ impl HeaderBlock {
                         malformed = true;
                     } else {
                         reg = true;
-
-                        headers_size += decoded_header_size(name.as_str().len(), value.len());
-                        if headers_size < max_header_list_size {
-                            self.fields.append(name, value);
-                        } else if !self.is_over_size {
-                            log::trace!("load_hpack; header list size over max");
-                            self.is_over_size = true;
-                        }
+                        self.fields.append(name, value);
                     }
                 }
                 Authority(v) => {
-                    let l = v.as_ref().len();
-                    set_pseudo!(authority, l, v)
+                    set_pseudo!(authority, v)
                 }
                 Method(v) => {
-                    let l = v.as_ref().len();
-                    set_pseudo!(method, l, v)
+                    set_pseudo!(method, v)
                 }
                 Scheme(v) => {
-                    let l = v.as_ref().len();
-                    set_pseudo!(scheme, l, v)
+                    set_pseudo!(scheme, v)
                 }
                 Path(v) => {
-                    let l = v.as_ref().len();
-                    set_pseudo!(path, l, v)
+                    set_pseudo!(path, v)
                 }
                 Protocol(v) => {
-                    let l = v.as_ref().len();
-                    set_pseudo!(protocol, l, v)
+                    set_pseudo!(protocol, v)
                 }
                 Status(v) => {
-                    let l = v.as_str().len();
-                    set_pseudo!(status, l, v)
+                    set_pseudo!(status, v)
                 }
             }
         });
@@ -578,45 +538,6 @@ impl HeaderBlock {
             }
         });
     }
-
-    /// Calculates the size of the currently decoded header list.
-    ///
-    /// According to http://httpwg.org/specs/rfc7540.html#SETTINGS_MAX_HEADER_LIST_SIZE
-    ///
-    /// > The value is based on the uncompressed size of header fields,
-    /// > including the length of the name and value in octets plus an
-    /// > overhead of 32 octets for each header field.
-    fn calculate_header_list_size(&self) -> usize {
-        macro_rules! pseudo_size {
-            ($name:ident) => {{
-                self.pseudo
-                    .$name
-                    .as_ref()
-                    .map(|m| decoded_header_size(stringify!($name).len() + 1, m.as_ref().len()))
-                    .unwrap_or(0)
-            }};
-        }
-
-        pseudo_size!(method)
-            + pseudo_size!(scheme)
-            + self
-                .pseudo
-                .status
-                .as_ref()
-                .map(|m| decoded_header_size("status".len() + 1, m.as_str().len()))
-                .unwrap_or(0)
-            + pseudo_size!(authority)
-            + pseudo_size!(path)
-            + self
-                .fields
-                .iter()
-                .map(|(name, value)| decoded_header_size(name.as_str().len(), value.len()))
-                .sum::<usize>()
-    }
-}
-
-fn decoded_header_size(name: usize, value: usize) -> usize {
-    name + value + 32
 }
 
 #[cfg(test)]
