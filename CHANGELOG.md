@@ -1,5 +1,9 @@
 # Changes
 
+## [0.5.5] - 2024-05-01
+
+* Fix ping timeouts handling
+
 ## [0.5.4] - 2024-04-23
 
 * Fix Config::frame_read_rate() method

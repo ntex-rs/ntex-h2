@@ -27,6 +27,7 @@ bitflags::bitflags! {
         const SECURE                  = 0b0001_0000;
         const STREAM_REFUSED          = 0b0010_0000;
         const KA_TIMER                = 0b0100_0000;
+        const RECV_PONG               = 0b1000_0000;
     }
 }
 
@@ -666,7 +667,7 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn recv_pong(&self, _: frame::Ping) {
-        self.0.io.stop_timer();
+        self.set_flags(ConnectionFlags::RECV_PONG);
     }
 
     pub(crate) fn recv_go_away(
@@ -808,6 +809,8 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
 
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
+
+    st.set_flags(ConnectionFlags::RECV_PONG);
     loop {
         if st.is_closed() {
             log::debug!("http client connection is closed, stopping keep-alive task");
@@ -817,9 +820,13 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         if st.is_closed() {
             break;
         }
+        if !st.0.flags.get().contains(ConnectionFlags::RECV_PONG) {
+            io.notify_timeout();
+            break;
+        }
 
         counter += 1;
-        io.start_timer(timeout);
+        st.unset_flags(ConnectionFlags::RECV_PONG);
         st.encode(frame::Ping::new(counter.to_be_bytes()));
     }
 }
