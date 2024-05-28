@@ -1,10 +1,9 @@
 use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Poll};
 
 use ntex_io::DispatchItem;
-use ntex_rt::spawn;
 use ntex_service::{Pipeline, Service, ServiceCtx};
 use ntex_util::future::{join, join_all, Either};
-use ntex_util::HashMap;
+use ntex_util::{spawn, HashMap};
 
 use crate::connection::{Connection, RecvHalfConnection};
 use crate::control::{Control, ControlAck};

@@ -60,7 +60,7 @@ impl SimpleClient {
             disp,
             &con.config().dispatcher_config,
         );
-        let _ = ntex_rt::spawn(async move {
+        let _ = ntex_util::spawn(async move {
             let _ = fut.await;
         });
 
