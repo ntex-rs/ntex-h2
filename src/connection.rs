@@ -4,8 +4,8 @@ use std::{collections::VecDeque, time::Instant};
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
-use ntex_rt::spawn;
-use ntex_util::{channel::pool, future::Either, time, time::now, time::sleep, HashMap, HashSet};
+use ntex_util::time::{self, now, sleep};
+use ntex_util::{channel::pool, future::Either, spawn, HashMap, HashSet};
 
 use crate::config::{Config, ConfigInner};
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};

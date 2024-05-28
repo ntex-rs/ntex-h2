@@ -61,7 +61,7 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
     let addr = ntex::connect::Connect::new("localhost").set_addr(Some(addr));
-    openssl::Connector::new(builder.build())
+    openssl::SslConnector::new(builder.build())
         .connect(addr)
         .await
         .unwrap()

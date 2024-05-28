@@ -23,7 +23,7 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
     io.remote_buffer_cap(1000000);
 
     let (tx, rx) = mpsc::channel();
-    ntex_rt::spawn(async move {
+    ntex_util::spawn(async move {
         let _ = server::Server::new(
             Config::server(),
             fn_service(|msg: Control<()>| async move {
