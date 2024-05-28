@@ -286,21 +286,6 @@ impl Config {
         self
     }
 
-    #[deprecated()]
-    #[doc(hidden)]
-    /// Set server client timeout for first request.
-    ///
-    /// Defines a timeout for reading client request header. If a client does not transmit
-    /// the entire set headers within this time, the request is terminated with
-    /// the 408 (Request Time-out) error.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default client timeout is set to 3 seconds.
-    pub fn client_timeout(&self, _: Seconds) -> &Self {
-        self
-    }
-
     /// Set read rate parameters for single frame.
     ///
     /// Set read timeout, max timeout and rate for reading payload. If the client

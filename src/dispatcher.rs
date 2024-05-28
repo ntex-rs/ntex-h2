@@ -101,7 +101,10 @@ where
 
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(
-            ctx.ready(&self.inner.publish), ctx.ready(&self.inner.control)).await;
+            ctx.ready(&self.inner.publish),
+            ctx.ready(&self.inner.control),
+        )
+        .await;
 
         res1.map_err(|_| ())?;
         res2.map_err(|_| ())?;
@@ -113,8 +116,7 @@ where
             .call(Control::terminated())
             .await;
 
-        join(self.inner.publish.shutdown(),
-             self.inner.control.shutdown()).await;
+        join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
         self.connection.disconnect();
     }
