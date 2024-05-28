@@ -1,5 +1,9 @@
 # Changes
 
+## [1.0.0] - 2024-05-28
+
+* Use async fn for Service::ready() and Service::shutdown()
+
 ## [0.5.5] - 2024-05-01
 
 * Fix ping timeouts handling

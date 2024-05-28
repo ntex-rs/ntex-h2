@@ -1,9 +1,9 @@
-use std::{cell, fmt, future::poll_fn, future::Future, rc::Rc, task::Context, task::Poll};
+use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Poll};
 
 use ntex_io::DispatchItem;
 use ntex_rt::spawn;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join_all, BoxFuture, Either};
+use ntex_util::future::{join, join_all, Either};
 use ntex_util::HashMap;
 
 use crate::connection::{Connection, RecvHalfConnection};
@@ -20,13 +20,6 @@ where
 {
     inner: Rc<Inner<Ctl, Pub>>,
     connection: RecvHalfConnection,
-    shutdown: cell::RefCell<Shutdown<BoxFuture<'static, ()>>>,
-}
-
-enum Shutdown<F> {
-    NotSet,
-    Done,
-    InProcess(F),
 }
 
 struct Inner<Ctl, Pub>
@@ -50,7 +43,6 @@ where
     pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
         Dispatcher {
             connection: connection.recv_half(),
-            shutdown: cell::RefCell::new(Shutdown::NotSet),
             inner: Rc::new(Inner {
                 control,
                 publish,
@@ -107,57 +99,24 @@ where
     type Response = Option<Frame>;
     type Error = ();
 
-    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        // check publish service readiness
-        let res1 = self.inner.publish.poll_ready(cx);
+    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(
+            ctx.ready(&self.inner.publish), ctx.ready(&self.inner.control)).await;
 
-        // check control service readiness
-        let res2 = self.inner.control.poll_ready(cx);
-
-        if res1.is_pending() || res2.is_pending() {
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(()))
-        }
+        res1.map_err(|_| ())?;
+        res2.map_err(|_| ())?;
+        Ok(())
     }
 
-    fn poll_shutdown(&self, cx: &mut Context<'_>) -> Poll<()> {
-        let mut shutdown = self.shutdown.borrow_mut();
-        if matches!(&*shutdown, &Shutdown::NotSet) {
-            let inner = self.inner.clone();
-            *shutdown = Shutdown::InProcess(Box::pin(async move {
-                let _ = Pipeline::new(&inner.control)
-                    .call(Control::terminated())
-                    .await;
-            }));
-        }
+    async fn shutdown(&self) {
+        let _ = Pipeline::new(&self.inner.control)
+            .call(Control::terminated())
+            .await;
 
-        let shutdown_ready = match &mut *shutdown {
-            Shutdown::NotSet => panic!("guard above"),
-            Shutdown::Done => true,
-            Shutdown::InProcess(ref mut fut) => {
-                let res = fut.as_mut().poll(cx);
-                if res.is_ready() {
-                    *shutdown = Shutdown::Done;
-                    true
-                } else {
-                    false
-                }
-            }
-        };
+        join(self.inner.publish.shutdown(),
+             self.inner.control.shutdown()).await;
 
-        if shutdown_ready {
-            let res1 = self.inner.publish.poll_shutdown(cx);
-            let res2 = self.inner.control.poll_shutdown(cx);
-            if res1.is_pending() || res2.is_pending() {
-                Poll::Pending
-            } else {
-                self.connection.disconnect();
-                Poll::Ready(())
-            }
-        } else {
-            Poll::Pending
-        }
+        self.connection.disconnect();
     }
 
     async fn call(
