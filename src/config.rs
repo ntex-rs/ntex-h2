@@ -8,8 +8,9 @@ use crate::{consts, frame, frame::Settings, frame::WindowSize};
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct ConfigFlags: u8 {
-        const SERVER = 0b0000_0001;
-        const HTTPS  = 0b0000_0010;
+        const SERVER =    0b0000_0001;
+        const HTTPS  =    0b0000_0010;
+        const SHUTDOWN  = 0b0000_0100;
     }
 }
 
@@ -326,8 +327,27 @@ impl Config {
         self.0.flags.get().contains(ConfigFlags::SERVER)
     }
 
+    /// Check if service is shutting down.
+    pub fn is_shutdown(&self) -> bool {
+        self.0.flags.get().contains(ConfigFlags::SHUTDOWN)
+    }
+
+    /// Set service shutdown.
+    pub fn shutdown(&self) {
+        let mut flags = self.0.flags.get();
+        flags.insert(ConfigFlags::SHUTDOWN);
+        self.0.flags.set(flags);
+    }
+
     pub(crate) fn inner(&self) -> &ConfigInner {
         self.0.as_ref()
+    }
+}
+
+impl ConfigInner {
+    /// Check if service is shutting down.
+    pub(crate) fn is_shutdown(&self) -> bool {
+        self.flags.get().contains(ConfigFlags::SHUTDOWN)
     }
 }
 

@@ -1,14 +1,12 @@
-use std::{fmt, rc::Rc};
+use std::{fmt, future::poll_fn, future::Future, pin::Pin, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 use ntex_util::time::timeout_checked;
 
-use crate::connection::Connection;
 use crate::control::{Control, ControlAck};
-use crate::{
-    codec::Codec, config::Config, consts, dispatcher::Dispatcher, frame, message::Message,
-};
+use crate::{codec::Codec, connection::Connection};
+use crate::{config::Config, consts, dispatcher::Dispatcher, frame, message::Message};
 
 use super::{ServerBuilder, ServerError};
 
@@ -139,14 +137,21 @@ where
         // create h2 codec
         let codec = Codec::default();
         let con = Connection::new(io.get_ref(), codec.clone(), inner.config.clone(), true);
+        let con2 = con.clone();
 
         // start protocol dispatcher
-        IoDispatcher::new(
+        let mut fut = IoDispatcher::new(
             io,
             codec,
             Dispatcher::new(con, ctl_srv, pub_srv),
             &inner.config.inner().dispatcher_config,
-        )
+        );
+        poll_fn(|cx| {
+            if con2.config().is_shutdown() {
+                con2.disconnect_when_ready();
+            }
+            Pin::new(&mut fut).poll(cx)
+        })
         .await
         .map_err(|_| ServerError::Dispatcher)
     }
@@ -245,14 +250,22 @@ where
     // create h2 codec
     let codec = Codec::default();
     let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true);
+    let con2 = con.clone();
 
     // start protocol dispatcher
-    IoDispatcher::new(
+    let mut fut = IoDispatcher::new(
         io,
         codec,
         Dispatcher::new(con, ctl_svc, pub_svc),
         &config.inner().dispatcher_config,
-    )
+    );
+
+    poll_fn(|cx| {
+        if con2.config().is_shutdown() {
+            con2.disconnect_when_ready();
+        }
+        Pin::new(&mut fut).poll(cx)
+    })
     .await
     .map_err(|_| ServerError::Dispatcher)
 }
