@@ -427,6 +427,18 @@ impl RecvHalfConnection {
                 "Received headers",
             )))
         } else {
+            // refuse stream if connection is preparing for disconnect
+            if self
+                .0
+                .flags
+                .get()
+                .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+            {
+                self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
+                self.set_flags(ConnectionFlags::STREAM_REFUSED);
+                return Ok(None);
+            }
+
             if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
                 if self.0.active_remote_streams.get() >= max {
                     // check if client opened more streams than allowed

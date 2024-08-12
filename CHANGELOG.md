@@ -1,5 +1,9 @@
 # Changes
 
+## [1.1.0] - 2024-08-12
+
+* Server graceful shutdown support
+
 ## [1.0.0] - 2024-05-28
 
 * Use async fn for Service::ready() and Service::shutdown()
