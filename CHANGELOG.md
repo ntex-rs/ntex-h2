@@ -1,5 +1,9 @@
 # Changes
 
+## [1.2.0] - 2024-10-16
+
+* Better error handling
+
 ## [1.1.0] - 2024-08-12
 
 * Server graceful shutdown support

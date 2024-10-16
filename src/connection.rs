@@ -138,6 +138,10 @@ impl Connection {
         &self.0.io
     }
 
+    pub(crate) fn tag(&self) -> &'static str {
+        self.0.io.tag()
+    }
+
     pub(crate) fn codec(&self) -> &Codec {
         &self.0.codec
     }
@@ -263,10 +267,13 @@ impl Connection {
 
     pub(crate) fn disconnect_when_ready(&self) {
         if self.0.streams.borrow().is_empty() {
-            log::debug!("All streams are closed, disconnecting");
+            log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
         } else {
-            log::debug!("Not all streams are closed, set disconnect flag");
+            log::trace!(
+                "{}: Not all streams are closed, set disconnect flag",
+                self.tag()
+            );
             self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
         }
     }
@@ -282,7 +289,10 @@ impl Connection {
         self.check_error()?;
 
         if !self.can_create_new_stream() {
-            log::warn!("Cannot create new stream, waiting for available streams");
+            log::warn!(
+                "{}: Cannot create new stream, waiting for available streams",
+                self.tag()
+            );
             self.ready().await?
         }
 
@@ -326,7 +336,12 @@ impl Connection {
         let empty = {
             let mut streams = self.0.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
-                log::trace!("Dropping stream {:?} remote: {:?}", id, stream.is_remote());
+                log::trace!(
+                    "{}: Dropping stream {:?} remote: {:?}",
+                    self.tag(),
+                    id,
+                    stream.is_remote()
+                );
                 if stream.is_remote() {
                     self.0
                         .active_remote_streams
@@ -352,7 +367,7 @@ impl Connection {
 
         // Close connection
         if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
-            log::debug!("All streams are closed, disconnecting");
+            log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
             return;
         }
@@ -379,6 +394,10 @@ impl Connection {
 }
 
 impl RecvHalfConnection {
+    pub(crate) fn tag(&self) -> &'static str {
+        self.0.io.tag()
+    }
+
     fn query(&self, id: StreamId) -> Option<StreamRef> {
         self.0.streams.borrow_mut().get(&id).cloned()
     }
@@ -614,7 +633,7 @@ impl RecvHalfConnection {
         &self,
         frm: frame::WindowUpdate,
     ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
-        log::trace!("processing incoming {:#?}", frm);
+        log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         if frm.stream_id().is_zero() {
             if frm.size_increment() == 0 {
@@ -658,7 +677,7 @@ impl RecvHalfConnection {
         &self,
         frm: frame::Reset,
     ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
-        log::trace!("processing incoming {:#?}", frm);
+        log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         if frm.stream_id().is_zero() {
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
@@ -688,7 +707,8 @@ impl RecvHalfConnection {
         data: &Bytes,
     ) -> HashMap<StreamId, StreamRef> {
         log::trace!(
-            "processing go away with reason: {:?}, data: {:?}",
+            "{}: processing go away with reason: {:?}, data: {:?}",
+            self.tag(),
             reason,
             data.slice(..std::cmp::min(data.len(), 20))
         );
@@ -801,7 +821,7 @@ async fn delay_drop_task(state: Connection) {
         loop {
             if let Some(item) = queue.front() {
                 if item.1 <= now {
-                    log::trace!("dropping {:?} after delay", item.0);
+                    log::trace!("{}: dropping {:?} after delay", state.tag(), item.0);
                     ids.remove(&item.0);
                     queue.pop_front();
                 } else {
@@ -825,7 +845,10 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
     st.set_flags(ConnectionFlags::RECV_PONG);
     loop {
         if st.is_closed() {
-            log::debug!("http client connection is closed, stopping keep-alive task");
+            log::trace!(
+                "{}: http client connection is closed, stopping keep-alive task",
+                st.tag()
+            );
             break;
         }
         sleep(keepalive).await;

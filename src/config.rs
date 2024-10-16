@@ -80,7 +80,7 @@ impl Config {
         let dispatcher_config = DispatcherConfig::default();
         dispatcher_config
             .set_keepalive_timeout(Seconds(0))
-            .set_disconnect_timeout(Seconds(3))
+            .set_disconnect_timeout(Seconds(1))
             .set_frame_read_rate(Seconds(1), Seconds::ZERO, 256);
 
         Config(Rc::new(ConfigInner {
@@ -308,7 +308,7 @@ impl Config {
     ///
     /// To disable timeout set value to 0.
     ///
-    /// By default disconnect timeout is set to 3 seconds.
+    /// By default disconnect timeout is set to 1 seconds.
     pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
         self.0.dispatcher_config.set_disconnect_timeout(val);
         self

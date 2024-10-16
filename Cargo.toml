@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "1.1.0"
+version = "1.2.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -46,9 +46,8 @@ walkdir = "2.3.2"
 serde = "1.0"
 serde_json = "1.0"
 
-ntex = { version = "2", features = ["openssl", "tokio"] }
+ntex = { version = "2", features = ["openssl"] }
 ntex-tls = { version = "2", features = ["openssl"] }
-ntex-net = { version = "2", features = ["tokio"] }
 openssl = "0.10"
 
 # Examples
