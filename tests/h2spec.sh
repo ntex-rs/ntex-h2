@@ -10,7 +10,7 @@ fi
 # source <(cargo llvm-cov show-env --export-prefix)
 # cargo llvm-cov run --example server --lcov --output-path lcov.info
 
-exec 3< <(cargo llvm-cov --no-report run --example server);
+exec 3< <(cargo llvm-cov --features=ntex-net/tokio --no-report run --example server);
 SERVER_PID=$!
 
 # wait 'til the server is listening before running h2spec, and pipe server's
@@ -34,7 +34,7 @@ kill -INT "${SERVER_PID}"
 kill -INT "${SPID}"
 sleep 5
 
-cargo llvm-cov report --lcov --output-path lcov.info
+cargo llvm-cov report --features=ntex-net/tokio --lcov --output-path lcov.info
 #cargo llvm-cov --no-run --summary-only
 
 #ls -la ./

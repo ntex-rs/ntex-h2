@@ -77,7 +77,7 @@ jobs:
           command: test
 
       - name: Generate code coverage
-        run: cargo llvm-cov --no-report
+        run: cargo llvm-cov --no-report --features=ntex-net/tokio
         if: matrix.rust == 'stable'
 
       #- name: Run integration tests
