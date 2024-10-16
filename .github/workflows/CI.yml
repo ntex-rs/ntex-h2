@@ -68,13 +68,15 @@ jobs:
         uses: actions-rs/cargo@v1
         if: matrix.rust == 'nightly' || matrix.rust == 'beta'
         with:
-          command: build --features=ntex-net/tokio
+          command: build
+          args: --features=ntex-net/tokio
 
       - name: Run lib tests and doc tests
         uses: actions-rs/cargo@v1
         if: matrix.rust == 'nightly' || matrix.rust == 'beta'
         with:
-          command: test --features=ntex-net/tokio
+          command: test
+          args: --features=ntex-net/tokio
 
       - name: Generate code coverage
         run: cargo llvm-cov --no-report --features=ntex-net/tokio
