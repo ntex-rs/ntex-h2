@@ -34,7 +34,7 @@ kill -INT "${SERVER_PID}"
 kill -INT "${SPID}"
 sleep 5
 
-cargo llvm-cov report --features=ntex-net/tokio --lcov --output-path lcov.info
+cargo llvm-cov report --lcov --output-path lcov.info
 #cargo llvm-cov --no-run --summary-only
 
 #ls -la ./
