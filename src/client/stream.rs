@@ -4,8 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 use ntex_service::{Service, ServiceCtx};
-use ntex_util::future::Either;
-use ntex_util::{task::LocalWaker, HashMap, Stream as FutStream};
+use ntex_util::{future::Either, task::LocalWaker, HashMap, Stream as FutStream};
 
 use crate::error::OperationError;
 use crate::frame::{Reason, StreamId, WindowSize};
@@ -75,8 +74,15 @@ impl Drop for SendStream {
 
 impl SendStream {
     #[inline]
+    /// Get stream id
     pub fn id(&self) -> StreamId {
         self.0.id()
+    }
+
+    #[inline]
+    /// Get io tag
+    pub fn tag(&self) -> &'static str {
+        self.0.tag()
     }
 
     #[inline]
@@ -85,11 +91,13 @@ impl SendStream {
     }
 
     #[inline]
+    /// Get available capacity
     pub fn available_send_capacity(&self) -> WindowSize {
         self.0.available_send_capacity()
     }
 
     #[inline]
+    /// Wait for available capacity
     pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
         self.0.send_capacity().await
     }
@@ -101,6 +109,7 @@ impl SendStream {
     }
 
     #[inline]
+    /// Send trailers
     pub fn send_trailers(&self, map: HeaderMap) {
         self.0.send_trailers(map)
     }
@@ -130,8 +139,15 @@ pub struct RecvStream(StreamRef, InflightStorage);
 
 impl RecvStream {
     #[inline]
+    /// Get stream id
     pub fn id(&self) -> StreamId {
         self.0.id()
+    }
+
+    #[inline]
+    /// Get io tag
+    pub fn tag(&self) -> &'static str {
+        self.0.tag()
     }
 
     #[inline]
@@ -148,23 +164,17 @@ impl RecvStream {
     /// the current task for wakeup if the value is not yet available,
     /// and returning None if the stream is exhausted.
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
-        let mut inner = self.1 .0.inflight.borrow_mut();
-        if let Some(inflight) = inner.get_mut(&self.0.id()) {
+        if let Some(inflight) = self.1 .0.inflight.borrow_mut().get_mut(&self.0.id()) {
             if let Some(msg) = inflight.pop() {
-                let to_remove = match msg.kind() {
-                    MessageKind::Headers { eof, .. } => *eof,
-                    MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
-                    _ => false,
-                };
-                if to_remove {
-                    inner.remove(&self.0.id());
-                }
                 Poll::Ready(Some(msg))
+            } else if self.0.recv_state().is_closed() {
+                Poll::Ready(None)
             } else {
                 inflight.waker.register(cx.waker());
                 Poll::Pending
             }
         } else {
+            log::warn!("Stream does not exists, {:?}", self.0.id());
             Poll::Ready(None)
         }
     }
@@ -207,11 +217,14 @@ impl Service<Message> for HandleService {
                 MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
                 _ => false,
             };
+            inflight.push(msg);
+
             if eof {
                 self.0.notify(id);
                 log::debug!("Stream {:?} is closed, notify", id);
             }
-            inflight.push(msg);
+        } else {
+            log::error!("Received message for unknown stream, {:?}", msg);
         }
         Ok(())
     }

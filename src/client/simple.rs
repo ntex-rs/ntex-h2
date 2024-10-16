@@ -72,6 +72,12 @@ impl SimpleClient {
     }
 
     #[inline]
+    /// Get io tag
+    pub fn tag(&self) -> &'static str {
+        self.0.con.tag()
+    }
+
+    #[inline]
     /// Send request to the peer
     pub async fn send(
         &self,

@@ -60,12 +60,19 @@ where
             Ok(Some((stream, msg))) => publish(msg, stream, &self.inner, ctx).await,
             Ok(None) => Ok(None),
             Err(Either::Left(err)) => {
-                self.connection.proto_error(&err);
+                log::error!(
+                    "{}: Connection failed during message handling: {:?}",
+                    self.connection.tag(),
+                    err
+                );
+                let streams = self.connection.proto_error(&err);
+                self.handle_connection_error(streams, err.into());
                 control(Control::proto_error(err), &self.inner, ctx).await
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
                 stream.set_failed_stream(kind.into());
+                log::error!("{}: Failed to handle message: {:?}", stream.tag(), kind);
 
                 self.connection
                     .encode(Reset::new(stream.id(), kind.reason()));
@@ -125,7 +132,11 @@ where
         request: DispatchItem<Codec>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::debug!("Handle h2 message: {:?}", request);
+        log::debug!(
+            "{}: Handle h2 message: {:?}",
+            self.connection.tag(),
+            request
+        );
 
         match request {
             DispatchItem::Item(frame) => match frame {
@@ -139,7 +150,8 @@ where
                 }
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
-                        self.connection.proto_error(&err);
+                        let streams = self.connection.proto_error(&err);
+                        self.handle_connection_error(streams, err.into());
                         control(Control::proto_error(err), &self.inner, ctx).await
                     }
                     Err(Either::Right(errs)) => {
@@ -174,7 +186,7 @@ where
                         .await
                 }
                 Frame::Ping(ping) => {
-                    log::trace!("processing PING: {:#?}", ping);
+                    log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
                     if ping.is_ack() {
                         self.connection.recv_pong(ping);
                         Ok(None)
@@ -183,14 +195,18 @@ where
                     }
                 }
                 Frame::GoAway(frm) => {
-                    log::trace!("processing GoAway: {:#?}", frm);
+                    log::trace!("{}: Processing GoAway: {:#?}", self.connection.tag(), frm);
                     let reason = frm.reason();
                     let streams = self.connection.recv_go_away(reason, frm.data());
                     self.handle_connection_error(streams, ConnectionError::GoAway(reason).into());
                     control(Control::go_away(frm), &self.inner, ctx).await
                 }
                 Frame::Priority(prio) => {
-                    log::debug!("PRIORITY frame is not supported: {:#?}", prio);
+                    log::debug!(
+                        "{}: PRIORITY frame is not supported: {:#?}",
+                        self.connection.tag(),
+                        prio
+                    );
                     Ok(None)
                 }
             },
@@ -207,7 +223,10 @@ where
                 control(Control::proto_error(err), &self.inner, ctx).await
             }
             DispatchItem::KeepAliveTimeout => {
-                log::warn!("did not receive pong response in time, closing connection");
+                log::warn!(
+                    "{}: did not receive pong response in time, closing connection",
+                    self.connection.tag(),
+                );
                 let streams = self.connection.ping_timeout();
                 self.handle_connection_error(streams, ConnectionError::KeepaliveTimeout.into());
                 control(
@@ -218,7 +237,10 @@ where
                 .await
             }
             DispatchItem::ReadTimeout => {
-                log::warn!("did not receive complete frame in time, closing connection");
+                log::warn!(
+                    "{}: did not receive complete frame in time, closing connection",
+                    self.connection.tag(),
+                );
                 let streams = self.connection.read_timeout();
                 self.handle_connection_error(streams, ConnectionError::ReadTimeout.into());
                 control(
@@ -256,7 +278,7 @@ where
         poll_fn(|cx| {
             match stream.poll_send_reset(cx) {
                 Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
-                    log::trace!("Stream is closed {:?}", stream.id());
+                    log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => (),
@@ -300,7 +322,11 @@ where
             }
         }
         Err(err) => {
-            log::error!("control service has failed with {:?}", err);
+            log::error!(
+                "{}: control service has failed with {:?}",
+                inner.connection.tag(),
+                err
+            );
             // we cannot handle control service errors, close connection
             inner.connection.encode(
                 GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id),

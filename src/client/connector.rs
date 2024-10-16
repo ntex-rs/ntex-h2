@@ -1,6 +1,6 @@
-use std::{cell::Cell, marker::PhantomData, ops};
+use std::{marker::PhantomData, ops};
 
-use ntex_bytes::{ByteString, PoolId, PoolRef};
+use ntex_bytes::{ByteString, PoolId};
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
@@ -15,7 +15,6 @@ pub struct Connector<A: Address, T> {
     connector: Pipeline<T>,
     config: Config,
     scheme: Scheme,
-    pub(super) pool: Cell<PoolRef>,
 
     _t: PhantomData<A>,
 }
@@ -35,7 +34,6 @@ where
             connector: Pipeline::new(connector.into_service()),
             config: Config::client(),
             scheme: Scheme::HTTP,
-            pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
     }
@@ -51,7 +49,6 @@ where
             connector: DefaultConnector::default().into(),
             config: Config::client(),
             scheme: Scheme::HTTP,
-            pool: Cell::new(PoolId::P5.pool_ref()),
             _t: PhantomData,
         }
     }
@@ -82,12 +79,13 @@ where
         self
     }
 
+    #[doc(hidden)]
+    #[deprecated]
     /// Set memory pool.
     ///
     /// Use specified memory pool for memory allocations. By default P5
     /// memory pool is used.
-    pub fn memory_pool(&mut self, id: PoolId) -> &mut Self {
-        self.pool.set(id.pool_ref());
+    pub fn memory_pool(&mut self, _: PoolId) -> &mut Self {
         self
     }
 
@@ -102,7 +100,6 @@ where
             connector: connector.into_service().into(),
             config: self.config.clone(),
             scheme: self.scheme.clone(),
-            pool: self.pool.clone(),
             _t: PhantomData,
         }
     }
