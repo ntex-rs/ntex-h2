@@ -436,13 +436,11 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
+        } else if self.0.local_reset_ids.borrow().contains(&id) {
+            self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
+            Ok(None)
         } else if id < self.0.next_stream_id.get() {
             Err(Either::Left(ConnectionError::InvalidStreamId(
-                "Received headers",
-            )))
-        } else if self.0.local_reset_ids.borrow().contains(&id) {
-            Err(Either::Left(ConnectionError::StreamClosed(
-                id,
                 "Received headers",
             )))
         } else {
