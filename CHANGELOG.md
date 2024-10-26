@@ -1,5 +1,9 @@
 # Changes
 
+## [1.3.0] - 2024-10-26
+
+* Do not close connection if headers received for closed stream
+
 ## [1.2.0] - 2024-10-16
 
 * Better error handling
