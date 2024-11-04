@@ -2,7 +2,7 @@ use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Poll};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, join_all, Either};
+use ntex_util::future::{join, join_all, select, Either};
 use ntex_util::{spawn, HashMap};
 
 use crate::connection::{Connection, RecvHalfConnection};
@@ -105,6 +105,7 @@ where
     type Response = Option<Frame>;
     type Error = ();
 
+    #[inline]
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(
             ctx.ready(&self.inner.publish),
@@ -112,9 +113,33 @@ where
         )
         .await;
 
-        res1.map_err(|_| ())?;
-        res2.map_err(|_| ())?;
-        Ok(())
+        if let Err(e) = res1 {
+            if res2.is_err() {
+                Err(())
+            } else {
+                match ctx
+                    .call_nowait(&self.inner.control, Control::error(e))
+                    .await
+                {
+                    Ok(_) => {
+                        self.connection.disconnect();
+                        Ok(())
+                    }
+                    Err(_) => Err(()),
+                }
+            }
+        } else {
+            res2.map_err(|_| ())
+        }
+    }
+
+    #[inline]
+    async fn not_ready(&self) {
+        select(
+            self.inner.publish.not_ready(),
+            self.inner.control.not_ready(),
+        )
+        .await;
     }
 
     async fn shutdown(&self) {

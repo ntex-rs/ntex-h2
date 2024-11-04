@@ -1,5 +1,11 @@
 # Changes
 
+## [1.4.0] - 2024-11-04
+
+* Use updated Service trait
+
+* Better rediness error handling
+
 ## [1.3.0] - 2024-10-26
 
 * Do not close connection if headers received for closed stream

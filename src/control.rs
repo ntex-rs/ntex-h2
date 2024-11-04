@@ -30,8 +30,13 @@ pub struct ControlAck {
 
 impl<E> Control<E> {
     /// Create a new `Control` message for app level errors
+    pub(super) fn error(err: E) -> Self {
+        Control::AppError(AppError::new(err, None))
+    }
+
+    /// Create a new `Control` message for app level errors
     pub(super) fn app_error(err: E, stream: StreamRef) -> Self {
-        Control::AppError(AppError::new(err, stream))
+        Control::AppError(AppError::new(err, Some(stream)))
     }
 
     /// Create a new `Control` message from GOAWAY packet.
@@ -70,11 +75,11 @@ impl<E> Control<E> {
 pub struct AppError<E> {
     err: E,
     reason: Reason,
-    stream: StreamRef,
+    stream: Option<StreamRef>,
 }
 
 impl<E> AppError<E> {
-    fn new(err: E, stream: StreamRef) -> Self {
+    fn new(err: E, stream: Option<StreamRef>) -> Self {
         Self {
             err,
             stream,
@@ -98,9 +103,16 @@ impl<E> AppError<E> {
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: Some(Reset::new(self.stream.id(), self.reason).into()),
-            disconnect: false,
+        if let Some(ref stream) = self.stream {
+            ControlAck {
+                frame: Some(Reset::new(stream.id(), self.reason).into()),
+                disconnect: false,
+            }
+        } else {
+            ControlAck {
+                frame: None,
+                disconnect: true,
+            }
         }
     }
 }
