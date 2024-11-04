@@ -19,6 +19,9 @@ default = []
 # unstable features
 unstable = []
 
+[package.metadata.docs.rs]
+features = ["ntex-net/tokio"]
+
 [dependencies]
 ntex-net = "2"
 ntex-io = "2"
