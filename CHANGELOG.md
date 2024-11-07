@@ -1,6 +1,6 @@
 # Changes
 
-## [1.4.1] - 2024-11-07
+## [1.4.1/2] - 2024-11-07
 
 * Fix type recursion limit
 

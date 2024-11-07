@@ -2,7 +2,7 @@ use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Poll};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, join_all, select, Either};
+use ntex_util::future::{join, select, Either};
 use ntex_util::{spawn, HashMap};
 
 use crate::connection::{Connection, RecvHalfConnection};
@@ -86,10 +86,9 @@ where
             let inner = self.inner.clone();
             let _ = spawn(Box::pin(async move {
                 let p = Pipeline::new(&inner.publish);
-                let futs = streams
-                    .into_values()
-                    .map(|stream| p.call(Message::disconnect(err.clone(), stream)));
-                let _ = join_all(futs).await;
+                for stream in streams.into_values() {
+                    let _ = p.call(Message::disconnect(err.clone(), stream)).await;
+                }
             }));
         }
     }
