@@ -84,13 +84,13 @@ where
     fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: OperationError) {
         if !streams.is_empty() {
             let inner = self.inner.clone();
-            let _ = spawn(async move {
+            let _ = spawn(Box::pin(async move {
                 let p = Pipeline::new(&inner.publish);
                 let futs = streams
                     .into_values()
                     .map(|stream| p.call(Message::disconnect(err.clone(), stream)));
                 let _ = join_all(futs).await;
-            });
+            }));
         }
     }
 }
