@@ -1,8 +1,8 @@
-use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Poll};
+use std::{fmt, future::poll_fn, future::Future, rc::Rc, task::Context, task::Poll};
 
 use ntex_io::DispatchItem;
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{join, select, Either};
+use ntex_util::future::{join, Either};
 use ntex_util::{spawn, HashMap};
 
 use crate::connection::{Connection, RecvHalfConnection};
@@ -26,7 +26,7 @@ where
     Ctl: Service<Control<Pub::Error>>,
     Pub: Service<Message>,
 {
-    control: Ctl,
+    control: Pipeline<Ctl>,
     publish: Pub,
     connection: Connection,
     last_stream_id: StreamId,
@@ -43,9 +43,9 @@ where
         Dispatcher {
             connection: connection.recv_half(),
             inner: Rc::new(Inner {
-                control,
                 publish,
                 connection,
+                control: Pipeline::new(control),
                 last_stream_id: 0.into(),
             }),
         }
@@ -108,7 +108,7 @@ where
     async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(
             ctx.ready(&self.inner.publish),
-            ctx.ready(&self.inner.control),
+            ctx.ready(self.inner.control.get_ref()),
         )
         .await;
 
@@ -117,7 +117,7 @@ where
                 Err(())
             } else {
                 match ctx
-                    .call_nowait(&self.inner.control, Control::error(e))
+                    .call_nowait(self.inner.control.get_ref(), Control::error(e))
                     .await
                 {
                     Ok(_) => {
@@ -132,19 +132,21 @@ where
         }
     }
 
-    #[inline]
-    async fn not_ready(&self) {
-        select(
-            self.inner.publish.not_ready(),
-            self.inner.control.not_ready(),
-        )
-        .await;
+    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        if let Err(e) = self.inner.publish.poll(cx) {
+            let inner = self.inner.clone();
+            let con = self.connection.connection();
+            ntex_rt::spawn(async move {
+                if inner.control.call_nowait(Control::error(e)).await.is_ok() {
+                    con.close();
+                }
+            });
+        }
+        self.inner.control.poll(cx).map_err(|_| ())
     }
 
     async fn shutdown(&self) {
-        let _ = Pipeline::new(&self.inner.control)
-            .call(Control::terminated())
-            .await;
+        let _ = self.inner.control.call(Control::terminated()).await;
 
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
@@ -331,7 +333,7 @@ where
     Pub: Service<Message>,
     Pub::Error: fmt::Debug,
 {
-    match ctx.call(&inner.control, pkt).await {
+    match ctx.call(inner.control.get_ref(), pkt).await {
         Ok(res) => {
             if let Some(Frame::Reset(ref rst)) = res.frame {
                 if !rst.stream_id().is_zero() {
