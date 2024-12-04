@@ -412,6 +412,10 @@ impl RecvHalfConnection {
         self.0.flags.set(flags);
     }
 
+    pub(crate) fn connection(&self) -> Connection {
+        Connection(self.0.clone())
+    }
+
     pub(crate) fn encode<T>(&self, item: T)
     where
         frame::Frame: From<T>,

@@ -1,5 +1,9 @@
 # Changes
 
+## [1.5.0] - 2024-12-04
+
+* Use updated Service trait
+
 ## [1.4.1/2] - 2024-11-07
 
 * Fix type recursion limit
