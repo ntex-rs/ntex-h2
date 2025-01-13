@@ -1,5 +1,9 @@
 # Changes
 
+## [1.6.0] - 2025-01-13
+
+* Expose client internal information
+
 ## [1.5.0] - 2024-12-04
 
 * Use updated Service trait
