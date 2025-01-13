@@ -2,7 +2,7 @@ use std::{fmt, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
-use ntex_io::{Dispatcher as IoDispatcher, IoRef, IoBoxed, OnDisconnect};
+use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
