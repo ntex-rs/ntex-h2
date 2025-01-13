@@ -2,7 +2,7 @@ use std::{fmt, rc::Rc};
 
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
-use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, OnDisconnect};
+use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
@@ -150,6 +150,12 @@ impl SimpleClient {
     /// Get number of active streams
     pub fn active_streams(&self) -> u32 {
         self.0.con.active_streams()
+    }
+
+    #[doc(hidden)]
+    /// Get access to underlining io object
+    pub fn io_ref(&self) -> &IoRef {
+        self.0.con.io()
     }
 }
 

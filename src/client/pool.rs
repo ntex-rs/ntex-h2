@@ -1,7 +1,7 @@
 use std::{cell::Cell, cell::RefCell, collections::VecDeque, fmt, rc::Rc, time::Duration};
 
 use nanorand::{Rng, WyRand};
-use ntex_bytes::{ByteString, PoolId, PoolRef};
+use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
@@ -136,7 +136,6 @@ impl Client {
                                 notify(&mut waiters2.borrow_mut());
                             });
                             // construct client
-                            io.set_memory_pool(inner.pool);
                             let client = SimpleClient::with_params(
                                 io,
                                 inner.config.clone(),
@@ -145,6 +144,9 @@ impl Client {
                                 storage,
                             );
                             inner.connections.borrow_mut().push(client.clone());
+                            inner
+                                .total_connections
+                                .set(inner.total_connections.get() + 1);
                             Ok(client)
                         }
                         Ok(Err(err)) => Err(ClientError::from(err)),
@@ -153,6 +155,10 @@ impl Client {
                     inner.connecting.set(false);
                     for waiter in waiters.borrow_mut().drain(..) {
                         let _ = waiter.send(());
+                    }
+
+                    if res.is_err() {
+                        inner.connect_errors.set(inner.connect_errors.get() + 1);
                     }
                     let _ = tx.send(res);
                 });
@@ -212,6 +218,28 @@ impl Client {
     }
 }
 
+#[doc(hidden)]
+impl Client {
+    pub fn stat_active_connections(&self) -> usize {
+        self.inner.connections.borrow().len()
+    }
+
+    pub fn stat_total_connections(&self) -> usize {
+        self.inner.total_connections.get()
+    }
+
+    pub fn stat_connect_errors(&self) -> usize {
+        self.inner.connect_errors.get()
+    }
+
+    pub fn stat_connections<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[SimpleClient]) -> R,
+    {
+        f(&*self.inner.connections.borrow())
+    }
+}
+
 /// Manages http client network connectivity.
 ///
 /// The `ClientBuilder` type uses a builder-like combinator pattern for service
@@ -229,9 +257,10 @@ struct Inner {
     config: crate::Config,
     authority: ByteString,
     connector: Connector,
-    pool: PoolRef,
     connecting: Cell<bool>,
     connections: RefCell<Vec<SimpleClient>>,
+    total_connections: Cell<usize>,
+    connect_errors: Cell<usize>,
 }
 
 impl ClientBuilder {
@@ -268,7 +297,8 @@ impl ClientBuilder {
             config: crate::Config::client(),
             connecting: Cell::new(false),
             connections: Default::default(),
-            pool: PoolId::P5.pool_ref(),
+            total_connections: Cell::new(0),
+            connect_errors: Cell::new(0),
         })
     }
 
@@ -286,15 +316,6 @@ impl ClientBuilder {
     /// Set client's connection scheme
     pub fn scheme(mut self, scheme: Scheme) -> Self {
         self.0.scheme = scheme;
-        self
-    }
-
-    /// Set memory pool.
-    ///
-    /// Use specified memory pool for memory allocations. By default P5
-    /// memory pool is used.
-    pub fn memory_pool(mut self, id: PoolId) -> Self {
-        self.0.pool = id.pool_ref();
         self
     }
 
@@ -416,7 +437,6 @@ impl fmt::Debug for Client {
             .field("minconn", &self.inner.minconn)
             .field("maxconn", &self.inner.maxconn)
             .field("max-streams", &self.inner.max_streams)
-            .field("pool", &self.inner.pool)
             .field("config", &self.inner.config)
             .finish()
     }
@@ -433,7 +453,6 @@ impl fmt::Debug for ClientBuilder {
             .field("minconn", &self.0.minconn)
             .field("maxconn", &self.0.maxconn)
             .field("max-streams", &self.0.max_streams)
-            .field("pool", &self.0.pool)
             .field("config", &self.0.config)
             .finish()
     }
