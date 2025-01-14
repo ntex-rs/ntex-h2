@@ -1,7 +1,4 @@
-use std::{
-    cell::Cell, cmp, cmp::Ordering, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context,
-    task::Poll,
-};
+use std::{cell::Cell, cmp, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
 use ntex_http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
@@ -402,7 +399,7 @@ impl StreamRef {
         if hdrs
             .pseudo()
             .status
-            .map_or(false, |status| status.is_informational())
+            .is_some_and(|status| status.is_informational())
         {
             self.0.content_length.set(ContentLength::Head)
         }
@@ -538,11 +535,11 @@ impl StreamRef {
     pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), StreamError> {
         let orig = self.0.send_window.get();
         let window = match upd.cmp(&0) {
-            Ordering::Less => orig.dec(upd.unsigned_abs()), // We must decrease the (remote) window
-            Ordering::Greater => orig
+            cmp::Ordering::Less => orig.dec(upd.unsigned_abs()), // We must decrease the (remote) window
+            cmp::Ordering::Greater => orig
                 .inc(upd as u32)
                 .map_err(|_| StreamError::WindowOverflowed)?,
-            Ordering::Equal => return Ok(()),
+            cmp::Ordering::Equal => return Ok(()),
         };
         log::trace!(
             "{}: Updating send window size from {} to {}",
@@ -556,14 +553,14 @@ impl StreamRef {
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, StreamError> {
         let mut window = match upd.cmp(&0) {
-            Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
-            Ordering::Greater => self
+            cmp::Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
+            cmp::Ordering::Greater => self
                 .0
                 .recv_window
                 .get()
                 .inc(upd as u32)
                 .map_err(|_| StreamError::WindowOverflowed)?,
-            Ordering::Equal => return Ok(None),
+            cmp::Ordering::Equal => return Ok(None),
         };
         if let Some(val) = window.update(
             self.0.recv_size.get(),

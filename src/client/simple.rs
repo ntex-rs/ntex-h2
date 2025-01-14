@@ -157,6 +157,12 @@ impl SimpleClient {
     pub fn io_ref(&self) -> &IoRef {
         self.0.con.io()
     }
+
+    #[doc(hidden)]
+    /// Get access to underlining http/2 connection object
+    pub fn connection(&self) -> &Connection {
+        &self.0.con
+    }
 }
 
 impl Drop for SimpleClient {
