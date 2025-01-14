@@ -136,7 +136,7 @@ where
         if let Err(e) = self.inner.publish.poll(cx) {
             let inner = self.inner.clone();
             let con = self.connection.connection();
-            ntex_rt::spawn(async move {
+            ntex_util::spawn(async move {
                 if inner.control.call_nowait(Control::error(e)).await.is_ok() {
                     con.close();
                 }

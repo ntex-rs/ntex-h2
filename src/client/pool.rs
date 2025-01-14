@@ -236,7 +236,7 @@ impl Client {
     where
         F: FnOnce(&[SimpleClient]) -> R,
     {
-        f(&*self.inner.connections.borrow())
+        f(&self.inner.connections.borrow())
     }
 }
 

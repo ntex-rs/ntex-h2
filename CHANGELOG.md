@@ -1,5 +1,9 @@
 # Changes
 
+## [1.6.1] - 2025-01-14
+
+* Expose client internal connection object
+
 ## [1.6.0] - 2025-01-13
 
 * Expose client internal information

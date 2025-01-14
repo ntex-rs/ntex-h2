@@ -798,6 +798,8 @@ impl fmt::Debug for Connection {
             )
             .field("remote_window_sz", &self.0.remote_window_sz.get())
             .field("remote_frame_size", &self.0.remote_frame_size.get())
+            .field("flags", &self.0.flags.get())
+            .field("error", &self.check_error())
             .finish()
     }
 }

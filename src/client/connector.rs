@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, ops};
 
-use ntex_bytes::{ByteString, PoolId};
+use ntex_bytes::ByteString;
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
@@ -79,16 +79,6 @@ where
         self
     }
 
-    #[doc(hidden)]
-    #[deprecated]
-    /// Set memory pool.
-    ///
-    /// Use specified memory pool for memory allocations. By default P5
-    /// memory pool is used.
-    pub fn memory_pool(&mut self, _: PoolId) -> &mut Self {
-        self
-    }
-
     /// Use custom connector
     pub fn connector<U, F>(&self, connector: F) -> Connector<A, U>
     where
@@ -125,9 +115,9 @@ where
             ))
         };
 
-        match timeout_checked(self.config.0.handshake_timeout.get(), fut).await {
-            Ok(res) => res.map_err(From::from),
-            Err(_) => Err(ClientError::HandshakeTimeout),
-        }
+        timeout_checked(self.config.0.handshake_timeout.get(), fut)
+            .await
+            .map_err(|_| ClientError::HandshakeTimeout)
+            .and_then(|item| item)
     }
 }

@@ -309,7 +309,7 @@ impl PseudoHeaders {
 
 // ===== impl Iter =====
 
-impl<'a> Iterator for Iter<'a> {
+impl Iterator for Iter<'_> {
     type Item = hpack::Header<Option<HeaderName>>;
 
     fn next(&mut self) -> Option<Self::Item> {

@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "1.6.0"
+version = "1.6.1"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -30,7 +30,6 @@ ntex-bytes = "0.1"
 ntex-codec = "0.6"
 ntex-service = "3.4"
 ntex-util = "2.8"
-ntex-rt = "0.4"
 
 bitflags = "2"
 fxhash = "0.2"
