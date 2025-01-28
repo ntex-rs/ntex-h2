@@ -43,7 +43,8 @@ struct ConnectionState {
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
 
     rst_count: Cell<u32>,
-    total_count: Cell<u32>,
+    streams_count: Cell<u32>,
+    pings_count: Cell<u16>,
 
     // Local config
     local_config: Config,
@@ -105,7 +106,8 @@ impl Connection {
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
             rst_count: Cell::new(0),
-            total_count: Cell::new(0),
+            streams_count: Cell::new(0),
+            pings_count: Cell::new(0),
             readiness: RefCell::new(VecDeque::new()),
             next_stream_id: Cell::new(StreamId::new(1)),
             local_config: config,
@@ -391,6 +393,10 @@ impl Connection {
     pub(crate) fn recv_half(&self) -> RecvHalfConnection {
         RecvHalfConnection(self.0.clone())
     }
+
+    pub(crate) fn pings_count(&self) -> u16 {
+        self.0.pings_count.get()
+    }
 }
 
 impl RecvHalfConnection {
@@ -498,7 +504,7 @@ impl RecvHalfConnection {
             } else {
                 let stream = StreamRef::new(id, true, Connection(self.0.clone()));
                 self.0.next_stream_id.set(id);
-                self.0.total_count.set(self.0.total_count.get() + 1);
+                self.0.streams_count.set(self.0.streams_count.get() + 1);
                 self.0.streams.borrow_mut().insert(id, stream.clone());
                 self.0
                     .active_remote_streams
@@ -666,8 +672,8 @@ impl RecvHalfConnection {
 
     fn update_rst_count(&self) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
         let count = self.0.rst_count.get() + 1;
-        let total_count = self.0.total_count.get();
-        if total_count >= 10 && count >= total_count >> 1 {
+        let streams_count = self.0.streams_count.get();
+        if streams_count >= 10 && count >= streams_count >> 1 {
             Err(Either::Left(ConnectionError::ConcurrencyOverflow))
         } else {
             self.0.rst_count.set(count);
@@ -867,5 +873,6 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         counter += 1;
         st.unset_flags(ConnectionFlags::RECV_PONG);
         st.encode(frame::Ping::new(counter.to_be_bytes()));
+        st.0.pings_count.set(st.0.pings_count.get() + 1);
     }
 }

@@ -153,6 +153,12 @@ impl SimpleClient {
     }
 
     #[doc(hidden)]
+    /// Get number of active streams
+    pub fn pings_count(&self) -> u16 {
+        self.0.con.pings_count()
+    }
+
+    #[doc(hidden)]
     /// Get access to underlining io object
     pub fn io_ref(&self) -> &IoRef {
         self.0.con.io()
