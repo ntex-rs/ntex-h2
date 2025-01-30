@@ -66,48 +66,7 @@ impl Client {
         eof: bool,
     ) -> Result<(SendStream, RecvStream), ClientError> {
         loop {
-            let (client, num) = {
-                let mut connections = self.inner.connections.borrow_mut();
-
-                // cleanup connections
-                let mut idx = 0;
-                while idx < connections.len() {
-                    if connections[idx].is_closed() {
-                        connections.remove(idx);
-                    } else {
-                        idx += 1;
-                    }
-                }
-                let num = connections.len();
-                if self.inner.minconn > 0 && num < self.inner.minconn {
-                    // create new connection
-                    (None, num)
-                } else {
-                    // first search for connections with less than 50% capacity usage
-                    let client = connections.iter().find(|item| {
-                        let cap = item.max_streams().unwrap_or(self.inner.max_streams) >> 1;
-                        item.active_streams() <= cap
-                    });
-                    if let Some(client) = client {
-                        (Some(client.clone()), num)
-                    } else {
-                        // check existing connections
-                        let available = connections.iter().filter(|item| item.is_ready()).count();
-                        let client = if available > 0 {
-                            let idx = WyRand::new().generate_range(0_usize..available);
-                            connections
-                                .iter()
-                                .filter(|item| item.is_ready())
-                                .nth(idx)
-                                .cloned()
-                        } else {
-                            None
-                        };
-
-                        (client, num)
-                    }
-                }
-            };
+            let (client, num) = self.get_client();
 
             if let Some(client) = client {
                 return client
@@ -123,47 +82,10 @@ impl Client {
             {
                 // create new connection
                 self.inner.connecting.set(true);
-                let (tx, rx) = oneshot::channel();
-                let inner = self.inner.clone();
-                let waiters = self.waiters.clone();
-                let _ = ntex_util::spawn(async move {
-                    let res = match timeout_checked(inner.conn_timeout, (*inner.connector)()).await
-                    {
-                        Ok(Ok(io)) => {
-                            // callbacks for end of stream
-                            let waiters2 = waiters.clone();
-                            let storage = InflightStorage::new(move |_| {
-                                notify(&mut waiters2.borrow_mut());
-                            });
-                            // construct client
-                            let client = SimpleClient::with_params(
-                                io,
-                                inner.config.clone(),
-                                inner.scheme.clone(),
-                                inner.authority.clone(),
-                                storage,
-                            );
-                            inner.connections.borrow_mut().push(client.clone());
-                            inner
-                                .total_connections
-                                .set(inner.total_connections.get() + 1);
-                            Ok(client)
-                        }
-                        Ok(Err(err)) => Err(ClientError::from(err)),
-                        Err(_) => Err(ClientError::HandshakeTimeout),
-                    };
-                    inner.connecting.set(false);
-                    for waiter in waiters.borrow_mut().drain(..) {
-                        let _ = waiter.send(());
-                    }
 
-                    if res.is_err() {
-                        inner.connect_errors.set(inner.connect_errors.get() + 1);
-                    }
-                    let _ = tx.send(res);
-                });
-                return rx
-                    .await??
+                return self
+                    .create_connection()
+                    .await?
                     .send(method, path, headers, eof)
                     .await
                     .map_err(From::from);
@@ -178,6 +100,100 @@ impl Client {
                 let _ = rx.await;
             }
         }
+    }
+
+    fn get_client(&self) -> (Option<SimpleClient>, usize) {
+        let mut connections = self.inner.connections.borrow_mut();
+
+        // cleanup connections
+        let mut idx = 0;
+        while idx < connections.len() {
+            if connections[idx].is_closed() {
+                connections.remove(idx);
+            } else if connections[idx].is_disconnecting() {
+                let con = connections.remove(idx);
+                let timeout = self.inner.disconnect_timeout;
+                ntex_util::spawn(async move {
+                    let _ = con.disconnect().disconnect_timeout(timeout).await;
+                });
+            } else {
+                idx += 1;
+            }
+        }
+        let num = connections.len();
+        if self.inner.minconn > 0 && num < self.inner.minconn {
+            // create new connection
+            (None, num)
+        } else {
+            // first search for connections with less than 50% capacity usage
+            let client = connections.iter().find(|item| {
+                let cap = item.max_streams().unwrap_or(self.inner.max_streams) >> 1;
+                item.active_streams() <= cap
+            });
+            if let Some(client) = client {
+                (Some(client.clone()), num)
+            } else {
+                // check existing connections
+                let available = connections.iter().filter(|item| item.is_ready()).count();
+                let client = if available > 0 {
+                    let idx = WyRand::new().generate_range(0_usize..available);
+                    connections
+                        .iter()
+                        .filter(|item| item.is_ready())
+                        .nth(idx)
+                        .cloned()
+                } else {
+                    None
+                };
+
+                (client, num)
+            }
+        }
+    }
+
+    async fn create_connection(&self) -> Result<SimpleClient, ClientError> {
+        let (tx, rx) = oneshot::channel();
+
+        let inner = self.inner.clone();
+        let waiters = self.waiters.clone();
+
+        let _ = ntex_util::spawn(async move {
+            let res = match timeout_checked(inner.conn_timeout, (*inner.connector)()).await {
+                Ok(Ok(io)) => {
+                    // callbacks for end of stream
+                    let waiters2 = waiters.clone();
+                    let storage = InflightStorage::new(move |_| {
+                        notify(&mut waiters2.borrow_mut());
+                    });
+                    // construct client
+                    let client = SimpleClient::with_params(
+                        io,
+                        inner.config.clone(),
+                        inner.scheme.clone(),
+                        inner.authority.clone(),
+                        storage,
+                    );
+                    inner.connections.borrow_mut().push(client.clone());
+                    inner
+                        .total_connections
+                        .set(inner.total_connections.get() + 1);
+                    Ok(client)
+                }
+                Ok(Err(err)) => Err(ClientError::from(err)),
+                Err(_) => Err(ClientError::HandshakeTimeout),
+            };
+            inner.connecting.set(false);
+            for waiter in waiters.borrow_mut().drain(..) {
+                let _ = waiter.send(());
+            }
+
+            if res.is_err() {
+                inner.connect_errors.set(inner.connect_errors.get() + 1);
+            }
+            let _ = tx.send(res);
+        });
+
+        rx.await?
     }
 
     #[inline]
@@ -289,7 +305,7 @@ impl ClientBuilder {
             connector,
             conn_timeout: Millis(1_000),
             conn_lifetime: Duration::from_secs(0),
-            disconnect_timeout: Millis(3_000),
+            disconnect_timeout: Millis(15_000),
             max_streams: 100,
             minconn: 1,
             maxconn: 16,
@@ -365,14 +381,15 @@ impl ClientBuilder {
         self
     }
 
-    /// Set server connection disconnect timeout.
+    /// Set client connection disconnect timeout.
     ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
+    /// Defines a timeout for disconnect connection. Disconnecting connection
+    /// involes closing all active streams. If a disconnect procedure does not complete
     /// within this time, the socket get dropped.
     ///
     /// To disable timeout set value to 0.
     ///
-    /// By default disconnect timeout is set to 3 seconds.
+    /// By default disconnect timeout is set to 15 seconds.
     pub fn disconnect_timeout<T: Into<Millis>>(mut self, timeout: T) -> Self {
         self.0.disconnect_timeout = timeout.into();
         self

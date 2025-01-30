@@ -155,9 +155,6 @@ pub enum OperationError {
     #[error("Cannot process operation for stream in payload state")]
     Payload,
 
-    // /// Ping timeout
-    // #[error("Ping timeout")]
-    // PingTimeout,
     /// Stream is closed
     #[error("Stream is closed {0:?}")]
     Closed(Option<Reason>),
@@ -175,6 +172,10 @@ pub enum OperationError {
     /// A new connection is needed.
     #[error("The stream ID space is overflowed")]
     OverflowedStreamId,
+
+    /// Disconnecting
+    #[error("Connection is disconnecting")]
+    Disconnecting,
 
     /// Disconnected
     #[error("Connection is closed")]

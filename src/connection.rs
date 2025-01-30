@@ -164,6 +164,17 @@ impl Connection {
         self.0.io.is_closed()
     }
 
+    pub(crate) fn is_disconnecting(&self) -> bool {
+        if !self.is_closed() {
+            self.0
+                .flags
+                .get()
+                .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn set_secure(&self, secure: bool) {
         if secure {
             self.set_flags(ConnectionFlags::SECURE)
@@ -195,6 +206,13 @@ impl Connection {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Err(err)
+        } else if self
+            .0
+            .flags
+            .get()
+            .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
+            Err(OperationError::Disconnecting)
         } else {
             Ok(())
         }
