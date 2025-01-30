@@ -1,8 +1,9 @@
-use std::{fmt, rc::Rc};
+use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
+use ntex_util::time::{Millis, Sleep};
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
@@ -125,9 +126,23 @@ impl SimpleClient {
     }
 
     #[inline]
+    /// Gracefully disconnect connection
+    ///
+    /// Connection force closes if `ClientDisconnect` get dropped
+    pub fn disconnect(&self) -> ClientDisconnect {
+        ClientDisconnect::new(self.clone())
+    }
+
+    #[inline]
     /// Check if connection is closed
     pub fn is_closed(&self) -> bool {
         self.0.con.is_closed()
+    }
+
+    #[inline]
+    /// Check if connection is disconnecting
+    pub fn is_disconnecting(&self) -> bool {
+        self.0.con.is_disconnecting()
     }
 
     #[inline]
@@ -186,5 +201,58 @@ impl fmt::Debug for SimpleClient {
             .field("authority", &self.0.authority)
             .field("connection", &self.0.con)
             .finish()
+    }
+}
+
+#[derive(Debug)]
+pub struct ClientDisconnect {
+    client: SimpleClient,
+    disconnect: OnDisconnect,
+    timeout: Option<Sleep>,
+}
+
+impl ClientDisconnect {
+    fn new(client: SimpleClient) -> Self {
+        log::debug!("Disconnecting client");
+
+        client.0.con.disconnect_when_ready();
+        ClientDisconnect {
+            disconnect: client.on_disconnect(),
+            timeout: None,
+            client,
+        }
+    }
+
+    pub fn disconnect_timeout<T>(mut self, timeout: T) -> Self
+    where
+        Millis: From<T>,
+    {
+        self.timeout = Some(Sleep::new(timeout.into()));
+        self
+    }
+}
+
+impl Drop for ClientDisconnect {
+    fn drop(&mut self) {
+        self.client.0.con.close();
+    }
+}
+
+impl Future for ClientDisconnect {
+    type Output = Result<(), OperationError>;
+
+    #[inline]
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut this = self.as_mut();
+
+        if Pin::new(&mut this.disconnect).poll(cx).is_ready() {
+            return Poll::Ready(this.client.0.con.check_error());
+        } else if let Some(ref mut sleep) = this.timeout {
+            if sleep.poll_elapsed(cx).is_ready() {
+                this.client.0.con.close();
+                return Poll::Ready(Err(OperationError::Disconnected));
+            }
+        }
+        Poll::Pending
     }
 }

@@ -114,6 +114,7 @@ bitflags::bitflags! {
     struct StreamFlags: u8 {
         const REMOTE = 0b0000_0001;
         const FAILED = 0b0000_0010;
+        const DISCONNECT_ON_DROP = 0b0000_0100;
     }
 }
 
@@ -132,7 +133,7 @@ pub(crate) struct StreamState {
     send_cap: LocalWaker,
     send_reset: LocalWaker,
     /// Connection config
-    con: Connection,
+    pub(crate) con: Connection,
     /// error state
     error: Cell<Option<OperationError>>,
 }
@@ -357,6 +358,16 @@ impl StreamRef {
 
     pub(crate) fn recv_state(&self) -> HalfState {
         self.0.recv.get()
+    }
+
+    pub(crate) fn disconnect_on_drop(&self) {
+        let mut flags = self.0.flags.get();
+        flags.insert(StreamFlags::DISCONNECT_ON_DROP);
+        self.0.flags.set(flags);
+    }
+
+    pub(crate) fn is_disconnect_on_drop(&self) -> bool {
+        self.0.flags.get().contains(StreamFlags::DISCONNECT_ON_DROP)
     }
 
     /// Reset stream

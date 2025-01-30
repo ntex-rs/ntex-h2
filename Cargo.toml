@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "1.6.2"
+version = "1.7.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -20,7 +20,7 @@ default = []
 unstable = []
 
 [package.metadata.docs.rs]
-features = ["ntex-net/tokio"]
+features = []
 
 [dependencies]
 ntex-net = "2"

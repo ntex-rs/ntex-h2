@@ -1,5 +1,9 @@
 # Changes
 
+## [1.7.0] - 2025-01-30
+
+* Add disconnect on drop request for client
+
 ## [1.6.1] - 2025-01-14
 
 * Expose client internal connection object

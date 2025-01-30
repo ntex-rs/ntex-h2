@@ -68,6 +68,10 @@ impl Drop for SendStream {
     fn drop(&mut self) {
         if !self.0.send_state().is_closed() {
             self.0.reset(Reason::CANCEL);
+
+            if self.0.is_disconnect_on_drop() {
+                self.0 .0.con.disconnect_when_ready();
+            }
         }
     }
 }
@@ -121,6 +125,12 @@ impl SendStream {
     }
 
     #[inline]
+    /// Disconnect connection on stream drop
+    pub fn disconnect_on_drop(&self) {
+        self.0.disconnect_on_drop()
+    }
+
+    #[inline]
     /// Check for available send capacity
     pub fn poll_send_capacity(&self, cx: &Context<'_>) -> Poll<Result<WindowSize, OperationError>> {
         self.0.poll_send_capacity(cx)
@@ -155,6 +165,12 @@ impl RecvStream {
         &self.0
     }
 
+    #[inline]
+    /// Disconnect connection on stream drop
+    pub fn disconnect_on_drop(&self) {
+        self.0.disconnect_on_drop()
+    }
+
     /// Attempt to pull out the next value of http/2 stream
     pub async fn recv(&self) -> Option<Message> {
         poll_fn(|cx| self.poll_recv(cx)).await
@@ -184,6 +200,10 @@ impl Drop for RecvStream {
     fn drop(&mut self) {
         if !self.0.recv_state().is_closed() {
             self.0.reset(Reason::CANCEL);
+
+            if self.0.is_disconnect_on_drop() {
+                self.0 .0.con.disconnect_when_ready();
+            }
         }
         self.1 .0.inflight.borrow_mut().remove(&self.0.id());
     }
