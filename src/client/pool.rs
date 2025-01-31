@@ -117,9 +117,10 @@ impl Client {
             } else if connections[idx].is_disconnecting() {
                 let con = connections.remove(idx);
                 let timeout = self.inner.disconnect_timeout;
-                ntex_util::spawn(async move {
+                let f = ntex_util::spawn(async move {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
+                drop(f);
             } else {
                 idx += 1;
             }
