@@ -56,7 +56,6 @@ impl Client {
         ClientBuilder::with_default(addr)
     }
 
-    #[inline]
     /// Send request to the peer
     pub async fn send(
         &self,
@@ -65,41 +64,46 @@ impl Client {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<(SendStream, RecvStream), ClientError> {
+        self.client()
+            .await?
+            .send(method, path, headers, eof)
+            .await
+            .map_err(From::from)
+    }
+
+    /// Get client from the pool
+    pub async fn client(&self) -> Result<SimpleClient, ClientError> {
         loop {
             let (client, num) = self.get_client();
 
             if let Some(client) = client {
-                return client
-                    .send(method, path, headers, eof)
-                    .await
-                    .map_err(From::from);
-            }
-
-            // can create new connection
-            if !self.inner.connecting.get()
-                && (num < self.inner.maxconn
-                    || (self.inner.minconn > 0 && num < self.inner.minconn))
-            {
-                // create new connection
-                self.inner.connecting.set(true);
-
-                return self
-                    .create_connection()
-                    .await?
-                    .send(method, path, headers, eof)
-                    .await
-                    .map_err(From::from);
+                return Ok(client);
             } else {
-                log::debug!(
-                    "New connection is being established {:?} or number of existing cons {} greater than allowed {}",
-                    self.inner.connecting.get(), num, self.inner.maxconn);
-
-                // wait for available connection
-                let (tx, rx) = oneshot::channel();
-                self.waiters.borrow_mut().push_back(tx);
-                let _ = rx.await;
+                self.connect(num).await?;
             }
         }
+    }
+
+    async fn connect(&self, num: usize) -> Result<(), ClientError> {
+        // can create new connection
+        if !self.inner.connecting.get()
+            && (num < self.inner.maxconn || (self.inner.minconn > 0 && num < self.inner.minconn))
+        {
+            // create new connection
+            self.inner.connecting.set(true);
+
+            self.create_connection().await?;
+        } else {
+            log::debug!(
+                "New connection is being established {:?} or number of existing cons {} greater than allowed {}",
+                self.inner.connecting.get(), num, self.inner.maxconn);
+
+            // wait for available connection
+            let (tx, rx) = oneshot::channel();
+            self.waiters.borrow_mut().push_back(tx);
+            let _ = rx.await?;
+        }
+        Ok(())
     }
 
     fn get_client(&self) -> (Option<SimpleClient>, usize) {
@@ -113,9 +117,10 @@ impl Client {
             } else if connections[idx].is_disconnecting() {
                 let con = connections.remove(idx);
                 let timeout = self.inner.disconnect_timeout;
-                ntex_util::spawn(async move {
+                let f = ntex_util::spawn(async move {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
+                drop(f);
             } else {
                 idx += 1;
             }
@@ -151,7 +156,7 @@ impl Client {
         }
     }
 
-    async fn create_connection(&self) -> Result<SimpleClient, ClientError> {
+    async fn create_connection(&self) -> Result<(), ClientError> {
         let (tx, rx) = oneshot::channel();
 
         let inner = self.inner.clone();
@@ -173,11 +178,11 @@ impl Client {
                         inner.authority.clone(),
                         storage,
                     );
-                    inner.connections.borrow_mut().push(client.clone());
+                    inner.connections.borrow_mut().push(client);
                     inner
                         .total_connections
                         .set(inner.total_connections.get() + 1);
-                    Ok(client)
+                    Ok(())
                 }
                 Ok(Err(err)) => Err(ClientError::from(err)),
                 Err(_) => Err(ClientError::HandshakeTimeout),
