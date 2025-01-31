@@ -1,5 +1,9 @@
 # Changes
 
+## [1.8.0] - 2025-01-31
+
+* Add Client::client() method, returns available client from the pool
+
 ## [1.7.0] - 2025-01-30
 
 * Add disconnect on drop request for client
