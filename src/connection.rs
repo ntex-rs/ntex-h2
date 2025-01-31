@@ -206,6 +206,15 @@ impl Connection {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Err(err)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(crate) fn check_error_with_disconnect(&self) -> Result<(), OperationError> {
+        if let Some(err) = self.0.error.take() {
+            self.0.error.set(Some(err.clone()));
+            Err(err)
         } else if self
             .0
             .flags
@@ -267,7 +276,7 @@ impl Connection {
 
     pub(crate) async fn ready(&self) -> Result<(), OperationError> {
         loop {
-            self.check_error()?;
+            self.check_error_with_disconnect()?;
             return if let Some(max) = self.0.local_max_concurrent_streams.get() {
                 if self.0.active_local_streams.get() < max {
                     Ok(())
@@ -306,7 +315,7 @@ impl Connection {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, OperationError> {
-        self.check_error()?;
+        self.check_error_with_disconnect()?;
 
         if !self.can_create_new_stream() {
             log::warn!(

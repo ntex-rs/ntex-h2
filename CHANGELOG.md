@@ -1,5 +1,9 @@
 # Changes
 
+## [1.8.1] - 2025-01-31
+
+* Fix connection level error check.
+
 ## [1.8.0] - 2025-01-31
 
 * Add Client::client() method, returns available client from the pool

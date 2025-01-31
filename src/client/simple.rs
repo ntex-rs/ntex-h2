@@ -246,7 +246,7 @@ impl Future for ClientDisconnect {
         let mut this = self.as_mut();
 
         if Pin::new(&mut this.disconnect).poll(cx).is_ready() {
-            return Poll::Ready(this.client.0.con.check_error());
+            return Poll::Ready(this.client.0.con.check_error_with_disconnect());
         } else if let Some(ref mut sleep) = this.timeout {
             if sleep.poll_elapsed(cx).is_ready() {
                 this.client.0.con.close();
