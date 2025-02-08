@@ -19,14 +19,12 @@ pub struct Config(pub(crate) Rc<ConfigInner>);
 
 /// Http2 connection configuration
 pub(crate) struct ConfigInner {
+    pub(crate) settings: Cell<Settings>,
     /// Initial window size of locally initiated streams
     pub(crate) window_sz: Cell<WindowSize>,
     pub(crate) window_sz_threshold: Cell<WindowSize>,
     /// How long a locally reset stream should ignore frames
     pub(crate) reset_duration: Cell<Duration>,
-    /// Maximum number of locally reset streams to keep at a time
-    pub(crate) reset_max: Cell<usize>,
-    pub(crate) settings: Cell<Settings>,
     /// Initial window size for new connections.
     pub(crate) connection_window_sz: Cell<WindowSize>,
     pub(crate) connection_window_sz_threshold: Cell<WindowSize>,
@@ -91,7 +89,6 @@ impl Config {
             connection_window_sz_threshold,
             dispatcher_config,
             settings: Cell::new(settings),
-            reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
             remote_max_concurrent_streams: Cell::new(None),
             max_header_continuations: Cell::new(consts::DEFAULT_MAX_COUNTINUATIONS),
@@ -236,8 +233,9 @@ impl Config {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 30.
-    pub fn max_concurrent_reset_streams(&self, max: usize) -> &Self {
-        self.0.reset_max.set(max);
+    #[doc(hidden)]
+    #[deprecated]
+    pub fn max_concurrent_reset_streams(&self, _: usize) -> &Self {
         self
     }
 
@@ -357,7 +355,6 @@ impl fmt::Debug for Config {
             .field("window_sz", &self.0.window_sz.get())
             .field("window_sz_threshold", &self.0.window_sz_threshold.get())
             .field("reset_duration", &self.0.reset_duration.get())
-            .field("reset_max", &self.0.reset_max.get())
             .field("connection_window_sz", &self.0.connection_window_sz.get())
             .field(
                 "connection_window_sz_threshold",
@@ -378,7 +375,6 @@ impl fmt::Debug for ConfigInner {
             .field("window_sz", &self.window_sz.get())
             .field("window_sz_threshold", &self.window_sz_threshold.get())
             .field("reset_duration", &self.reset_duration.get())
-            .field("reset_max", &self.reset_max.get())
             .field("connection_window_sz", &self.connection_window_sz.get())
             .field(
                 "connection_window_sz_threshold",
