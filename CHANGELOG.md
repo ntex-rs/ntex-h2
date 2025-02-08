@@ -1,8 +1,12 @@
 # Changes
 
+## [1.8.2] - 2025-02-08
+
+* Fix connection level window size handling
+
 ## [1.8.1] - 2025-01-31
 
-* Fix connection level error check.
+* Fix connection level error check
 
 ## [1.8.0] - 2025-01-31
 

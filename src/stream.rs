@@ -22,7 +22,7 @@ pub struct Capacity {
 
 impl Capacity {
     fn new(size: u32, stream: &Rc<StreamState>) -> Self {
-        stream.add_capacity(size);
+        stream.add_recv_capacity(size);
 
         Self {
             size: Cell::new(size),
@@ -115,6 +115,7 @@ bitflags::bitflags! {
         const REMOTE = 0b0000_0001;
         const FAILED = 0b0000_0010;
         const DISCONNECT_ON_DROP = 0b0000_0100;
+        const WAIT_FOR_CAPACITY  = 0b0000_1000;
     }
 }
 
@@ -183,9 +184,7 @@ impl StreamState {
     }
 
     fn set_failed(&self) {
-        let mut flags = self.flags.get();
-        flags.insert(StreamFlags::FAILED);
-        self.flags.set(flags);
+        self.insert_flag(StreamFlags::FAILED);
         self.send_cap.wake();
         self.send_reset.wake();
     }
@@ -214,6 +213,18 @@ impl StreamState {
         self.send.set(HalfState::Closed(None));
         self.error.set(Some(err));
         self.review_state();
+    }
+
+    fn insert_flag(&self, f: StreamFlags) {
+        let mut flags = self.flags.get();
+        flags.insert(f);
+        self.flags.set(flags);
+    }
+
+    fn remove_flag(&self, f: StreamFlags) {
+        let mut flags = self.flags.get();
+        flags.remove(f);
+        self.flags.set(flags);
     }
 
     fn check_error(&self) -> Result<(), OperationError> {
@@ -250,7 +261,7 @@ impl StreamState {
     }
 
     /// added new capacity, update recevice window size
-    fn add_capacity(&self, size: u32) {
+    fn add_recv_capacity(&self, size: u32) {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
         self.recv_window.set(self.recv_window.get().dec(size));
@@ -263,7 +274,7 @@ impl StreamState {
         );
 
         // connection level recv window
-        self.con.add_capacity(size);
+        self.con.add_recv_capacity(size);
     }
 
     /// check and update recevice window size
@@ -361,9 +372,7 @@ impl StreamRef {
     }
 
     pub(crate) fn disconnect_on_drop(&self) {
-        let mut flags = self.0.flags.get();
-        flags.insert(StreamFlags::DISCONNECT_ON_DROP);
-        self.0.flags.set(flags);
+        self.0.insert_flag(StreamFlags::DISCONNECT_ON_DROP);
     }
 
     pub(crate) fn is_disconnect_on_drop(&self) -> bool {
@@ -524,6 +533,14 @@ impl StreamRef {
         self.0.remote_reset_stream(frm.reason())
     }
 
+    pub(crate) fn recv_window_update_connection(&self) {
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            && self.0.send_window.get().window_size() > 0
+        {
+            self.0.send_cap.wake();
+        }
+    }
+
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
         if frm.size_increment() == 0 {
             Err(StreamError::WindowZeroUpdateValue)
@@ -666,6 +683,10 @@ impl StreamRef {
                         self.0
                             .send_window
                             .set(self.0.send_window.get().dec(size as u32));
+
+                        // update connection send window
+                        self.0.con.consume_send_window(size as u32);
+
                         // write to io buffer
                         self.0.con.encode(data);
                         if res.is_empty() {
@@ -700,7 +721,10 @@ impl StreamRef {
     }
 
     pub fn available_send_capacity(&self) -> WindowSize {
-        self.0.send_window.get().window_size()
+        cmp::min(
+            self.0.send_window.get().window_size(),
+            self.0.con.send_window_size(),
+        )
     }
 
     pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
@@ -712,10 +736,12 @@ impl StreamRef {
         self.0.check_error()?;
         self.0.con.check_error()?;
 
-        let win = self.0.send_window.get().window_size();
+        let win = self.available_send_capacity();
         if win > 0 {
+            self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
             Poll::Ready(Ok(win))
         } else {
+            self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
             self.0.send_cap.register(cx.waker());
             Poll::Pending
         }
