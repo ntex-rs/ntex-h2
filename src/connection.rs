@@ -227,8 +227,13 @@ impl Connection {
         }
     }
 
+    /// Consume connection level send capacity (window)
+    pub(crate) fn consume_send_window(&self, cap: u32) {
+        self.0.send_window.set(self.0.send_window.get().dec(cap));
+    }
+
     /// added new capacity, update recevice window size
-    pub(crate) fn add_capacity(&self, size: u32) {
+    pub(crate) fn add_recv_capacity(&self, size: u32) {
         let mut recv_window = self.0.recv_window.get().dec(size);
 
         // update connection window size
@@ -240,6 +245,10 @@ impl Connection {
             self.encode(WindowUpdate::new(StreamId::CON, val));
         }
         self.0.recv_window.set(recv_window);
+    }
+
+    pub(crate) fn send_window_size(&self) -> WindowSize {
+        self.0.send_window.get().window_size()
     }
 
     pub(crate) fn remote_window_size(&self) -> WindowSize {
@@ -432,7 +441,7 @@ impl RecvHalfConnection {
     }
 
     fn query(&self, id: StreamId) -> Option<StreamRef> {
-        self.0.streams.borrow_mut().get(&id).cloned()
+        self.0.streams.borrow().get(&id).cloned()
     }
 
     fn flags(&self) -> ConnectionFlags {
@@ -560,7 +569,7 @@ impl RecvHalfConnection {
             ));
             Ok(None)
         } else {
-            Err(Either::Left(ConnectionError::InvalidStreamId(
+            Err(Either::Left(ConnectionError::UnknownStream(
                 "Received data",
             )))
         }
@@ -681,6 +690,11 @@ impl RecvHalfConnection {
                     .inc(frm.size_increment())
                     .map_err(|_| Either::Left(ConnectionError::WindowValueOverflow))?;
                 self.0.send_window.set(window);
+
+                // wake up streams if needed
+                for stream in self.0.streams.borrow().values() {
+                    stream.recv_window_update_connection();
+                }
                 Ok(())
             }
         } else if let Some(stream) = self.query(frm.stream_id()) {

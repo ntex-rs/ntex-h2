@@ -136,12 +136,11 @@ where
         if let Err(e) = self.inner.publish.poll(cx) {
             let inner = self.inner.clone();
             let con = self.connection.connection();
-            let f = ntex_util::spawn(async move {
+            let _ = ntex_util::spawn(async move {
                 if inner.control.call_nowait(Control::error(e)).await.is_ok() {
                     con.close();
                 }
             });
-            drop(f);
         }
         self.inner.control.poll(cx).map_err(|_| ())
     }

@@ -101,7 +101,7 @@ impl Client {
             // wait for available connection
             let (tx, rx) = oneshot::channel();
             self.waiters.borrow_mut().push_back(tx);
-            let _ = rx.await?;
+            rx.await?;
         }
         Ok(())
     }
@@ -117,10 +117,9 @@ impl Client {
             } else if connections[idx].is_disconnecting() {
                 let con = connections.remove(idx);
                 let timeout = self.inner.disconnect_timeout;
-                let f = ntex_util::spawn(async move {
+                let _ = ntex_util::spawn(async move {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
-                drop(f);
             } else {
                 idx += 1;
             }
