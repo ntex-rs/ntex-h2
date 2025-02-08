@@ -2,6 +2,7 @@
 
 ## [1.8.2] - 2025-02-08
 
+* Better handling for delay reset queue
 * Fix connection level window size handling
 
 ## [1.8.1] - 2025-01-31
