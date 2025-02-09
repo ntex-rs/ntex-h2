@@ -68,6 +68,20 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
         .into()
 }
 
+fn get_reset(frm: frame::Frame) -> frame::Reset {
+    match frm {
+        frame::Frame::Reset(rst) => rst,
+        _ => panic!("Expect Reset frame: {:?}", frm),
+    }
+}
+
+fn goaway(frm: frame::Frame) -> frame::GoAway {
+    match frm {
+        frame::Frame::GoAway(f) => f,
+        _ => panic!("Expect Reset frame: {:?}", frm),
+    }
+}
+
 #[ntex::test]
 async fn test_max_concurrent_streams() {
     let srv = start_server();
@@ -299,21 +313,15 @@ async fn test_goaway_on_overflow() {
     let id = id.next_id().unwrap();
     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
     io.send(hdrs.clone().into(), &codec).await.unwrap();
-    let res = if let frame::Frame::Reset(rst) = io.recv(&codec).await.unwrap().unwrap() {
-        rst
-    } else {
-        panic!()
-    };
+
+    let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::REFUSED_STREAM);
 
     let id = id.next_id().unwrap();
     let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
     io.send(hdrs.clone().into(), &codec).await.unwrap();
-    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
-        rst
-    } else {
-        panic!()
-    };
+
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
@@ -364,11 +372,8 @@ async fn test_goaway_on_reset() {
     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
     io.encode(hdrs.into(), &codec).unwrap();
     io.send(rst.into(), &codec).await.unwrap();
-    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
-        rst
-    } else {
-        panic!()
-    };
+
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
@@ -425,11 +430,7 @@ async fn test_goaway_on_reset2() {
     io.recv(&codec).await.unwrap().unwrap(); // data
     io.recv(&codec).await.unwrap().unwrap(); // data eof
 
-    let res = if let frame::Frame::GoAway(rst) = io.recv(&codec).await.unwrap().unwrap() {
-        rst
-    } else {
-        panic!()
-    };
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }

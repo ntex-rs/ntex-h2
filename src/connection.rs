@@ -869,52 +869,169 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
 }
 
 const BLOCKS: usize = 6;
-const BLOCK_SIZE: Duration = Duration::from_secs(30);
 const LAST_BLOCK: usize = 5;
+
+#[cfg(not(test))]
+const SECS: u64 = 30;
+#[cfg(test)]
+const SECS: u64 = 1;
+
+const BLOCK_SIZE: Duration = Duration::from_secs(SECS);
+const ALL_BLOCKS: Duration = Duration::from_secs((BLOCKS as u64) * SECS);
 
 #[derive(Default)]
 struct Pending {
-    times: RefCell<[Option<(StreamId, Instant)>; BLOCKS]>,
+    blocks: RefCell<[Option<(StreamId, Instant)>; BLOCKS]>,
 }
 
 impl Pending {
     fn add(&self, id: StreamId) {
         let cur = now();
-        let mut times = self.times.borrow_mut();
+        let mut blocks = self.blocks.borrow_mut();
 
-        if let Some(item) = &times[0] {
+        if let Some(item) = &blocks[0] {
             // check if we need to insert new block
             if item.1 < (cur - BLOCK_SIZE) {
                 // shift blocks
                 let mut i = LAST_BLOCK - 1;
                 loop {
-                    times[i + 1] = times[i];
+                    blocks[i + 1] = blocks[i];
                     if i == 0 {
                         break;
                     }
                     i -= 1;
                 }
                 // insert new item
-                times[0] = Some((id, cur));
+                blocks[0] = Some((id, cur));
             }
         } else {
             // insert new item
-            times[0] = Some((id, cur));
+            blocks[0] = Some((id, cur));
         }
     }
 
     fn is_pending(&self, id: StreamId) -> bool {
-        let times = self.times.borrow();
+        let mut blocks = self.blocks.borrow_mut();
         let mut idx = LAST_BLOCK;
+        let mut cur = now() - ALL_BLOCKS;
         loop {
-            if let Some(item) = &times[idx] {
-                return id >= item.0;
-            } else if idx == 0 {
-                break;
+            if let Some(item) = &blocks[idx] {
+                if item.1 < cur {
+                    blocks[idx] = None;
+                } else {
+                    return id >= item.0;
+                }
             } else {
-                idx -= 1;
+                cur += BLOCK_SIZE;
             }
+            if idx == 0 {
+                break;
+            }
+            idx -= 1;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex::http::{test::server as test_server, HeaderMap, Method};
+    use ntex::time::{sleep, Millis, Seconds};
+    use ntex::{io::Io, service::fn_service, util::Bytes};
+
+    use crate::{self as h2, frame, frame::Reason, Codec};
+
+    const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+    fn get_reset(frm: frame::Frame) -> frame::Reset {
+        match frm {
+            frame::Frame::Reset(rst) => rst,
+            _ => panic!("Expect Reset frame: {:?}", frm),
+        }
+    }
+
+    fn goaway(frm: frame::Frame) -> frame::GoAway {
+        match frm {
+            frame::Frame::GoAway(f) => f,
+            _ => panic!("Expect Reset frame: {:?}", frm),
+        }
+    }
+
+    #[ntex::test]
+    async fn test_delay_reset_queue() {
+        let srv = test_server(|| {
+            fn_service(|io: Io<_>| async move {
+                let _ = h2::server::handle_one(
+                    io.into(),
+                    h2::Config::server().ping_timeout(Seconds::ZERO).clone(),
+                    fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        Ok::<_, ()>(msg.ack())
+                    }),
+                    fn_service(|msg: h2::Message| async move {
+                        msg.stream().reset(Reason::NO_ERROR);
+                        Ok::<_, h2::StreamError>(())
+                    }),
+                )
+                .await;
+
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+        let settings = frame::Settings::default();
+        io.encode(settings.into(), &codec).unwrap();
+
+        // settings & window
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+
+        let id = frame::StreamId::CLIENT;
+        let pseudo = frame::PseudoHeaders {
+            method: Some(Method::GET),
+            scheme: Some("HTTPS".into()),
+            authority: Some("localhost".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+        io.send(hdrs.into(), &codec).await.unwrap();
+
+        // server resets stream
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::NO_ERROR);
+
+        // server should keep reseted streams for some time
+        let pl = frame::Data::new(id, Bytes::from_static(b"data"));
+        io.send(pl.clone().into(), &codec).await.unwrap();
+
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+
+        // reset queue cleared in 1 sec (for test)
+        sleep(Millis(1100)).await;
+
+        let id2 = id.next_id().unwrap();
+        let hdrs = frame::Headers::new(id2, pseudo.clone(), HeaderMap::new(), false);
+        io.send(hdrs.into(), &codec).await.unwrap();
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::NO_ERROR);
+
+        // prev closed stream
+        io.send(pl.clone().into(), &codec).await.unwrap();
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+
+        sleep(Millis(1100)).await;
+
+        // prev closed stream
+        io.send(pl.into(), &codec).await.unwrap();
+        let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
     }
 }
