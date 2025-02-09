@@ -1,5 +1,9 @@
 # Changes
 
+## [1.8.2] - 2025-02-09
+
+* Re-calculate delay reset queue
+
 ## [1.8.2] - 2025-02-08
 
 * Better handling for delay reset queue
