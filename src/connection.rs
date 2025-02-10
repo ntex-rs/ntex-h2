@@ -709,9 +709,12 @@ impl RecvHalfConnection {
     ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
         log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
-        if frm.stream_id().is_zero() {
-            Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
-        } else if let Some(stream) = self.query(frm.stream_id()) {
+        let id = frm.stream_id();
+        if id.is_zero() {
+            Err(Either::Left(ConnectionError::UnknownStream(
+                "RST_STREAM-zero",
+            )))
+        } else if let Some(stream) = self.query(id) {
             stream.recv_rst_stream(&frm);
             self.update_rst_count()?;
 
@@ -719,7 +722,7 @@ impl RecvHalfConnection {
                 stream,
                 StreamError::Reset(frm.reason()),
             )))
-        } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
+        } else if self.0.local_pending_reset.is_pending(id) {
             self.update_rst_count()
         } else {
             self.update_rst_count()?;
@@ -901,6 +904,8 @@ impl Pending {
             blocks[idx].ids.clear();
             blocks[idx].ids.insert(id);
             self.idx.set(idx as u8);
+        } else {
+            blocks[idx].ids.insert(id);
         }
     }
 
