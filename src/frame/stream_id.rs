@@ -26,10 +26,6 @@ impl StreamId {
     /// The maximum allowed stream ID.
     pub const MAX: StreamId = StreamId(u32::MAX >> 1);
 
-    pub(crate) const fn new(src: u32) -> StreamId {
-        StreamId(src)
-    }
-
     /// Parse the stream ID
     #[inline]
     pub fn parse(buf: &[u8]) -> (StreamId, bool) {

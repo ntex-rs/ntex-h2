@@ -1,6 +1,10 @@
 # Changes
 
-## [1.8.2] - 2025-02-09
+## [1.8.4] - 2025-02-10
+
+* Refactor delay reset queue
+
+## [1.8.3] - 2025-02-09
 
 * Re-calculate delay reset queue
 
