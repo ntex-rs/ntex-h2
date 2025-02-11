@@ -71,7 +71,12 @@ where
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
-                log::error!("{}: Failed to handle message: {:?}", stream.tag(), stream);
+                log::error!(
+                    "{}: Failed to handle message, err: {:?} stream: {:?}",
+                    stream.tag(),
+                    kind,
+                    stream
+                );
 
                 stream.set_failed_stream(kind.into());
                 self.connection
