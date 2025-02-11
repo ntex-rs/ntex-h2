@@ -191,8 +191,8 @@ impl StreamState {
 
     fn reset_stream(&self, reason: Option<Reason>) {
         self.set_failed();
-        self.recv.set(HalfState::Closed(None));
-        self.send.set(HalfState::Closed(reason));
+        self.recv.set(HalfState::Closed(reason));
+        self.send.set(HalfState::Closed(None));
         if let Some(reason) = reason {
             self.error.set(Some(OperationError::LocalReset(reason)));
         }
@@ -201,16 +201,20 @@ impl StreamState {
 
     fn remote_reset_stream(&self, reason: Reason) {
         self.set_failed();
-        self.recv.set(HalfState::Closed(Some(reason)));
-        self.send.set(HalfState::Closed(None));
+        self.recv.set(HalfState::Closed(None));
+        self.send.set(HalfState::Closed(Some(reason)));
         self.error.set(Some(OperationError::RemoteReset(reason)));
         self.review_state();
     }
 
     fn failed(&self, err: OperationError) {
         self.set_failed();
-        self.recv.set(HalfState::Closed(None));
-        self.send.set(HalfState::Closed(None));
+        if !self.recv.get().is_closed() {
+            self.recv.set(HalfState::Closed(None));
+        }
+        if !self.send.get().is_closed() {
+            self.send.set(HalfState::Closed(None));
+        }
         self.error.set(Some(err));
         self.review_state();
     }
@@ -610,6 +614,8 @@ impl StreamRef {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<(), OperationError> {
+        self.0.check_error()?;
+
         match self.0.send.get() {
             HalfState::Idle => {
                 let pseudo = PseudoHeaders::response(status);

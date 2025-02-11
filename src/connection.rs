@@ -944,7 +944,7 @@ impl Default for Block {
 
 #[cfg(test)]
 mod tests {
-    use ntex::http::{test::server as test_server, HeaderMap, Method};
+    use ntex::http::{test::server as test_server, uri::Scheme, HeaderMap, Method};
     use ntex::time::{sleep, Millis, Seconds};
     use ntex::{io::Io, service::fn_service, util::Bytes};
 
@@ -964,6 +964,55 @@ mod tests {
             frame::Frame::GoAway(f) => f,
             _ => panic!("Expect Reset frame: {:?}", frm),
         }
+    }
+
+    #[ntex::test]
+    async fn test_remote_stream_refused() {
+        let srv = test_server(|| {
+            fn_service(|io: Io<_>| async move {
+                let _ = h2::server::handle_one(
+                    io.into(),
+                    h2::Config::server().ping_timeout(Seconds::ZERO).clone(),
+                    fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        Ok::<_, ()>(msg.ack())
+                    }),
+                    fn_service(|msg: h2::Message| async move {
+                        msg.stream().reset(Reason::REFUSED_STREAM);
+                        Ok::<_, h2::StreamError>(())
+                    }),
+                )
+                .await;
+
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(
+            io,
+            h2::Config::client(),
+            Scheme::HTTP,
+            "localhost".into(),
+        );
+        sleep(Millis(150)).await;
+
+        let (stream, recv_stream) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        sleep(Millis(150)).await;
+
+        let res = stream
+            .send_payload(Bytes::from_static(b"hello"), false)
+            .await;
+        assert!(res.is_err());
+
+        let msg = recv_stream.recv().await.unwrap();
+        assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
+
+        let con = &recv_stream.stream().0.con.0;
+        assert!(con.streams.borrow().is_empty());
     }
 
     #[ntex::test]
