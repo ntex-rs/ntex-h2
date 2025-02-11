@@ -71,9 +71,9 @@ where
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
-                stream.set_failed_stream(kind.into());
-                log::error!("{}: Failed to handle message: {:?}", stream.tag(), kind);
+                log::error!("{}: Failed to handle message: {:?}", stream.tag(), stream);
 
+                stream.set_failed_stream(kind.into());
                 self.connection
                     .encode(Reset::new(stream.id(), kind.reason()));
                 publish(Message::error(kind, &stream), stream, &self.inner, ctx).await
