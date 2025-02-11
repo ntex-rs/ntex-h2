@@ -190,7 +190,11 @@ impl RecvStream {
                 Poll::Pending
             }
         } else {
-            log::warn!("Stream does not exists, {:?}", self.0.id());
+            log::warn!(
+                "{}: Stream does not exists, {:?}",
+                self.0.tag(),
+                self.0.id()
+            );
             Poll::Ready(None)
         }
     }
@@ -244,7 +248,11 @@ impl Service<Message> for HandleService {
                 log::debug!("Stream {:?} is closed, notify", id);
             }
         } else {
-            log::error!("Received message for unknown stream, {:?}", msg);
+            log::error!(
+                "{}: Received message for unknown stream, {:?}",
+                msg.stream().tag(),
+                msg
+            );
         }
         Ok(())
     }
