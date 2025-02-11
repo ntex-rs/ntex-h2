@@ -696,7 +696,7 @@ impl RecvHalfConnection {
         let count = self.0.rst_count.get() + 1;
         let streams_count = self.0.streams_count.get();
         if streams_count >= 10 && count >= streams_count >> 1 {
-            Err(Either::Left(ConnectionError::ConcurrencyOverflow))
+            Err(Either::Left(ConnectionError::StreamResetsLimit))
         } else {
             self.0.rst_count.set(count);
             Ok(())
