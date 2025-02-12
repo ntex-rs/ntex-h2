@@ -327,6 +327,42 @@ async fn test_goaway_on_overflow() {
 }
 
 #[ntex::test]
+async fn test_stream_cancel() {
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let settings = frame::Settings::default();
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    io.send(hdrs.into(), &codec).await.unwrap();
+    io.send(frame::Reset::new(id, frame::Reason::CANCEL).into(), &codec)
+        .await
+        .unwrap();
+
+    let reset = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    assert!(reset.reason() == frame::Reason::CANCEL);
+}
+
+#[ntex::test]
 async fn test_goaway_on_reset() {
     let srv = start_server();
     let addr = srv.addr();

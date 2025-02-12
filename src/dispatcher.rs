@@ -7,7 +7,7 @@ use ntex_util::{spawn, HashMap};
 
 use crate::connection::{Connection, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
-use crate::error::{ConnectionError, OperationError, StreamErrorInner};
+use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
@@ -71,14 +71,18 @@ where
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
-                log::error!(
-                    "{}: Failed to handle message, err: {:?} stream: {:?}",
-                    stream.tag(),
-                    kind,
-                    stream
-                );
 
-                stream.set_failed_stream(kind.into());
+                if !matches!(kind, StreamError::Reset(_)) {
+                    log::error!(
+                        "{}: Failed to handle frame, err: {:?} stream: {:?}",
+                        stream.tag(),
+                        kind,
+                        stream
+                    );
+                } else {
+                    stream.set_failed_stream(kind.into());
+                }
+
                 self.connection
                     .encode(Reset::new(stream.id(), kind.reason()));
                 publish(Message::error(kind, &stream), stream, &self.inner, ctx).await
