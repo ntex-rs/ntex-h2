@@ -1,6 +1,6 @@
 # Changes
 
-## [1.8.5] - 2025-02-11
+## [1.8.5] - 2025-02-12
 
 * Fix handle for REFUSED_STREAM reset
 

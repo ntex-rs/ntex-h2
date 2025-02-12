@@ -183,14 +183,7 @@ impl StreamState {
         self.review_state();
     }
 
-    fn set_failed(&self) {
-        self.insert_flag(StreamFlags::FAILED);
-        self.send_cap.wake();
-        self.send_reset.wake();
-    }
-
     fn reset_stream(&self, reason: Option<Reason>) {
-        self.set_failed();
         self.recv.set(HalfState::Closed(reason));
         self.send.set(HalfState::Closed(None));
         if let Some(reason) = reason {
@@ -200,7 +193,6 @@ impl StreamState {
     }
 
     fn remote_reset_stream(&self, reason: Reason) {
-        self.set_failed();
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(Some(reason)));
         self.error.set(Some(OperationError::RemoteReset(reason)));
@@ -208,7 +200,6 @@ impl StreamState {
     }
 
     fn failed(&self, err: OperationError) {
-        self.set_failed();
         if !self.recv.get().is_closed() {
             self.recv.set(HalfState::Closed(None));
         }
@@ -216,6 +207,7 @@ impl StreamState {
             self.send.set(HalfState::Closed(None));
         }
         self.error.set(Some(err));
+        self.insert_flag(StreamFlags::FAILED);
         self.review_state();
     }
 
@@ -246,11 +238,12 @@ impl StreamState {
 
             if let HalfState::Closed(reason) = self.send.get() {
                 // stream is closed
-                if reason.is_some() {
+                if let Some(reason) = reason {
                     log::trace!(
-                        "{}: {:?} is closed with local reset, dropping stream",
+                        "{}: {:?} is closed with remote reset {:?}, dropping stream",
                         self.tag(),
-                        self.id
+                        self.id,
+                        reason
                     );
                 } else {
                     log::trace!(
@@ -259,6 +252,7 @@ impl StreamState {
                         self.id
                     );
                 }
+                self.send_cap.wake();
                 self.con.drop_stream(self.id);
             }
         }
