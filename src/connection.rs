@@ -1,5 +1,5 @@
 use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
-use std::{collections::VecDeque, time::Duration, time::Instant};
+use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
@@ -408,7 +408,7 @@ impl Connection {
         }
 
         // Add ids to pending queue
-        self.0.local_pending_reset.add(id);
+        self.0.local_pending_reset.add(id, &self.0.local_config);
     }
 
     pub(crate) fn recv_half(&self) -> RecvHalfConnection {
@@ -722,7 +722,7 @@ impl RecvHalfConnection {
                 stream,
                 StreamError::Reset(frm.reason()),
             )))
-        } else if self.0.local_pending_reset.is_pending(id) {
+        } else if self.0.local_pending_reset.remove(id) {
             self.update_rst_count()
         } else {
             self.update_rst_count()?;
@@ -866,79 +866,71 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
     }
 }
 
-const BLOCKS: usize = 5;
-const LAST_BLOCK: usize = 4;
+struct Pending(Cell<Option<Box<PendingInner>>>);
 
-#[cfg(not(test))]
-const SECS: u64 = 30;
-#[cfg(test)]
-const SECS: u64 = 1;
-
-const BLOCK_SIZE: Duration = Duration::from_secs(SECS);
-const ALL_BLOCKS: Duration = Duration::from_secs((BLOCKS as u64) * SECS);
-
-#[derive(Default)]
-struct Pending {
-    idx: Cell<u8>,
-    blocks: RefCell<[Block; BLOCKS]>,
+struct PendingInner {
+    ids: HashSet<StreamId>,
+    queue: VecDeque<(StreamId, Instant)>,
 }
 
-#[derive(Debug)]
-struct Block {
-    start_time: Instant,
-    ids: HashSet<StreamId>,
+impl Default for Pending {
+    fn default() -> Self {
+        Self(Cell::new(Some(Box::new(PendingInner {
+            ids: HashSet::default(),
+            queue: VecDeque::with_capacity(16),
+        }))))
+    }
 }
 
 impl Pending {
-    fn add(&self, id: StreamId) {
-        let cur = now();
-        let idx = self.idx.get() as usize;
-        let mut blocks = self.blocks.borrow_mut();
+    fn add(&self, id: StreamId, config: &Config) {
+        let mut inner = self.0.take().unwrap();
 
-        // check if we need to insert new block
-        if blocks[idx].start_time < (cur - BLOCK_SIZE) {
-            // shift blocks
-            let idx = if idx == 0 { LAST_BLOCK } else { idx - 1 };
-            // insert new item
-            blocks[idx].start_time = cur;
-            blocks[idx].ids.clear();
-            blocks[idx].ids.insert(id);
-            self.idx.set(idx as u8);
-        } else {
-            blocks[idx].ids.insert(id);
+        let current_time = now();
+
+        // remove old ids
+        let max_time = current_time - config.0.reset_duration.get();
+        while let Some(item) = inner.queue.front() {
+            if item.1 < max_time {
+                inner.ids.remove(&item.0);
+                inner.queue.pop_front();
+            } else {
+                break;
+            }
         }
+
+        // shrink size of ids
+        while inner.queue.len() >= config.0.reset_max.get() {
+            if let Some((id, _)) = inner.queue.pop_front() {
+                inner.ids.remove(&id);
+            }
+        }
+
+        inner.ids.insert(id);
+        inner.queue.push_back((id, current_time));
+        self.0.set(Some(inner));
+    }
+
+    fn remove(&self, id: StreamId) -> bool {
+        let mut inner = self.0.take().unwrap();
+        let removed = inner.ids.remove(&id);
+        if removed {
+            for idx in 0..inner.queue.len() {
+                if inner.queue[idx].0 == id {
+                    inner.queue.remove(idx);
+                    break;
+                }
+            }
+        }
+        self.0.set(Some(inner));
+        removed
     }
 
     fn is_pending(&self, id: StreamId) -> bool {
-        let blocks = self.blocks.borrow_mut();
-
-        let max = now() - ALL_BLOCKS;
-        let mut idx = self.idx.get() as usize;
-
-        loop {
-            let item = &blocks[idx];
-            if item.start_time < max {
-                break;
-            } else if item.ids.contains(&id) {
-                return true;
-            }
-            idx += 1;
-            if idx == BLOCKS {
-                idx = 0;
-            } else if idx == self.idx.get() as usize {
-                break;
-            }
-        }
-        false
-    }
-}
-
-impl Default for Block {
-    fn default() -> Self {
-        Self {
-            ids: HashSet::default(),
-            start_time: now() - ALL_BLOCKS,
-        }
+        let inner = self.0.take().unwrap();
+        let pending = inner.ids.contains(&id);
+        self.0.set(Some(inner));
+        pending
     }
 }
 
@@ -1017,11 +1009,16 @@ mod tests {
 
     #[ntex::test]
     async fn test_delay_reset_queue() {
+        let _ = env_logger::try_init();
+
         let srv = test_server(|| {
             fn_service(|io: Io<_>| async move {
                 let _ = h2::server::handle_one(
                     io.into(),
-                    h2::Config::server().ping_timeout(Seconds::ZERO).clone(),
+                    h2::Config::server()
+                        .ping_timeout(Seconds::ZERO)
+                        .reset_stream_duration(Seconds(1))
+                        .clone(),
                     fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
                         Ok::<_, ()>(msg.ack())
                     }),
@@ -1037,7 +1034,7 @@ mod tests {
         });
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
+        let io = ntex::connect::connect(addr.clone()).await.unwrap();
         let codec = Codec::default();
         let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
 
@@ -1081,14 +1078,45 @@ mod tests {
         assert_eq!(res.reason(), Reason::NO_ERROR);
 
         // prev closed stream
-        io.send(pl.clone().into(), &codec).await.unwrap();
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
-
-        sleep(Millis(5100)).await;
-
-        // prev closed stream
         io.send(pl.into(), &codec).await.unwrap();
+        let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+
+        // SECOND connection
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+        let settings = frame::Settings::default();
+        io.encode(settings.into(), &codec).unwrap();
+
+        // settings & window
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+
+        let id = frame::StreamId::CLIENT;
+        let pseudo = frame::PseudoHeaders {
+            method: Some(Method::GET),
+            scheme: Some("HTTPS".into()),
+            authority: Some("localhost".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+        io.send(hdrs.into(), &codec).await.unwrap();
+
+        // server resets stream
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::NO_ERROR);
+
+        // after server receives remote reset, any next frame cause protocol error
+        io.send(frame::Reset::new(id, Reason::NO_ERROR).into(), &codec)
+            .await
+            .unwrap();
+
+        let pl = frame::Data::new(id, Bytes::from_static(b"data"));
+        io.send(pl.clone().into(), &codec).await.unwrap();
         let res = goaway(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
     }

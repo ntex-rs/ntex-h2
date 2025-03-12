@@ -1,5 +1,9 @@
 # Changes
 
+## [1.8.6] - 2025-03-12
+
+* Simplify delay reset queue
+
 ## [1.8.5] - 2025-02-12
 
 * Fix handle for REFUSED_STREAM reset
