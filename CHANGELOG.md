@@ -1,5 +1,9 @@
 # Changes
 
+## [1.9.0] - 2025-06-13
+
+* Update nanorand 0.8
+
 ## [1.8.6] - 2025-03-12
 
 * Simplify delay reset queue
