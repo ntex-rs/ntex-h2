@@ -303,13 +303,10 @@ impl Table {
 
         let pos_idx = 0usize.wrapping_sub(self.inserted);
 
-        let prev = mem::replace(
-            &mut self.indices[probe],
-            Some(Pos {
-                index: pos_idx,
-                hash,
-            }),
-        );
+        let prev = self.indices[probe].replace(Pos {
+            index: pos_idx,
+            hash,
+        });
 
         if let Some(mut prev) = prev {
             // Shift forward

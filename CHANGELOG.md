@@ -1,5 +1,9 @@
 # Changes
 
+## [1.10.0] - 2025-06-29
+
+* Generate unique id for simple client
+
 ## [1.9.0] - 2025-06-13
 
 * Update nanorand 0.8
