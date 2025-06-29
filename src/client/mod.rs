@@ -43,7 +43,7 @@ impl From<ConnectionError> for ClientError {
 
 impl From<ntex_util::channel::Canceled> for ClientError {
     fn from(err: ntex_util::channel::Canceled) -> Self {
-        Self::Disconnected(std::io::Error::new(std::io::ErrorKind::Other, err))
+        Self::Disconnected(std::io::Error::other(err))
     }
 }
 

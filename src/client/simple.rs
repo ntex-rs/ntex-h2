@@ -1,5 +1,6 @@
 use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
+use nanorand::Rng;
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
@@ -18,6 +19,7 @@ pub struct SimpleClient(Rc<ClientRef>);
 
 /// Http2 client
 struct ClientRef {
+    id: ByteString,
     con: Connection,
     authority: ByteString,
     storage: InflightStorage,
@@ -69,7 +71,14 @@ impl SimpleClient {
             con,
             authority,
             storage,
+            id: gen_id(),
         }))
+    }
+
+    #[inline]
+    /// Get client id
+    pub fn id(&self) -> &ByteString {
+        &self.0.id
     }
 
     #[inline]
@@ -255,4 +264,16 @@ impl Future for ClientDisconnect {
         }
         Poll::Pending
     }
+}
+
+fn gen_id() -> ByteString {
+    const BASE: &str = "abcdefghijklmnopqrstuvwxyz234567";
+
+    let mut rng = nanorand::tls_rng();
+    let mut id = String::with_capacity(16);
+    for _ in 0..16 {
+        let idx = rng.generate_range::<usize, _>(..BASE.len());
+        id.push_str(&BASE[idx..idx + 1]);
+    }
+    ByteString::from(id)
 }
