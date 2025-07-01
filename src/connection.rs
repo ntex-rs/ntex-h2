@@ -489,7 +489,7 @@ impl RecvHalfConnection {
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         } else if !is_server
-            && (self.0.local_pending_reset.is_pending(id) || !self.0.err_unknown_streams())
+            && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id))
         {
             // if client and no stream, then it was closed
             self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
@@ -566,8 +566,8 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if self.0.local_pending_reset.is_pending(frm.stream_id())
-            || !self.0.err_unknown_streams()
+        } else if !self.0.err_unknown_streams()
+            || self.0.local_pending_reset.is_pending(frm.stream_id())
         {
             self.encode(frame::Reset::new(
                 frm.stream_id(),
