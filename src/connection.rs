@@ -22,6 +22,7 @@ bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct ConnectionFlags: u8 {
         const SETTINGS_PROCESSED      = 0b0000_0001;
+        const UNKNOWN_STREAMS         = 0b0000_0010;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
         const STREAM_REFUSED          = 0b0010_0000;
@@ -62,7 +63,13 @@ struct ConnectionState {
 }
 
 impl Connection {
-    pub(crate) fn new(io: IoRef, codec: Codec, config: Config, secure: bool) -> Self {
+    pub(crate) fn new(
+        io: IoRef,
+        codec: Codec,
+        config: Config,
+        secure: bool,
+        skip_streams: bool,
+    ) -> Self {
         // send preface
         if !config.is_server() {
             let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
@@ -94,6 +101,15 @@ impl Connection {
 
         let remote_frame_size = Cell::new(codec.send_frame_size());
 
+        let mut flags = if secure {
+            ConnectionFlags::SECURE
+        } else {
+            ConnectionFlags::empty()
+        };
+        if !skip_streams {
+            flags.insert(ConnectionFlags::UNKNOWN_STREAMS);
+        }
+
         let state = Rc::new(ConnectionState {
             codec,
             remote_frame_size,
@@ -113,11 +129,7 @@ impl Connection {
             local_pending_reset: Default::default(),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
-            flags: Cell::new(if secure {
-                ConnectionFlags::SECURE
-            } else {
-                ConnectionFlags::empty()
-            }),
+            flags: Cell::new(flags),
         });
         let con = Connection(state);
 
@@ -408,7 +420,9 @@ impl Connection {
         }
 
         // Add ids to pending queue
-        self.0.local_pending_reset.add(id, &self.0.local_config);
+        if flags.contains(ConnectionFlags::UNKNOWN_STREAMS) {
+            self.0.local_pending_reset.add(id, &self.0.local_config);
+        }
     }
 
     pub(crate) fn recv_half(&self) -> RecvHalfConnection {
@@ -417,6 +431,12 @@ impl Connection {
 
     pub(crate) fn pings_count(&self) -> u16 {
         self.0.pings_count.get()
+    }
+}
+
+impl ConnectionState {
+    fn err_unknown_streams(&self) -> bool {
+        self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
     }
 }
 
@@ -455,8 +475,9 @@ impl RecvHalfConnection {
         frm: Headers,
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
+        let is_server = self.0.local_config.is_server();
 
-        if self.0.local_config.is_server() && !id.is_client_initiated() {
+        if is_server && !id.is_client_initiated() {
             return Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Invalid id in received headers frame",
             )));
@@ -467,7 +488,9 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if !self.0.local_config.is_server() && self.0.local_pending_reset.is_pending(id) {
+        } else if !is_server
+            && (self.0.local_pending_reset.is_pending(id) || !self.0.err_unknown_streams())
+        {
             // if client and no stream, then it was closed
             self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
             Ok(None)
@@ -543,7 +566,9 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
+        } else if self.0.local_pending_reset.is_pending(frm.stream_id())
+            || !self.0.err_unknown_streams()
+        {
             self.encode(frame::Reset::new(
                 frm.stream_id(),
                 frame::Reason::STREAM_CLOSED,
@@ -684,11 +709,17 @@ impl RecvHalfConnection {
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
         } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
             Ok(())
-        } else {
+        } else if self.0.err_unknown_streams() {
             log::trace!("Unknown WINDOW_UPDATE {:?}", frm);
             Err(Either::Left(ConnectionError::UnknownStream(
                 "WINDOW_UPDATE",
             )))
+        } else {
+            self.encode(frame::Reset::new(
+                frm.stream_id(),
+                frame::Reason::STREAM_CLOSED,
+            ));
+            Ok(())
         }
     }
 
@@ -724,9 +755,11 @@ impl RecvHalfConnection {
             )))
         } else if self.0.local_pending_reset.remove(id) {
             self.update_rst_count()
-        } else {
+        } else if self.0.err_unknown_streams() {
             self.update_rst_count()?;
             Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
+        } else {
+            Ok(())
         }
     }
 

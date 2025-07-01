@@ -1,5 +1,9 @@
 # Changes
 
+## [1.11.0] - 2025-07-01
+
+* Allow to skip frames for unknown streams
+
 ## [1.10.0] - 2025-06-29
 
 * Generate unique id for simple client

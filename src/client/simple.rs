@@ -36,6 +36,7 @@ impl SimpleClient {
             config,
             scheme,
             authority,
+            false,
             InflightStorage::default(),
         )
     }
@@ -45,10 +46,11 @@ impl SimpleClient {
         config: Config,
         scheme: Scheme,
         authority: ByteString,
+        skip_unknown_streams: bool,
         storage: InflightStorage,
     ) -> Self {
         let codec = Codec::default();
-        let con = Connection::new(io.get_ref(), codec, config, false);
+        let con = Connection::new(io.get_ref(), codec, config, false, skip_unknown_streams);
         con.set_secure(scheme == Scheme::HTTPS);
 
         let disp = Dispatcher::new(
