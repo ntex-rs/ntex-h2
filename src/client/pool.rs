@@ -361,9 +361,9 @@ impl ClientBuilder {
         self
     }
 
-    /// Do not return error on unknown streams.
+    /// Do not return error for frames for unknown streams.
     ///
-    /// This includes pending resets
+    /// This includes pending resets, data and window update frames.
     pub fn skip_unknown_streams(mut self) -> Self {
         self.0.skip_unknown_streams = true;
         self
