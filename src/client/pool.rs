@@ -175,6 +175,7 @@ impl Client {
                         inner.config.clone(),
                         inner.scheme.clone(),
                         inner.authority.clone(),
+                        inner.skip_unknown_streams,
                         storage,
                     );
                     inner.connections.borrow_mut().push(client);
@@ -273,6 +274,7 @@ struct Inner {
     conn_lifetime: Duration,
     disconnect_timeout: Millis,
     max_streams: u32,
+    skip_unknown_streams: bool,
     scheme: Scheme,
     config: crate::Config,
     authority: ByteString,
@@ -311,6 +313,7 @@ impl ClientBuilder {
             conn_lifetime: Duration::from_secs(0),
             disconnect_timeout: Millis(15_000),
             max_streams: 100,
+            skip_unknown_streams: false,
             minconn: 1,
             maxconn: 16,
             scheme: Scheme::HTTP,
@@ -355,6 +358,14 @@ impl ClientBuilder {
     /// The default limit size is 100.
     pub fn max_streams(mut self, limit: u32) -> Self {
         self.0.max_streams = limit;
+        self
+    }
+
+    /// Do not return error for frames for unknown streams.
+    ///
+    /// This includes pending resets, data and window update frames.
+    pub fn skip_unknown_streams(mut self) -> Self {
+        self.0.skip_unknown_streams = true;
         self
     }
 

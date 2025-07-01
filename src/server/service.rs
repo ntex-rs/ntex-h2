@@ -136,7 +136,13 @@ where
 
         // create h2 codec
         let codec = Codec::default();
-        let con = Connection::new(io.get_ref(), codec.clone(), inner.config.clone(), true);
+        let con = Connection::new(
+            io.get_ref(),
+            codec.clone(),
+            inner.config.clone(),
+            true,
+            false,
+        );
         let con2 = con.clone();
 
         // start protocol dispatcher
@@ -249,7 +255,7 @@ where
 
     // create h2 codec
     let codec = Codec::default();
-    let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true);
+    let con = Connection::new(io.get_ref(), codec.clone(), config.clone(), true, false);
     let con2 = con.clone();
 
     // start protocol dispatcher
