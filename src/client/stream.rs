@@ -245,13 +245,12 @@ impl Service<Message> for HandleService {
 
             if eof {
                 self.0.notify(id);
-                log::debug!("Stream {:?} is closed, notify", id);
+                log::debug!("Stream {id:?} is closed, notify");
             }
         } else if !matches!(msg.kind(), MessageKind::Disconnect(_)) {
             log::error!(
-                "{}: Received message for unknown stream, {:?}",
+                "{}: Received message for unknown stream, {msg:?}",
                 msg.stream().tag(),
-                msg
             );
         }
         Ok(())

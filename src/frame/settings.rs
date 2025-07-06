@@ -211,7 +211,7 @@ impl Settings {
     }
 
     pub fn encode(&self, dst: &mut BytesMut) {
-        log::trace!("encoding SETTINGS; len={:?}", self);
+        log::trace!("encoding SETTINGS; len={self:?}");
 
         // Create & encode an appropriate frame head
         let head = Head::new(Kind::Settings, self.flags.into(), StreamId::zero());
@@ -220,7 +220,7 @@ impl Settings {
 
         // Encode the settings
         self.for_each(|setting| {
-            log::trace!("encoding setting; val={:?}", setting);
+            log::trace!("encoding setting; val={setting:?}");
             setting.encode(dst)
         });
     }

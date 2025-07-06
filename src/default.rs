@@ -28,7 +28,7 @@ impl<E: fmt::Debug + 'static> Service<Control<E>> for DefaultControlService {
         msg: Control<E>,
         _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::trace!("Default control service is used: {:?}", msg);
+        log::trace!("Default control service is used: {msg:?}");
         Ok(msg.ack())
     }
 }

@@ -119,13 +119,13 @@ where
 
             // create publish service
             let pub_srv = inner.publish.create(()).await.map_err(|e| {
-                log::error!("Publish service init error: {:?}", e);
+                log::error!("Publish service init error: {e:?}");
                 ServerError::PublishServiceError
             })?;
 
             // create control service
             let ctl_srv = inner.control.create(()).await.map_err(|e| {
-                log::error!("Control service init error: {:?}", e);
+                log::error!("Control service init error: {e:?}");
                 ServerError::ControlServiceError
             })?;
 
@@ -214,7 +214,7 @@ async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
                     buf.split_to(consts::PREFACE.len());
                     Ok(true)
                 } else {
-                    log::trace!("read_preface: invalid preface {:?}", buf);
+                    log::trace!("read_preface: invalid preface {buf:?}");
                     Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
                 }
             } else {

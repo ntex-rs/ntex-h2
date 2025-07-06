@@ -458,7 +458,7 @@ impl HeaderBlock {
                         log::trace!("load_hpack; connection level header");
                         malformed = true;
                     } else if name == header::TE && value != "trailers" {
-                        log::trace!("load_hpack; TE header not set to trailers; val={:?}", value);
+                        log::trace!("load_hpack; TE header not set to trailers; val={value:?}");
                         malformed = true;
                     } else {
                         reg = true;
@@ -487,7 +487,7 @@ impl HeaderBlock {
         });
 
         if let Err(e) = res {
-            log::trace!("hpack decoding error; err={:?}", e);
+            log::trace!("hpack decoding error; err={e:?}");
             return Err(e.into());
         }
 
