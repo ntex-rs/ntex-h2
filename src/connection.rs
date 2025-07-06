@@ -77,7 +77,7 @@ impl Connection {
 
         // send setting to the peer
         let settings = config.0.settings.get();
-        log::debug!("Sending local settings {:?}", settings);
+        log::debug!("Sending local settings {settings:?}");
         io.encode(settings.into(), &codec).unwrap();
 
         let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
@@ -89,7 +89,7 @@ impl Connection {
             config.0.connection_window_sz.get(),
             config.0.connection_window_sz_threshold.get(),
         ) {
-            log::debug!("Sending connection window update to {:?}", val);
+            log::debug!("Sending connection window update to {val:?}");
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
@@ -384,9 +384,8 @@ impl Connection {
             let mut streams = self.0.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
                 log::trace!(
-                    "{}: Dropping stream {:?} remote: {:?}",
+                    "{}: Dropping stream {id:?} remote: {:?}",
                     self.tag(),
-                    id,
                     stream.is_remote()
                 );
                 if stream.is_remote() {
@@ -585,7 +584,7 @@ impl RecvHalfConnection {
         &self,
         settings: frame::Settings,
     ) -> Result<(), Either<ConnectionError, Vec<StreamErrorInner>>> {
-        log::trace!("processing incoming settings: {:#?}", settings);
+        log::trace!("processing incoming settings: {settings:#?}");
 
         if settings.is_ack() {
             if !self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
@@ -654,11 +653,7 @@ impl RecvHalfConnection {
             if let Some(val) = settings.initial_window_size() {
                 let old_val = self.0.remote_window_sz.get();
                 self.0.remote_window_sz.set(val);
-                log::trace!(
-                    "Update remote initial window size to {} from {}",
-                    val,
-                    old_val
-                );
+                log::trace!("Update remote initial window size to {val} from {old_val}");
 
                 let mut stream_errors = Vec::new();
 
@@ -710,7 +705,7 @@ impl RecvHalfConnection {
         } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
             Ok(())
         } else if self.0.err_unknown_streams() {
-            log::trace!("Unknown WINDOW_UPDATE {:?}", frm);
+            log::trace!("Unknown WINDOW_UPDATE {frm:?}");
             Err(Either::Left(ConnectionError::UnknownStream(
                 "WINDOW_UPDATE",
             )))

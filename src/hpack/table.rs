@@ -315,7 +315,7 @@ impl Table {
             probe_loop!(probe < self.indices.len(), {
                 let pos = &mut self.indices[probe];
 
-                prev = match mem::replace(pos, Some(prev)) {
+                prev = match pos.replace(prev) {
                     Some(p) => p,
                     None => break,
                 };

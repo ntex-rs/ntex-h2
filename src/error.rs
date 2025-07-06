@@ -53,17 +53,18 @@ impl ConnectionError {
             ConnectionError::Decoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame decoding")
             }
-            ConnectionError::MissingPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
-                .set_data(format!("Missing pseudo header {:?}", s)),
+            ConnectionError::MissingPseudo(s) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Missing pseudo header {s:?}"))
+            }
             ConnectionError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
-                .set_data(format!("Unexpected pseudo header {:?}", s)),
+                .set_data(format!("Unexpected pseudo header {s:?}")),
             ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
             }
             ConnectionError::InvalidStreamId(_) => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("An invalid stream identifier was provided"),
             ConnectionError::StreamClosed(s, _) => {
-                GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{:?} is closed", s))
+                GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{s:?} is closed"))
             }
             ConnectionError::UnexpectedSettingsAck => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Received unexpected settings ack")

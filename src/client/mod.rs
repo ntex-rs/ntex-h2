@@ -62,7 +62,7 @@ impl Clone for ClientError {
             Self::HandshakeTimeout => Self::HandshakeTimeout,
             Self::Connect(err) => Self::Connect(err.clone()),
             Self::Disconnected(err) => {
-                Self::Disconnected(std::io::Error::new(err.kind(), format!("{}", err)))
+                Self::Disconnected(std::io::Error::new(err.kind(), format!("{err}")))
             }
         }
     }
