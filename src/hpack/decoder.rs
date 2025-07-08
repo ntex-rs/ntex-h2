@@ -1,7 +1,7 @@
 use std::{cmp, collections::VecDeque, io::Cursor, str::Utf8Error};
 
 use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
-use ntex_http::{error, header, Method, StatusCode};
+use ntex_http::{compat, header, Method, StatusCode};
 
 use super::{huffman, Header};
 
@@ -578,41 +578,36 @@ impl Table {
 
 impl From<Utf8Error> for DecoderError {
     fn from(_: Utf8Error) -> DecoderError {
-        // TODO: Better error?
         DecoderError::InvalidUtf8
     }
 }
 
 impl From<()> for DecoderError {
     fn from(_: ()) -> DecoderError {
-        // TODO: Better error?
         DecoderError::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderValue> for DecoderError {
     fn from(_: header::InvalidHeaderValue) -> DecoderError {
-        // TODO: Better error?
         DecoderError::InvalidUtf8
     }
 }
 
 impl From<header::InvalidHeaderName> for DecoderError {
     fn from(_: header::InvalidHeaderName) -> DecoderError {
-        // TODO: Better error
         DecoderError::InvalidUtf8
     }
 }
 
-impl From<error::InvalidMethod> for DecoderError {
-    fn from(_: error::InvalidMethod) -> DecoderError {
-        // TODO: Better error
+impl From<compat::InvalidMethod> for DecoderError {
+    fn from(_: compat::InvalidMethod) -> DecoderError {
         DecoderError::InvalidUtf8
     }
 }
 
-impl From<error::InvalidStatusCode> for DecoderError {
-    fn from(_: error::InvalidStatusCode) -> DecoderError {
+impl From<compat::InvalidStatusCode> for DecoderError {
+    fn from(_: compat::InvalidStatusCode) -> DecoderError {
         // TODO: Better error
         DecoderError::InvalidUtf8
     }

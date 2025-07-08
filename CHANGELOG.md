@@ -1,5 +1,9 @@
 # Changes
 
+## [1.12.0] - 2025-07-08
+
+* Use new errors from ntex-http
+
 ## [1.11.0] - 2025-07-01
 
 * Allow to skip frames for unknown streams
