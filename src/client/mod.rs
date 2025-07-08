@@ -1,4 +1,5 @@
 //! Http2 client
+use std::rc::Rc;
 
 mod connector;
 mod pool;
@@ -17,7 +18,7 @@ pub use self::stream::{RecvStream, SendStream};
 pub enum ClientError {
     /// Protocol error
     #[error("Protocol error: {0}")]
-    Protocol(Box<ConnectionError>),
+    Protocol(Rc<ConnectionError>),
     /// Operation error
     #[error("Operation error: {0}")]
     Operation(#[from] OperationError),
@@ -29,7 +30,7 @@ pub enum ClientError {
     HandshakeTimeout,
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(Box<ntex_net::connect::ConnectError>),
+    Connect(Rc<ntex_net::connect::ConnectError>),
     /// Peer disconnected
     #[error("Peer disconnected err: {0}")]
     Disconnected(#[from] std::io::Error),
@@ -37,7 +38,7 @@ pub enum ClientError {
 
 impl From<ConnectionError> for ClientError {
     fn from(err: ConnectionError) -> Self {
-        Self::Protocol(Box::new(err))
+        Self::Protocol(Rc::new(err))
     }
 }
 
@@ -49,7 +50,7 @@ impl From<ntex_util::channel::Canceled> for ClientError {
 
 impl From<ntex_net::connect::ConnectError> for ClientError {
     fn from(err: ntex_net::connect::ConnectError) -> Self {
-        Self::Connect(Box::new(err))
+        Self::Connect(Rc::new(err))
     }
 }
 
