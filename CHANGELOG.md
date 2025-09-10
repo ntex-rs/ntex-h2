@@ -1,5 +1,9 @@
 # Changes
 
+## [1.13.0] - 2025-09-10
+
+* Use ahash instead of fxhash
+
 ## [1.12.0] - 2025-07-08
 
 * Use new errors from ntex-http

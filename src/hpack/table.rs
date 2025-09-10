@@ -1,6 +1,6 @@
 use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem};
 
-use fxhash::FxHasher;
+use ahash::AHasher;
 use ntex_http::{header, Method};
 
 use super::Header;
@@ -661,7 +661,7 @@ fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
 fn hash_header(header: &Header) -> HashValue {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    let mut h = FxHasher::default();
+    let mut h = AHasher::default();
     header.name().hash(&mut h);
     HashValue((h.finish() & MASK) as usize)
 }
