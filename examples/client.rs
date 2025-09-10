@@ -27,7 +27,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     let mut hdrs = HeaderMap::default();
     hdrs.insert(
         header::CONTENT_TYPE,
-        header::HeaderValue::try_from("json").unwrap(),
+        header::HeaderValue::try_from("text/plain").unwrap(),
     );
     let (stream, recv_stream) = pool
         .send(Method::GET, "/test/index.html".into(), hdrs, false)
