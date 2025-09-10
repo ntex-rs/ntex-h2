@@ -64,7 +64,7 @@ jobs:
         if: matrix.rust == 'nightly' || matrix.rust == 'beta'
         with:
           command: build
-          args: --features=ntex-net/tokio
+          args: --features=ntex-net/neon
 
       - name: Run lib tests and doc tests
         uses: actions-rs/cargo@v1
@@ -74,7 +74,7 @@ jobs:
           args: --features=ntex-net/tokio
 
       - name: Generate code coverage
-        run: cargo llvm-cov --no-report --features=ntex-net/tokio
+        run: cargo llvm-cov --no-report --features=ntex-net/neon
         if: matrix.rust == 'stable'
 
       #- name: Run integration tests
@@ -105,7 +105,7 @@ jobs:
     strategy:
       matrix:
         rust:
-          - 1.75 # never go past ntex's msrv
+          - 1.82 # never go past ntex's msrv
 
         os:
           - ubuntu-latest
@@ -127,4 +127,4 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: check
-          args: --features=ntex-net/tokio
+          args: --features=ntex-net/neon

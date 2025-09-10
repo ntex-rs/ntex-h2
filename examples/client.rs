@@ -17,22 +17,35 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .set_alpn_protos(b"\x02h2\x08http/1.1")
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
+    //https://www.mexc.com/api/platform/spot/market-v2/web/symbolsV2
+
     let pool = client::Client::build(
-        "127.0.0.1:5928",
+        "www.mexc.com:443",
         ntex_tls::openssl::SslConnector::new(builder.build()),
     )
     .scheme(Scheme::HTTPS)
     .finish();
 
     let mut hdrs = HeaderMap::default();
-    hdrs.insert(
-        header::CONTENT_TYPE,
-        header::HeaderValue::try_from("text/plain").unwrap(),
-    );
+    // hdrs.insert(
+    //     header::CONTENT_TYPE,
+    //     header::HeaderValue::try_from("json").unwrap(),
+    // );
+    // hdrs.insert(
+    //     header::ACCEPT_ENCODING,
+    //     header::HeaderValue::try_from("br").unwrap(),
+    // );
     let (stream, recv_stream) = pool
-        .send(Method::GET, "/test/index.html".into(), hdrs, false)
+        .send(
+            Method::GET,
+            "/api/platform/spot/market-v2/web/symbolsV2".into(),
+            hdrs,
+            false,
+        )
         .await
         .unwrap();
+
+    ntex::time::sleep(ntex::time::Millis(1000)).await;
 
     ntex::rt::spawn(async move {
         while let Some(msg) = recv_stream.recv().await {
