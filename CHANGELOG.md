@@ -1,5 +1,9 @@
 # Changes
 
+## [1.14.0] - 2025-11-06
+
+* Fix idle pings handling
+
 ## [1.13.0] - 2025-09-10
 
 * Use ahash instead of fxhash

@@ -5,7 +5,7 @@ use ntex::http::{
     test::server as test_server, uri::Scheme, HeaderMap, HttpService, Method, Response,
 };
 use ntex::service::{fn_service, ServiceFactory};
-use ntex::time::{sleep, Millis};
+use ntex::time::{sleep, Millis, Seconds};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
 use ntex_h2::{client, client::Client, client::SimpleClient, frame, frame::Reason, Codec};
 
@@ -469,4 +469,42 @@ async fn test_goaway_on_reset2() {
     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
     assert!(io.recv(&codec).await.unwrap().is_none());
+}
+
+#[ntex::test]
+async fn test_ping_timeout_on_idle() {
+    let _srv = test_server(move || {
+        HttpService::build()
+            .h2_configure(|cfg| {
+                cfg.max_concurrent_streams(1);
+                cfg.ping_timeout(Seconds(1));
+            })
+            .h2(|mut req: ntex::http::Request| async move {
+                let mut pl = req.take_payload();
+                pl.recv().await;
+                Ok::<_, io::Error>(Response::Ok().body("test body"))
+            })
+            .openssl(ssl_acceptor())
+            .map_err(|_| ())
+    });
+
+    let srv = start_server();
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let settings = frame::Settings::default();
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    sleep(Millis(12000)).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    assert!(io.is_closed());
 }
