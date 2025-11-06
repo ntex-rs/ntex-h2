@@ -473,7 +473,7 @@ async fn test_goaway_on_reset2() {
 
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
-    let srv = test_server(move || {
+    let _srv = test_server(move || {
         HttpService::build()
             .h2_configure(|cfg| {
                 cfg.max_concurrent_streams(1);
