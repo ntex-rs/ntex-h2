@@ -503,7 +503,7 @@ async fn test_ping_timeout_on_idle() {
     let _ = io.recv(&codec).await;
     let _ = io.recv(&codec).await;
 
-    sleep(Millis(12000)).await;
+    sleep(Millis(13000)).await;
     let _ = io.recv(&codec).await;
     let _ = io.recv(&codec).await;
     assert!(io.is_closed());
