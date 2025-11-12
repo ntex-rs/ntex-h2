@@ -883,7 +883,7 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
             break;
         }
         if !st.0.flags.get().contains(ConnectionFlags::RECV_PONG) {
-            io.notify_keepalive();
+            io.notify_timeout();
             break;
         }
 
