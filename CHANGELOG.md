@@ -1,5 +1,9 @@
 # Changes
 
+## [1.14.1] - 2025-11-12
+
+* Resolve keep-alive handling for idle state
+
 ## [1.14.0] - 2025-11-06
 
 * Fix idle pings handling
