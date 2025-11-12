@@ -1,5 +1,9 @@
 # Changes
 
+## [1.14.2] - 2025-11-12
+
+* Update MSRV 1.82
+
 ## [1.14.1] - 2025-11-12
 
 * Resolve keep-alive handling for idle state
