@@ -11,7 +11,7 @@ keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.83"
 
 [features]
 default = []
@@ -23,7 +23,7 @@ unstable = []
 features = []
 
 [dependencies]
-ntex-net = "2"
+ntex-net = "2.10"
 ntex-io = "2.16.0"
 ntex-http = "0.1.14"
 ntex-bytes = "0.1"
