@@ -1,6 +1,5 @@
 use std::{cell::Cell, fmt, rc::Rc, time::Duration};
 
-use ntex_io::DispatcherConfig;
 use ntex_util::{channel::pool, time::Seconds};
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
@@ -39,7 +38,6 @@ pub(crate) struct ConfigInner {
     /// Connection timeouts
     pub(crate) handshake_timeout: Cell<Seconds>,
     pub(crate) ping_timeout: Cell<Seconds>,
-    pub(crate) dispatcher_config: DispatcherConfig,
 
     /// Config flags
     flags: Cell<ConfigFlags>,
@@ -77,19 +75,12 @@ impl Config {
             Cell::new(ConfigFlags::empty())
         };
 
-        let dispatcher_config = DispatcherConfig::default();
-        dispatcher_config
-            .set_keepalive_timeout(Seconds(0))
-            .set_disconnect_timeout(Seconds(1))
-            .set_frame_read_rate(Seconds(1), Seconds::ZERO, 256);
-
         Config(Rc::new(ConfigInner {
             flags,
             window_sz,
             window_sz_threshold,
             connection_window_sz,
             connection_window_sz_threshold,
-            dispatcher_config,
             settings: Cell::new(settings),
             reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
             reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
@@ -287,33 +278,6 @@ impl Config {
         self
     }
 
-    /// Set read rate parameters for single frame.
-    ///
-    /// Set read timeout, max timeout and rate for reading payload. If the client
-    /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
-    /// But no more than `max_timeout` timeout.
-    ///
-    /// By default frame read rate is 256 bytes every seconds with no max timeout.
-    pub fn frame_read_rate(&self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> &Self {
-        self.0
-            .dispatcher_config
-            .set_frame_read_rate(timeout, max_timeout, rate);
-        self
-    }
-
-    /// Set server connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 1 seconds.
-    pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
-        self.0.dispatcher_config.set_disconnect_timeout(val);
-        self
-    }
-
     /// Set ping timeout.
     ///
     /// By default ping time-out is set to 60 seconds.
@@ -337,10 +301,6 @@ impl Config {
         let mut flags = self.0.flags.get();
         flags.insert(ConfigFlags::SHUTDOWN);
         self.0.flags.set(flags);
-    }
-
-    pub(crate) fn inner(&self) -> &ConfigInner {
-        self.0.as_ref()
     }
 }
 

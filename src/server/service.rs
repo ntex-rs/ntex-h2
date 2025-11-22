@@ -146,12 +146,7 @@ where
         let con2 = con.clone();
 
         // start protocol dispatcher
-        let mut fut = IoDispatcher::new(
-            io,
-            codec,
-            Dispatcher::new(con, ctl_srv, pub_srv),
-            &inner.config.inner().dispatcher_config,
-        );
+        let mut fut = IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_srv, pub_srv));
         poll_fn(|cx| {
             if con2.config().is_shutdown() {
                 con2.disconnect_when_ready();
@@ -259,12 +254,7 @@ where
     let con2 = con.clone();
 
     // start protocol dispatcher
-    let mut fut = IoDispatcher::new(
-        io,
-        codec,
-        Dispatcher::new(con, ctl_svc, pub_svc),
-        &config.inner().dispatcher_config,
-    );
+    let mut fut = IoDispatcher::new(io, codec, Dispatcher::new(con, ctl_svc, pub_svc));
 
     poll_fn(|cx| {
         if con2.config().is_shutdown() {

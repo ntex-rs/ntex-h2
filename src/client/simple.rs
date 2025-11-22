@@ -59,12 +59,7 @@ impl SimpleClient {
             HandleService::new(storage.clone()),
         );
 
-        let fut = IoDispatcher::new(
-            io,
-            con.codec().clone(),
-            disp,
-            &con.config().dispatcher_config,
-        );
+        let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         let _ = ntex_util::spawn(async move {
             let _ = fut.await;
         });

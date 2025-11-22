@@ -1,5 +1,9 @@
 # Changes
 
+## [1.15.0] - 2025-11-xx
+
+* Use io configuration
+
 ## [1.14.2] - 2025-11-12
 
 * Update MSRV 1.82
