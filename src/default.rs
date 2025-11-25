@@ -1,5 +1,6 @@
 use std::fmt;
 
+use ntex_io::SharedConfig;
 use ntex_service::{Service, ServiceCtx, ServiceFactory};
 
 use super::control::{Control, ControlAck};
@@ -8,13 +9,13 @@ use super::control::{Control, ControlAck};
 /// Default control service
 pub struct DefaultControlService;
 
-impl<E: fmt::Debug + 'static> ServiceFactory<Control<E>> for DefaultControlService {
+impl<E: fmt::Debug + 'static> ServiceFactory<Control<E>, SharedConfig> for DefaultControlService {
     type Response = ControlAck;
     type Error = E;
     type InitError = E;
     type Service = DefaultControlService;
 
-    async fn create(&self, _: ()) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, _: SharedConfig) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService)
     }
 }

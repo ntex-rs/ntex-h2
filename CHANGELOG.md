@@ -1,8 +1,8 @@
 # Changes
 
-## [1.15.0] - 2025-11-xx
+## [3.0.0] - 2025-11-xx
 
-* Use io configuration
+* Use shared configuration
 
 ## [1.14.2] - 2025-11-12
 

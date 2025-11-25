@@ -28,7 +28,7 @@ ntex-io = "3"
 ntex-http = "1"
 ntex-bytes = "1"
 ntex-codec = "1"
-ntex-service = "3.5"
+ntex-service = "3.6"
 ntex-util = "3"
 
 bitflags = "2"

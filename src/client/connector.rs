@@ -1,20 +1,21 @@
-use std::{marker::PhantomData, ops};
+use std::marker::PhantomData;
 
 use ntex_bytes::ByteString;
 use ntex_http::uri::Scheme;
-use ntex_io::IoBoxed;
-use ntex_net::connect::{self as connect, Address, Connect, Connector as DefaultConnector};
-use ntex_service::{IntoService, Pipeline, Service};
-use ntex_util::time::timeout_checked;
+use ntex_io::{Cfg, IoBoxed, SharedConfig};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_util::{channel::pool, time::timeout_checked};
 
-use crate::{client::ClientError, client::SimpleClient, config::Config};
+use crate::client::{stream::InflightStorage, SimpleClient};
+use crate::{client::ClientError, config::ServiceConfig};
 
 #[derive(Debug)]
 /// Http2 client connector
 pub struct Connector<A: Address, T> {
-    connector: Pipeline<T>,
-    config: Config,
+    connector: T,
     scheme: Scheme,
+    pool: pool::Pool<()>,
 
     _t: PhantomData<A>,
 }
@@ -22,18 +23,18 @@ pub struct Connector<A: Address, T> {
 impl<A, T> Connector<A, T>
 where
     A: Address,
-    T: Service<Connect<A>, Error = connect::ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
     IoBoxed: From<T::Response>,
 {
     /// Create new http2 connector
     pub fn new<F>(connector: F) -> Connector<A, T>
     where
-        F: IntoService<T, Connect<A>>,
+        F: IntoServiceFactory<T, Connect<A>, SharedConfig>,
     {
         Connector {
-            connector: Pipeline::new(connector.into_service()),
-            config: Config::client(),
+            connector: connector.into_factory(),
             scheme: Scheme::HTTP,
+            pool: pool::new(),
             _t: PhantomData,
         }
     }
@@ -45,26 +46,7 @@ where
 {
     /// Create new h2 connector
     fn default() -> Self {
-        Connector {
-            connector: DefaultConnector::default().into(),
-            config: Config::client(),
-            scheme: Scheme::HTTP,
-            _t: PhantomData,
-        }
-    }
-}
-
-impl<A: Address, T> ops::Deref for Connector<A, T> {
-    type Target = Config;
-
-    fn deref(&self) -> &Self::Target {
-        &self.config
-    }
-}
-
-impl<A: Address, T> ops::DerefMut for Connector<A, T> {
-    fn deref_mut(&mut self) -> &mut Config {
-        &mut self.config
+        Self::new(DefaultConnector::default())
     }
 }
 
@@ -82,42 +64,83 @@ where
     /// Use custom connector
     pub fn connector<U, F>(&self, connector: F) -> Connector<A, U>
     where
-        F: IntoService<U, Connect<A>>,
-        U: Service<Connect<A>, Error = connect::ConnectError>,
+        F: IntoServiceFactory<U, Connect<A>, SharedConfig>,
+        U: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
         IoBoxed: From<U::Response>,
     {
         Connector {
-            connector: connector.into_service().into(),
-            config: self.config.clone(),
+            connector: connector.into_factory(),
             scheme: self.scheme.clone(),
+            pool: self.pool.clone(),
             _t: PhantomData,
         }
     }
 }
 
-impl<A, T> Connector<A, T>
+impl<A, T> ServiceFactory<A, SharedConfig> for Connector<A, T>
 where
     A: Address,
-    T: Service<Connect<A>, Error = connect::ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
     IoBoxed: From<T::Response>,
 {
+    type Response = SimpleClient;
+    type Error = ClientError;
+    type InitError = T::InitError;
+    type Service = ConnectorService<A, T::Service>;
+
+    async fn create(&self, cfg: SharedConfig) -> Result<Self::Service, Self::InitError> {
+        let svc = self.connector.create(cfg).await?;
+        Ok(ConnectorService {
+            svc,
+            scheme: self.scheme.clone(),
+            config: cfg.get(),
+            pool: self.pool.clone(),
+            _t: PhantomData,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectorService<A, T> {
+    svc: T,
+    scheme: Scheme,
+    config: Cfg<ServiceConfig>,
+    pool: pool::Pool<()>,
+    _t: PhantomData<A>,
+}
+
+impl<A, T> Service<A> for ConnectorService<A, T>
+where
+    A: Address,
+    T: Service<Connect<A>, Error = ConnectError>,
+    IoBoxed: From<T::Response>,
+{
+    type Response = SimpleClient;
+    type Error = ClientError;
+
     /// Connect to http2 server
-    pub async fn connect(&self, address: A) -> Result<SimpleClient, ClientError> {
-        let scheme = self.scheme.clone();
-        let authority = ByteString::from(address.host());
+    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<SimpleClient, ClientError> {
+        let authority = ByteString::from(req.host());
 
         let fut = async {
-            Ok::<_, ClientError>(SimpleClient::new(
-                self.connector.call(Connect::new(address)).await?,
+            Ok::<_, ClientError>(SimpleClient::with_params(
+                ctx.call(&self.svc, Connect::new(req)).await?.into(),
                 self.config.clone(),
-                scheme,
+                self.scheme.clone(),
                 authority,
+                false,
+                InflightStorage::default(),
+                self.pool.clone(),
             ))
         };
 
-        timeout_checked(self.config.0.handshake_timeout.get(), fut)
+        timeout_checked(self.config.handshake_timeout, fut)
             .await
             .map_err(|_| ClientError::HandshakeTimeout)
             .and_then(|item| item)
     }
+
+    ntex_service::forward_ready!(svc);
+    ntex_service::forward_poll!(svc);
+    ntex_service::forward_shutdown!(svc);
 }

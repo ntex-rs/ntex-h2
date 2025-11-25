@@ -101,7 +101,7 @@ pub mod hpack;
 pub mod server;
 
 pub use self::codec::Codec;
-pub use self::config::Config;
+pub use self::config::ServiceConfig;
 pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Capacity, Stream, StreamRef};

@@ -3,11 +3,11 @@ use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
-use ntex_io::IoRef;
+use ntex_io::{Cfg, IoRef};
 use ntex_util::time::{self, now, sleep};
 use ntex_util::{channel::pool, future::Either, spawn, HashMap, HashSet};
 
-use crate::config::{Config, ConfigInner};
+use crate::config::ServiceConfig;
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
@@ -21,8 +21,9 @@ pub(crate) struct RecvHalfConnection(Rc<ConnectionState>);
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct ConnectionFlags: u8 {
-        const SETTINGS_PROCESSED      = 0b0000_0001;
-        const UNKNOWN_STREAMS         = 0b0000_0010;
+        const SERVER                  = 0b0000_0001;
+        const SETTINGS_PROCESSED      = 0b0000_0010;
+        const UNKNOWN_STREAMS         = 0b0000_0100;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
         const STREAM_REFUSED          = 0b0010_0000;
@@ -47,7 +48,7 @@ struct ConnectionState {
     pings_count: Cell<u16>,
 
     // Local config
-    local_config: Config,
+    local_config: Cfg<ServiceConfig>,
     // Maximum number of locally initiated streams
     local_max_concurrent_streams: Cell<Option<u32>>,
     // Initial window size of remote initiated streams
@@ -60,23 +61,27 @@ struct ConnectionState {
     error: Cell<Option<OperationError>>,
     // connection state flags
     flags: Cell<ConnectionFlags>,
+
+    pool: pool::Pool<()>,
 }
 
 impl Connection {
     pub(crate) fn new(
+        server: bool,
         io: IoRef,
         codec: Codec,
-        config: Config,
+        config: Cfg<ServiceConfig>,
         secure: bool,
         skip_streams: bool,
+        pool: pool::Pool<()>,
     ) -> Self {
         // send preface
-        if !config.is_server() {
+        if !server {
             let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
         }
 
         // send setting to the peer
-        let settings = config.0.settings.get();
+        let settings = config.settings.clone();
         log::debug!("Sending local settings {settings:?}");
         io.encode(settings.into(), &codec).unwrap();
 
@@ -86,18 +91,18 @@ impl Connection {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            config.0.connection_window_sz.get(),
-            config.0.connection_window_sz_threshold.get(),
+            config.connection_window_sz,
+            config.connection_window_sz_threshold,
         ) {
             log::debug!("Sending connection window update to {val:?}");
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
 
-        if let Some(max) = config.0.settings.get().max_header_list_size() {
+        if let Some(max) = config.settings.max_header_list_size() {
             codec.set_recv_header_list_size(max as usize);
         }
-        codec.set_max_header_continuations(config.0.max_header_continuations.get());
+        codec.set_max_header_continuations(config.max_header_continuations);
 
         let remote_frame_size = Cell::new(codec.send_frame_size());
 
@@ -106,6 +111,9 @@ impl Connection {
         } else {
             ConnectionFlags::empty()
         };
+        if server {
+            flags.insert(ConnectionFlags::SERVER);
+        }
         if !skip_streams {
             flags.insert(ConnectionFlags::UNKNOWN_STREAMS);
         }
@@ -113,6 +121,7 @@ impl Connection {
         let state = Rc::new(ConnectionState {
             codec,
             remote_frame_size,
+            pool,
             io: io.clone(),
             send_window: Cell::new(send_window),
             recv_window: Cell::new(recv_window),
@@ -134,12 +143,8 @@ impl Connection {
         let con = Connection(state);
 
         // start ping/pong
-        if con.0.local_config.0.ping_timeout.get().non_zero() {
-            let _ = spawn(ping(
-                con.clone(),
-                con.0.local_config.0.ping_timeout.get(),
-                io,
-            ));
+        if con.0.local_config.ping_timeout.non_zero() {
+            let _ = spawn(ping(con.clone(), con.0.local_config.ping_timeout, io));
         }
 
         con
@@ -157,8 +162,8 @@ impl Connection {
         &self.0.codec
     }
 
-    pub(crate) fn config(&self) -> &ConfigInner {
-        &self.0.local_config.0
+    pub(crate) fn config(&self) -> &ServiceConfig {
+        &self.0.local_config
     }
 
     pub(crate) fn flags(&self) -> ConnectionFlags {
@@ -248,8 +253,8 @@ impl Connection {
         // update connection window size
         if let Some(val) = recv_window.update(
             0,
-            self.0.local_config.0.connection_window_sz.get(),
-            self.0.local_config.0.connection_window_sz_threshold.get(),
+            self.0.local_config.connection_window_sz,
+            self.0.local_config.connection_window_sz_threshold,
         ) {
             self.encode(WindowUpdate::new(StreamId::CON, val));
         }
@@ -299,7 +304,7 @@ impl Connection {
                 if self.0.active_local_streams.get() < max {
                     Ok(())
                 } else {
-                    let (tx, rx) = self.config().pool.channel();
+                    let (tx, rx) = self.0.pool.channel();
                     self.0.readiness.borrow_mut().push_back(tx);
                     match rx.await {
                         Ok(_) => continue,
@@ -474,7 +479,7 @@ impl RecvHalfConnection {
         frm: Headers,
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
-        let is_server = self.0.local_config.is_server();
+        let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
 
         if is_server && !id.is_client_initiated() {
             return Err(Either::Left(ConnectionError::InvalidStreamId(
@@ -506,7 +511,7 @@ impl RecvHalfConnection {
                 return Ok(None);
             }
 
-            if let Some(max) = self.0.local_config.0.remote_max_concurrent_streams.get() {
+            if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
                 if self.0.active_remote_streams.get() >= max {
                     // check if client opened more streams than allowed
                     // in that case close connection
@@ -589,11 +594,11 @@ impl RecvHalfConnection {
         if settings.is_ack() {
             if !self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
                 self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
-                if let Some(max) = self.0.local_config.0.settings.get().max_frame_size() {
+                if let Some(max) = self.0.local_config.settings.max_frame_size() {
                     self.0.codec.set_recv_frame_size(max as usize);
                 }
 
-                let upd = (self.0.local_config.0.window_sz.get() as i32)
+                let upd = (self.0.local_config.window_sz as i32)
                     - (frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
 
                 let mut stream_errors = Vec::new();
@@ -911,13 +916,13 @@ impl Default for Pending {
 }
 
 impl Pending {
-    fn add(&self, id: StreamId, config: &Config) {
+    fn add(&self, id: StreamId, config: &ServiceConfig) {
         let mut inner = self.0.take().unwrap();
 
         let current_time = now();
 
         // remove old ids
-        let max_time = current_time - config.0.reset_duration.get();
+        let max_time = current_time - config.reset_duration;
         while let Some(item) = inner.queue.front() {
             if item.1 < max_time {
                 inner.ids.remove(&item.0);
@@ -928,7 +933,7 @@ impl Pending {
         }
 
         // shrink size of ids
-        while inner.queue.len() >= config.0.reset_max.get() {
+        while inner.queue.len() >= config.reset_max {
             if let Some((id, _)) = inner.queue.pop_front() {
                 inner.ids.remove(&id);
             }
@@ -992,7 +997,9 @@ mod tests {
             fn_service(|io: Io<_>| async move {
                 let _ = h2::server::handle_one(
                     io.into(),
-                    h2::Config::server().ping_timeout(Seconds::ZERO).clone(),
+                    h2::ServiceConfig::server()
+                        .ping_timeout(Seconds::ZERO)
+                        .clone(),
                     fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
                         Ok::<_, ()>(msg.ack())
                     }),
@@ -1011,7 +1018,7 @@ mod tests {
         let io = ntex::connect::connect(addr).await.unwrap();
         let client = h2::client::SimpleClient::new(
             io,
-            h2::Config::client(),
+            h2::ServiceConfig::client(),
             Scheme::HTTP,
             "localhost".into(),
         );
@@ -1043,7 +1050,7 @@ mod tests {
             fn_service(|io: Io<_>| async move {
                 let _ = h2::server::handle_one(
                     io.into(),
-                    h2::Config::server()
+                    h2::ServiceConfig::server()
                         .ping_timeout(Seconds::ZERO)
                         .reset_stream_duration(Seconds(1))
                         .clone(),
