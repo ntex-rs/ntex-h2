@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use ntex_service::cfg::{CfgContext, Configuration};
 use ntex_util::time::Seconds;
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
@@ -38,20 +39,26 @@ pub struct ServiceConfig {
 
     /// Config flags
     flags: ConfigFlags,
+
+    config: CfgContext,
 }
 
-impl Default for &'static ServiceConfig {
-    fn default() -> Self {
+impl Configuration for ServiceConfig {
+    const NAME: &str = "Http/2 service configuration";
+
+    fn default() -> &'static Self {
         thread_local! {
-            static DEFAULT: &'static ServiceConfig = Box::leak(Box::new(ServiceConfig::default()));
+            static DEFAULT: &'static ServiceConfig = Box::leak(Box::new(ServiceConfig::new()));
         }
         DEFAULT.with(|cfg| *cfg)
     }
-}
 
-impl Default for ServiceConfig {
-    fn default() -> Self {
-        Self::new()
+    fn ctx(&self) -> &CfgContext {
+        &self.config
+    }
+
+    fn set_ctx(&mut self, ctx: CfgContext) {
+        self.config = ctx;
     }
 }
 
@@ -84,6 +91,7 @@ impl ServiceConfig {
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
+            config: CfgContext::default(),
         }
     }
 }

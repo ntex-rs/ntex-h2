@@ -1,13 +1,12 @@
-use std::{
-    cell::Cell, cell::RefCell, collections::VecDeque, fmt, marker::PhantomData, rc::Rc,
-    time::Duration,
-};
+use std::collections::VecDeque;
+use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
 use nanorand::{Rng, WyRand};
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
-use ntex_io::{Cfg, IoBoxed, SharedConfig};
+use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
 use ntex_util::time::{timeout_checked, Millis, Seconds};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
@@ -48,8 +47,8 @@ impl Client {
     pub fn build<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
     where
         A: Address + Clone,
-        F: IntoServiceFactory<T, Connect<A>, SharedConfig>,
-        T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError> + 'static,
+        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
+        T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
         IoBoxed: From<T::Response>,
         Connect<A>: From<U>,
     {
@@ -308,13 +307,13 @@ struct InnerConfig {
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
     IoBoxed: From<T::Response>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
     where
         Connect<A>: From<U>,
-        F: IntoServiceFactory<T, Connect<A>, SharedConfig>,
+        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
     {
         let connect = Connect::from(addr);
         let authority = ByteString::from(connect.host());
@@ -415,8 +414,8 @@ where
     /// Use custom connector
     pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>, SharedConfig>,
-        U: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError> + 'static,
+        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
+        U: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
         IoBoxed: From<U::Response>,
     {
         ClientBuilder {
@@ -431,11 +430,11 @@ where
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError> + 'static,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
     IoBoxed: From<T::Response>,
 {
     /// Finish configuration process and create connections pool.
-    pub async fn finish(self, cfg: SharedConfig) -> Result<Client, T::InitError> {
+    pub async fn finish(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
         let connect = self.connect;
         let svc = Pipeline::new(self.connector.create(cfg).await?);
 

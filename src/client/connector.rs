@@ -2,8 +2,9 @@ use std::marker::PhantomData;
 
 use ntex_bytes::ByteString;
 use ntex_http::uri::Scheme;
-use ntex_io::{Cfg, IoBoxed, SharedConfig};
+use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};
 
@@ -23,13 +24,13 @@ pub struct Connector<A: Address, T> {
 impl<A, T> Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
     IoBoxed: From<T::Response>,
 {
     /// Create new http2 connector
     pub fn new<F>(connector: F) -> Connector<A, T>
     where
-        F: IntoServiceFactory<T, Connect<A>, SharedConfig>,
+        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
     {
         Connector {
             connector: connector.into_factory(),
@@ -64,8 +65,8 @@ where
     /// Use custom connector
     pub fn connector<U, F>(&self, connector: F) -> Connector<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>, SharedConfig>,
-        U: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
+        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
+        U: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
         IoBoxed: From<U::Response>,
     {
         Connector {
@@ -77,10 +78,10 @@ where
     }
 }
 
-impl<A, T> ServiceFactory<A, SharedConfig> for Connector<A, T>
+impl<A, T> ServiceFactory<A, SharedCfg> for Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedConfig, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
     IoBoxed: From<T::Response>,
 {
     type Response = SimpleClient;
@@ -88,7 +89,7 @@ where
     type InitError = T::InitError;
     type Service = ConnectorService<A, T::Service>;
 
-    async fn create(&self, cfg: SharedConfig) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         let svc = self.connector.create(cfg).await?;
         Ok(ConnectorService {
             svc,

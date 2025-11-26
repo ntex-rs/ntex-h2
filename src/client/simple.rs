@@ -3,7 +3,8 @@ use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 use nanorand::Rng;
 use ntex_bytes::ByteString;
 use ntex_http::{uri::Scheme, HeaderMap, Method};
-use ntex_io::{Cfg, Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
+use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
+use ntex_service::cfg::Cfg;
 use ntex_util::{channel::pool, time::Millis, time::Sleep};
 
 use crate::connection::Connection;

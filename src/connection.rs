@@ -3,7 +3,8 @@ use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderMap, Method};
-use ntex_io::{Cfg, IoRef};
+use ntex_io::IoRef;
+use ntex_service::cfg::Cfg;
 use ntex_util::time::{self, now, sleep};
 use ntex_util::{channel::pool, future::Either, spawn, HashMap, HashSet};
 
