@@ -1,7 +1,7 @@
 use std::{cell::Cell, cmp, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
-use ntex_http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
+use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
 use ntex_util::task::LocalWaker;
 
 use crate::error::{OperationError, StreamError};
@@ -291,16 +291,16 @@ impl StreamState {
         let mut window = self.recv_window.get();
         if let Some(val) = window.update(
             size,
-            self.con.config().window_sz.get(),
-            self.con.config().window_sz_threshold.get(),
+            self.con.config().window_sz,
+            self.con.config().window_sz_threshold,
         ) {
             log::trace!(
                 "{}: {:?} capacity decresed below threshold {} increase by {} ({})",
                 self.tag(),
                 self.id,
-                self.con.config().window_sz_threshold.get(),
+                self.con.config().window_sz_threshold,
                 val,
-                self.con.config().window_sz.get(),
+                self.con.config().window_sz,
             );
             self.recv_window.set(window);
             self.con.encode(WindowUpdate::new(self.id, val));
@@ -313,7 +313,7 @@ impl StreamRef {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_window = if con.settings_processed() {
-            Window::new(con.config().window_sz.get() as i32)
+            Window::new(con.config().window_sz as i32)
         } else {
             Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
         };
@@ -590,8 +590,8 @@ impl StreamRef {
         };
         if let Some(val) = window.update(
             self.0.recv_size.get(),
-            self.0.con.config().window_sz.get(),
-            self.0.con.config().window_sz_threshold.get(),
+            self.0.con.config().window_sz,
+            self.0.con.config().window_sz_threshold,
         ) {
             self.0.recv_window.set(window);
             Ok(Some(val))
@@ -785,9 +785,9 @@ impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Stream");
         builder
-            .field("stream_id", &self.0 .0.id)
-            .field("recv_state", &self.0 .0.recv.get())
-            .field("send_state", &self.0 .0.send.get())
+            .field("stream_id", &self.0.0.id)
+            .field("recv_state", &self.0.0.recv.get())
+            .field("send_state", &self.0.0.send.get())
             .finish()
     }
 }

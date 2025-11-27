@@ -3,7 +3,7 @@ use std::io::Cursor;
 use ntex_bytes::{ByteString, BytesMut};
 use ntex_http::{HeaderName, HeaderValue};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
-use rand::{distributions::Slice, rngs::StdRng, thread_rng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, distr::slice::Choose as Slice, rngs::StdRng};
 
 use crate::hpack::{Decoder, Encoder, Header};
 
@@ -57,12 +57,12 @@ impl FuzzHpack {
         }
 
         // Actual test run headers
-        let num: usize = rng.gen_range(40..500);
+        let num: usize = rng.random_range(40..500);
 
         let mut frames: Vec<HeaderFrame> = vec![];
         let mut added = 0;
 
-        let skew: i32 = rng.gen_range(1..5);
+        let skew: i32 = rng.random_range(1..5);
 
         // Rough number of headers to add
         while added < num {
@@ -71,24 +71,24 @@ impl FuzzHpack {
                 headers: vec![],
             };
 
-            match rng.gen_range(0..20) {
+            match rng.random_range(0..20) {
                 0 => {
                     // Two resizes
-                    let high = rng.gen_range(128..MAX_CHUNK * 2);
-                    let low = rng.gen_range(0..high);
+                    let high = rng.random_range(128..MAX_CHUNK * 2);
+                    let low = rng.random_range(0..high);
 
                     frame.resizes.extend(&[low, high]);
                 }
                 1..=3 => {
-                    frame.resizes.push(rng.gen_range(128..MAX_CHUNK * 2));
+                    frame.resizes.push(rng.random_range(128..MAX_CHUNK * 2));
                 }
                 _ => {}
             }
 
             let mut is_name_required = true;
 
-            for _ in 0..rng.gen_range(1..(num - added) + 1) {
-                let x: f64 = rng.gen_range(0.0..1.0);
+            for _ in 0..rng.random_range(1..(num - added) + 1) {
+                let x: f64 = rng.random_range(0.0..1.0);
                 let x = x.powi(skew);
 
                 let i = (x * source.len() as f64) as usize;
@@ -177,28 +177,28 @@ impl FuzzHpack {
 
 impl Arbitrary for FuzzHpack {
     fn arbitrary(_: &mut Gen) -> Self {
-        FuzzHpack::new(thread_rng().gen())
+        FuzzHpack::new(rand::rng().random())
     }
 }
 
 fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
     use ntex_http::{Method, StatusCode};
 
-    if g.gen_ratio(1, 10) {
-        match g.gen_range(0u32..5) {
+    if g.random_ratio(1, 10) {
+        match g.random_range(0u32..5) {
             0 => {
                 let value = gen_string(g, 4, 20);
                 Header::Authority(to_shared(value))
             }
             1 => {
-                let method = match g.gen_range(0u32..6) {
+                let method = match g.random_range(0u32..6) {
                     0 => Method::GET,
                     1 => Method::POST,
                     2 => Method::PUT,
                     3 => Method::PATCH,
                     4 => Method::DELETE,
                     5 => {
-                        let n: usize = g.gen_range(3..7);
+                        let n: usize = g.random_range(3..7);
                         let bytes: Vec<u8> = (0..n)
                             .map(|_| *g.sample(Slice::new(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ").unwrap()))
                             .collect();
@@ -211,7 +211,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
                 Header::Method(method)
             }
             2 => {
-                let value = match g.gen_range(0u32..2) {
+                let value = match g.random_range(0u32..2) {
                     0 => "http",
                     1 => "https",
                     _ => unreachable!(),
@@ -220,7 +220,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
                 Header::Scheme(to_shared(value.to_string()))
             }
             3 => {
-                let value = match g.gen_range(0u32..100) {
+                let value = match g.random_range(0u32..100) {
                     0 => "/".to_string(),
                     1 => "/index.html".to_string(),
                     _ => gen_string(g, 2, 20),
@@ -229,21 +229,21 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
                 Header::Path(to_shared(value))
             }
             4 => {
-                let status = (g.gen::<u16>() % 500) + 100;
+                let status = (g.random::<u16>() % 500) + 100;
 
                 Header::Status(StatusCode::from_u16(status).unwrap())
             }
             _ => unreachable!(),
         }
     } else {
-        let name = if g.gen_ratio(1, 10) {
+        let name = if g.random_ratio(1, 10) {
             None
         } else {
             Some(gen_header_name(g))
         };
         let mut value = gen_header_value(g);
 
-        if g.gen_ratio(1, 30) {
+        if g.random_ratio(1, 30) {
             value.set_sensitive(true);
         }
 
@@ -254,7 +254,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
 fn gen_header_name(g: &mut StdRng) -> HeaderName {
     use ntex_http::header;
 
-    if g.gen_ratio(1, 2) {
+    if g.random_ratio(1, 2) {
         g.sample(
             Slice::new(&[
                 header::ACCEPT,

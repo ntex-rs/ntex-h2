@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "1.14.2"
+version = "3.0.0-pre.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -10,8 +10,8 @@ readme = "README.md"
 keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
-edition = "2021"
-rust-version = "1.82"
+edition = "2024"
+rust-version = "1.85"
 
 [features]
 default = []
@@ -23,15 +23,15 @@ unstable = []
 features = []
 
 [dependencies]
-ntex-net = "2"
-ntex-io = "2.15.1"
-ntex-http = "0.1.14"
-ntex-bytes = "0.1"
-ntex-codec = "0.6"
-ntex-service = "3.5"
-ntex-util = "2.15"
+ntex-net = "3.0.0-pre.0"
+ntex-io = "3.0.0-pre.1"
+ntex-http = "1"
+ntex-bytes = "1"
+ntex-codec = "1"
+ntex-service = "3.6.2"
+ntex-util = "3"
 
-ahash = "0.8.10"
+ahash = "0.8.12"
 bitflags = "2"
 log = "0.4"
 pin-project-lite = "0.2"
@@ -41,7 +41,7 @@ nanorand = { version = "0.8", default-features = false, features = ["std", "wyra
 [dev-dependencies]
 # Fuzzing
 quickcheck = { version = "1.0.3", default-features = false }
-rand = "0.8.4"
+rand = "0.9"
 
 # HPACK fixtures
 hex = "0.4.3"
@@ -49,8 +49,8 @@ walkdir = "2.3.2"
 serde = "1"
 serde_json = "1"
 
-ntex = { version = "2", features = ["openssl"] }
-ntex-tls = { version = "2", features = ["openssl"] }
+ntex = { version = "3.0.0-pre.0", features = ["openssl"] }
+ntex-tls = { version = "3.0.0-pre.1", features = ["openssl"] }
 openssl = "0.10"
 
 # Examples
@@ -58,3 +58,5 @@ env_logger = "0.11"
 
 [patch.crates-io]
 ntex-h2 = { path = "." }
+
+ntex = { git = "https://github.com/ntex-rs/ntex.git" }

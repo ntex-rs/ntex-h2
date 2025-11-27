@@ -1,9 +1,9 @@
 use std::{cmp, collections::VecDeque, io::Cursor, str::Utf8Error};
 
 use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
-use ntex_http::{compat, header, Method, StatusCode};
+use ntex_http::{Method, StatusCode, compat, header};
 
-use super::{huffman, Header};
+use super::{Header, huffman};
 
 /// Decodes headers using HPACK
 #[derive(Debug)]

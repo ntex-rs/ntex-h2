@@ -1,7 +1,7 @@
 use ntex_bytes::{BufMut, BytesMut};
 use ntex_http::header::{HeaderName, HeaderValue};
 
-use super::{huffman, table::Index, table::Table, Header};
+use super::{Header, huffman, table::Index, table::Table};
 
 #[derive(Debug)]
 pub struct Encoder {

@@ -1,8 +1,5 @@
-mod builder;
 mod service;
-
-pub use self::builder::ServerBuilder;
-pub use self::service::{handle_one, Server, ServerHandler};
+pub use self::service::{Server, ServerHandler, handle_one};
 
 use crate::frame;
 

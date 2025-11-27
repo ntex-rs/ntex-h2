@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, 
 use ntex_bytes::Bytes;
 use ntex_http::HeaderMap;
 use ntex_service::{Service, ServiceCtx};
-use ntex_util::{future::Either, task::LocalWaker, HashMap, Stream as FutStream};
+use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
 
 use crate::error::OperationError;
 use crate::frame::{Reason, StreamId, WindowSize};
@@ -70,7 +70,7 @@ impl Drop for SendStream {
             self.0.reset(Reason::CANCEL);
 
             if self.0.is_disconnect_on_drop() {
-                self.0 .0.con.disconnect_when_ready();
+                self.0.0.con.disconnect_when_ready();
             }
         }
     }
@@ -180,7 +180,7 @@ impl RecvStream {
     /// the current task for wakeup if the value is not yet available,
     /// and returning None if the stream is exhausted.
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
-        if let Some(inflight) = self.1 .0.inflight.borrow_mut().get_mut(&self.0.id()) {
+        if let Some(inflight) = self.1.0.inflight.borrow_mut().get_mut(&self.0.id()) {
             if let Some(msg) = inflight.pop() {
                 Poll::Ready(Some(msg))
             } else if self.0.recv_state().is_closed() {
@@ -206,10 +206,10 @@ impl Drop for RecvStream {
             self.0.reset(Reason::CANCEL);
 
             if self.0.is_disconnect_on_drop() {
-                self.0 .0.con.disconnect_when_ready();
+                self.0.0.con.disconnect_when_ready();
             }
         }
-        self.1 .0.inflight.borrow_mut().remove(&self.0.id());
+        self.1.0.inflight.borrow_mut().remove(&self.0.id());
     }
 }
 
@@ -235,7 +235,7 @@ impl Service<Message> for HandleService {
 
     async fn call(&self, msg: Message, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
         let id = msg.id();
-        if let Some(inflight) = self.0 .0.inflight.borrow_mut().get_mut(&id) {
+        if let Some(inflight) = self.0.0.inflight.borrow_mut().get_mut(&id) {
             let eof = match msg.kind() {
                 MessageKind::Headers { eof, .. } => *eof,
                 MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,

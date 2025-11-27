@@ -1,108 +1,88 @@
-use std::{cell::Cell, fmt, rc::Rc, time::Duration};
+use std::{cell::Cell, time::Duration};
 
-use ntex_io::DispatcherConfig;
-use ntex_util::{channel::pool, time::Seconds};
+use ntex_service::cfg::{CfgContext, Configuration};
+use ntex_util::time::Seconds;
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
 
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct ConfigFlags: u8 {
-        const SERVER =    0b0000_0001;
-        const HTTPS  =    0b0000_0010;
-        const SHUTDOWN  = 0b0000_0100;
-    }
-}
-
-#[derive(Clone)]
-pub struct Config(pub(crate) Rc<ConfigInner>);
-
+#[derive(Copy, Clone, Debug)]
 /// Http2 connection configuration
-pub(crate) struct ConfigInner {
-    pub(crate) settings: Cell<Settings>,
+pub struct ServiceConfig {
+    pub(crate) settings: Settings,
     /// Initial window size of locally initiated streams
-    pub(crate) window_sz: Cell<WindowSize>,
-    pub(crate) window_sz_threshold: Cell<WindowSize>,
+    pub(crate) window_sz: WindowSize,
+    pub(crate) window_sz_threshold: WindowSize,
     /// How long a locally reset stream should ignore frames
-    pub(crate) reset_duration: Cell<Duration>,
+    pub(crate) reset_duration: Duration,
     /// Maximum number of locally reset streams to keep at a time
-    pub(crate) reset_max: Cell<usize>,
+    pub(crate) reset_max: usize,
     /// Initial window size for new connections.
-    pub(crate) connection_window_sz: Cell<WindowSize>,
-    pub(crate) connection_window_sz_threshold: Cell<WindowSize>,
+    pub(crate) connection_window_sz: WindowSize,
+    pub(crate) connection_window_sz_threshold: WindowSize,
     /// Maximum number of remote initiated streams
-    pub(crate) remote_max_concurrent_streams: Cell<Option<u32>>,
+    pub(crate) remote_max_concurrent_streams: Option<u32>,
     /// Limit number of continuation frames for headers
-    pub(crate) max_header_continuations: Cell<usize>,
+    pub(crate) max_header_continuations: usize,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
-    pub(crate) handshake_timeout: Cell<Seconds>,
-    pub(crate) ping_timeout: Cell<Seconds>,
-    pub(crate) dispatcher_config: DispatcherConfig,
+    pub(crate) handshake_timeout: Seconds,
+    pub(crate) ping_timeout: Seconds,
 
-    /// Config flags
-    flags: Cell<ConfigFlags>,
-
-    pub(crate) pool: pool::Pool<()>,
+    config: CfgContext,
 }
 
-impl Config {
-    /// Create configuration for server
-    pub fn server() -> Self {
-        Config::new(true)
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        ServiceConfig::new()
+    }
+}
+
+impl Configuration for ServiceConfig {
+    const NAME: &str = "Http/2 service configuration";
+
+    fn ctx(&self) -> &CfgContext {
+        &self.config
     }
 
-    /// Create configuration for client
-    pub fn client() -> Self {
-        Config::new(false)
+    fn set_ctx(&mut self, ctx: CfgContext) {
+        self.config = ctx;
     }
+}
 
-    fn new(server: bool) -> Self {
-        let window_sz = Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE);
-        let window_sz_threshold =
-            Cell::new(((frame::DEFAULT_INITIAL_WINDOW_SIZE as f32) / 3.0) as u32);
-        let connection_window_sz = Cell::new(consts::DEFAULT_CONNECTION_WINDOW_SIZE);
+#[allow(clippy::new_without_default)]
+impl ServiceConfig {
+    /// Create configuration
+    pub fn new() -> Self {
+        let window_sz = frame::DEFAULT_INITIAL_WINDOW_SIZE;
+        let window_sz_threshold = ((frame::DEFAULT_INITIAL_WINDOW_SIZE as f32) / 3.0) as u32;
+        let connection_window_sz = consts::DEFAULT_CONNECTION_WINDOW_SIZE;
         let connection_window_sz_threshold =
-            Cell::new(((consts::DEFAULT_CONNECTION_WINDOW_SIZE as f32) / 4.0) as u32);
+            ((consts::DEFAULT_CONNECTION_WINDOW_SIZE as f32) / 4.0) as u32;
 
         let mut settings = Settings::default();
         settings.set_max_concurrent_streams(Some(256));
         settings.set_enable_push(false);
         settings.set_max_header_list_size(Some(consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE));
 
-        let flags = if server {
-            Cell::new(ConfigFlags::SERVER)
-        } else {
-            Cell::new(ConfigFlags::empty())
-        };
-
-        let dispatcher_config = DispatcherConfig::default();
-        dispatcher_config
-            .set_keepalive_timeout(Seconds(0))
-            .set_disconnect_timeout(Seconds(1))
-            .set_frame_read_rate(Seconds(1), Seconds::ZERO, 256);
-
-        Config(Rc::new(ConfigInner {
-            flags,
+        ServiceConfig {
             window_sz,
             window_sz_threshold,
             connection_window_sz,
             connection_window_sz_threshold,
-            dispatcher_config,
-            settings: Cell::new(settings),
-            reset_max: Cell::new(consts::DEFAULT_RESET_STREAM_MAX),
-            reset_duration: Cell::new(consts::DEFAULT_RESET_STREAM_SECS.into()),
-            remote_max_concurrent_streams: Cell::new(None),
-            max_header_continuations: Cell::new(consts::DEFAULT_MAX_COUNTINUATIONS),
-            handshake_timeout: Cell::new(Seconds(5)),
-            ping_timeout: Cell::new(Seconds(10)),
-            pool: pool::new(),
-        }))
+            settings,
+            reset_max: consts::DEFAULT_RESET_STREAM_MAX,
+            reset_duration: consts::DEFAULT_RESET_STREAM_SECS.into(),
+            remote_max_concurrent_streams: None,
+            max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
+            handshake_timeout: Seconds(5),
+            ping_timeout: Seconds(10),
+            config: CfgContext::default(),
+        }
     }
 }
 
-impl Config {
+impl ServiceConfig {
     /// Indicates the initial window size (in octets) for stream-level
     /// flow control for received data.
     ///
@@ -110,13 +90,10 @@ impl Config {
     /// details, see [`FlowControl`].
     ///
     /// The default value is 65,535.
-    pub fn initial_window_size(&self, size: u32) -> &Self {
-        self.0.window_sz.set(size);
-        self.0.window_sz_threshold.set(((size as f32) / 3.0) as u32);
-
-        let mut s = self.0.settings.get();
-        s.set_initial_window_size(Some(size));
-        self.0.settings.set(s);
+    pub fn initial_window_size(mut self, size: u32) -> Self {
+        self.window_sz = size;
+        self.window_sz_threshold = ((size as f32) / 3.0) as u32;
+        self.settings.set_initial_window_size(Some(size));
         self
     }
 
@@ -129,12 +106,10 @@ impl Config {
     /// The default value is 1Mb.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
-    pub fn initial_connection_window_size(&self, size: u32) -> &Self {
+    pub fn initial_connection_window_size(mut self, size: u32) -> Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
-        self.0.connection_window_sz.set(size);
-        self.0
-            .connection_window_sz_threshold
-            .set(((size as f32) / 4.0) as u32);
+        self.connection_window_sz = size;
+        self.connection_window_sz_threshold = ((size as f32) / 4.0) as u32;
         self
     }
 
@@ -151,10 +126,8 @@ impl Config {
     ///
     /// This function panics if `max` is not within the legal range specified
     /// above.
-    pub fn max_frame_size(&self, max: u32) -> &Self {
-        let mut s = self.0.settings.get();
-        s.set_max_frame_size(max);
-        self.0.settings.set(s);
+    pub fn max_frame_size(mut self, max: u32) -> Self {
+        self.settings.set_max_frame_size(max);
         self
     }
 
@@ -169,18 +142,16 @@ impl Config {
     /// buffered to decode HEADERS frames.
     ///
     /// By default value is set to 48Kb.
-    pub fn max_header_list_size(&self, max: u32) -> &Self {
-        let mut s = self.0.settings.get();
-        s.set_max_header_list_size(Some(max));
-        self.0.settings.set(s);
+    pub fn max_header_list_size(mut self, max: u32) -> Self {
+        self.settings.set_max_header_list_size(Some(max));
         self
     }
 
     /// Sets the max number of continuation frames for HEADERS
     ///
     /// By default value is set to 5
-    pub fn max_header_continuation_frames(&self, max: usize) -> &Self {
-        self.0.max_header_continuations.set(max);
+    pub fn max_header_continuation_frames(mut self, max: usize) -> Self {
+        self.max_header_continuations = max;
         self
     }
 
@@ -207,11 +178,9 @@ impl Config {
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
     /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
-    pub fn max_concurrent_streams(&self, max: u32) -> &Self {
-        self.0.remote_max_concurrent_streams.set(Some(max));
-        let mut s = self.0.settings.get();
-        s.set_max_concurrent_streams(Some(max));
-        self.0.settings.set(s);
+    pub fn max_concurrent_streams(mut self, max: u32) -> Self {
+        self.remote_max_concurrent_streams = Some(max);
+        self.settings.set_max_concurrent_streams(Some(max));
         self
     }
 
@@ -236,8 +205,8 @@ impl Config {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 32.
-    pub fn max_concurrent_reset_streams(&self, val: usize) -> &Self {
-        self.0.reset_max.set(val);
+    pub fn max_concurrent_reset_streams(mut self, val: usize) -> Self {
+        self.reset_max = val;
         self
     }
 
@@ -262,8 +231,8 @@ impl Config {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 30 seconds.
-    pub fn reset_stream_duration(&self, dur: Seconds) -> &Self {
-        self.0.reset_duration.set(dur.into());
+    pub fn reset_stream_duration(mut self, dur: Seconds) -> Self {
+        self.reset_duration = dur.into();
         self
     }
 
@@ -282,92 +251,33 @@ impl Config {
     /// Hadnshake includes receiving preface and completing connection preparation.
     ///
     /// By default handshake timeuot is 5 seconds.
-    pub fn handshake_timeout(&self, timeout: Seconds) -> &Self {
-        self.0.handshake_timeout.set(timeout);
-        self
-    }
-
-    /// Set read rate parameters for single frame.
-    ///
-    /// Set read timeout, max timeout and rate for reading payload. If the client
-    /// sends `rate` amount of data within `timeout` period of time, extend timeout by `timeout` seconds.
-    /// But no more than `max_timeout` timeout.
-    ///
-    /// By default frame read rate is 256 bytes every seconds with no max timeout.
-    pub fn frame_read_rate(&self, timeout: Seconds, max_timeout: Seconds, rate: u16) -> &Self {
-        self.0
-            .dispatcher_config
-            .set_frame_read_rate(timeout, max_timeout, rate);
-        self
-    }
-
-    /// Set server connection disconnect timeout.
-    ///
-    /// Defines a timeout for disconnect connection. If a disconnect procedure does not complete
-    /// within this time, the connection get dropped.
-    ///
-    /// To disable timeout set value to 0.
-    ///
-    /// By default disconnect timeout is set to 1 seconds.
-    pub fn disconnect_timeout(&self, val: Seconds) -> &Self {
-        self.0.dispatcher_config.set_disconnect_timeout(val);
+    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
+        self.handshake_timeout = timeout;
         self
     }
 
     /// Set ping timeout.
     ///
     /// By default ping time-out is set to 60 seconds.
-    pub fn ping_timeout(&self, timeout: Seconds) -> &Self {
-        self.0.ping_timeout.set(timeout);
+    pub fn ping_timeout(mut self, timeout: Seconds) -> Self {
+        self.ping_timeout = timeout;
         self
     }
+}
 
-    /// Check if configuration defined for server.
-    pub fn is_server(&self) -> bool {
-        self.0.flags.get().contains(ConfigFlags::SERVER)
-    }
+thread_local! {
+    static SHUTDOWN: Cell<bool> = const { Cell::new(false) };
+}
 
+// Current limitation, shutdown is thread global
+impl ServiceConfig {
     /// Check if service is shutting down.
     pub fn is_shutdown(&self) -> bool {
-        self.0.flags.get().contains(ConfigFlags::SHUTDOWN)
+        SHUTDOWN.with(|v| v.get())
     }
 
     /// Set service shutdown.
-    pub fn shutdown(&self) {
-        let mut flags = self.0.flags.get();
-        flags.insert(ConfigFlags::SHUTDOWN);
-        self.0.flags.set(flags);
-    }
-
-    pub(crate) fn inner(&self) -> &ConfigInner {
-        self.0.as_ref()
-    }
-}
-
-impl ConfigInner {
-    /// Check if service is shutting down.
-    pub(crate) fn is_shutdown(&self) -> bool {
-        self.flags.get().contains(ConfigFlags::SHUTDOWN)
-    }
-}
-
-impl fmt::Debug for Config {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Config")
-            .field("window_sz", &self.0.window_sz.get())
-            .field("window_sz_threshold", &self.0.window_sz_threshold.get())
-            .field("reset_duration", &self.0.reset_duration.get())
-            .field("reset_max", &self.0.reset_max.get())
-            .field("connection_window_sz", &self.0.connection_window_sz.get())
-            .field(
-                "connection_window_sz_threshold",
-                &self.0.connection_window_sz_threshold.get(),
-            )
-            .field(
-                "remote_max_concurrent_streams",
-                &self.0.remote_max_concurrent_streams.get(),
-            )
-            .field("settings", &self.0.settings.get())
-            .finish()
+    pub fn shutdown() {
+        SHUTDOWN.with(|v| v.set(true));
     }
 }

@@ -1,15 +1,13 @@
 use std::error::Error;
 
-use ntex_bytes::Bytes;
-use ntex_h2::{client, MessageKind};
-use ntex_http::{header, uri::Scheme, HeaderMap, Method};
-use ntex_util::time::{sleep, Seconds};
+use ntex::{SharedCfg, time::Seconds, time::sleep, util::Bytes};
+use ntex_h2::{MessageKind, client};
+use ntex_http::{HeaderMap, Method, header, uri::Scheme};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
 #[ntex::main]
 pub async fn main() -> Result<(), Box<dyn Error>> {
-    std::env::set_var("RUST_LOG", "trace,polling=info,mio=info");
-    env_logger::init();
+    let _ = env_logger::try_init();
 
     let mut builder = SslConnector::builder(SslMethod::tls()).unwrap();
     builder.set_verify(SslVerifyMode::NONE);
@@ -22,7 +20,9 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         ntex_tls::openssl::SslConnector::new(builder.build()),
     )
     .scheme(Scheme::HTTPS)
-    .finish();
+    .finish(SharedCfg::default())
+    .await
+    .unwrap();
 
     let mut hdrs = HeaderMap::default();
     hdrs.insert(

@@ -2,14 +2,15 @@ use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use nanorand::Rng;
 use ntex_bytes::ByteString;
-use ntex_http::{uri::Scheme, HeaderMap, Method};
+use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
-use ntex_util::time::{Millis, Sleep};
+use ntex_service::cfg::Cfg;
+use ntex_util::{channel::pool, time::Millis, time::Sleep};
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
 use crate::dispatcher::Dispatcher;
-use crate::{codec::Codec, config::Config, OperationError};
+use crate::{OperationError, ServiceConfig, codec::Codec};
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
@@ -27,30 +28,42 @@ struct ClientRef {
 
 impl SimpleClient {
     /// Construct new `Client` instance.
-    pub fn new<T>(io: T, config: Config, scheme: Scheme, authority: ByteString) -> Self
+    pub fn new<T>(io: T, scheme: Scheme, authority: ByteString) -> Self
     where
         IoBoxed: From<T>,
     {
+        let io: IoBoxed = io.into();
+        let cfg = io.shared().get();
         SimpleClient::with_params(
-            io.into(),
-            config,
+            io,
+            cfg,
             scheme,
             authority,
             false,
             InflightStorage::default(),
+            pool::new(),
         )
     }
 
     pub(super) fn with_params(
         io: IoBoxed,
-        config: Config,
+        cfg: Cfg<ServiceConfig>,
         scheme: Scheme,
         authority: ByteString,
         skip_unknown_streams: bool,
         storage: InflightStorage,
+        pool: pool::Pool<()>,
     ) -> Self {
         let codec = Codec::default();
-        let con = Connection::new(io.get_ref(), codec, config, false, skip_unknown_streams);
+        let con = Connection::new(
+            false,
+            io.get_ref(),
+            codec,
+            cfg,
+            false,
+            skip_unknown_streams,
+            pool,
+        );
         con.set_secure(scheme == Scheme::HTTPS);
 
         let disp = Dispatcher::new(
@@ -59,12 +72,7 @@ impl SimpleClient {
             HandleService::new(storage.clone()),
         );
 
-        let fut = IoDispatcher::new(
-            io,
-            con.codec().clone(),
-            disp,
-            &con.config().dispatcher_config,
-        );
+        let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         let _ = ntex_util::spawn(async move {
             let _ = fut.await;
         });

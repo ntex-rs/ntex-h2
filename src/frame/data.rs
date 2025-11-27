@@ -1,6 +1,6 @@
 use ntex_bytes::{Bytes, BytesMut};
 
-use crate::frame::{util, Frame, FrameError, Head, Kind, StreamId};
+use crate::frame::{Frame, FrameError, Head, Kind, StreamId, util};
 
 /// Data frame
 ///
