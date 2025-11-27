@@ -6,8 +6,7 @@ use openssl::ssl::{self, AlpnError, SslFiletype, SslMethod};
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "trace,polling=info,mio=info");
-    env_logger::init();
+    let _ = env_logger::init();
 
     // create self-signed certificates using:
     //   openssl req -x509 -nodes -subj '/CN=localhost' -newkey rsa:4096 -keyout examples/key8.pem -out examples/cert.pem -days 365 -keyform PEM
@@ -34,51 +33,50 @@ async fn main() -> std::io::Result<()> {
             SslAcceptor::new(acceptor.clone())
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
-                    server::Server::build()
-                        .control(|msg: Control<_>| async move {
-                            println!("Control message: {:?}", msg);
-                            Ok::<_, ()>(msg.ack())
-                        })
-                        .finish(fn_service(|msg: Message| async move {
-                            let Message { stream, kind } = msg;
-                            match kind {
-                                MessageKind::Headers {
-                                    pseudo,
-                                    headers,
-                                    eof,
-                                } => {
-                                    println!(
-                                        "Got request (eof: {}): {:#?}\nheaders: {:#?}",
-                                        eof, pseudo, headers
-                                    );
-                                    // return Err(());
-                                    let mut hdrs = HeaderMap::default();
-                                    hdrs.insert(
-                                        header::CONTENT_TYPE,
-                                        header::HeaderValue::try_from("text/plain").unwrap(),
-                                    );
-                                    stream.send_response(StatusCode::OK, hdrs, false)?;
-                                    stream.send_payload("hello world".into(), false).await?;
+                    server::Server::new(fn_service(|msg: Message| async move {
+                        let Message { stream, kind } = msg;
+                        match kind {
+                            MessageKind::Headers {
+                                pseudo,
+                                headers,
+                                eof,
+                            } => {
+                                println!(
+                                    "Got request (eof: {}): {:#?}\nheaders: {:#?}",
+                                    eof, pseudo, headers
+                                );
+                                // return Err(());
+                                let mut hdrs = HeaderMap::default();
+                                hdrs.insert(
+                                    header::CONTENT_TYPE,
+                                    header::HeaderValue::try_from("text/plain").unwrap(),
+                                );
+                                stream.send_response(StatusCode::OK, hdrs, false)?;
+                                stream.send_payload("hello world".into(), false).await?;
 
-                                    let mut hdrs = HeaderMap::default();
-                                    hdrs.insert(
-                                        header::CONTENT_TYPE,
-                                        header::HeaderValue::try_from("blah").unwrap(),
-                                    );
-                                    stream.send_trailers(hdrs);
-                                }
-                                MessageKind::Data(data, _cap) => {
-                                    println!("Got data: {:?}", data.len());
-                                }
-                                MessageKind::Eof(data) => {
-                                    println!("Got eof: {:?}", data);
-                                }
-                                MessageKind::Disconnect(err) => {
-                                    log::trace!("Disconnect: {:?}", err);
-                                }
+                                let mut hdrs = HeaderMap::default();
+                                hdrs.insert(
+                                    header::CONTENT_TYPE,
+                                    header::HeaderValue::try_from("blah").unwrap(),
+                                );
+                                stream.send_trailers(hdrs);
                             }
-                            Ok::<_, OperationError>(())
-                        })),
+                            MessageKind::Data(data, _cap) => {
+                                println!("Got data: {:?}", data.len());
+                            }
+                            MessageKind::Eof(data) => {
+                                println!("Got eof: {:?}", data);
+                            }
+                            MessageKind::Disconnect(err) => {
+                                log::trace!("Disconnect: {:?}", err);
+                            }
+                        }
+                        Ok::<_, OperationError>(())
+                    }))
+                    .control(|msg: Control<_>| async move {
+                        println!("Control message: {:?}", msg);
+                        Ok::<_, ()>(msg.ack())
+                    }),
                 )
         })?
         .workers(1)

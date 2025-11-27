@@ -1,6 +1,5 @@
-use std::{cmp, collections::VecDeque, hash::BuildHasher, mem};
+use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem};
 
-use foldhash::fast::RandomState;
 use ntex_http::{Method, header};
 
 use super::Header;
@@ -661,7 +660,9 @@ fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
 fn hash_header(header: &Header) -> HashValue {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    HashValue((RandomState::default().hash_one(header.name()) & MASK) as usize)
+    let mut h = ahash::AHasher::default();
+    header.name().hash(&mut h);
+    HashValue((h.finish() & MASK) as usize)
 }
 
 /// Checks the static table for the header. If found, returns the index and a
