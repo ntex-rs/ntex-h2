@@ -1,4 +1,4 @@
-use std::{fmt, future::poll_fn, future::Future, pin::Pin, rc::Rc};
+use std::{fmt, future::Future, future::poll_fn, pin::Pin, rc::Rc};
 
 use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
@@ -298,7 +298,7 @@ where
         true,
         io.get_ref(),
         codec.clone(),
-        config.clone(),
+        config,
         true,
         false,
         pool::new(),

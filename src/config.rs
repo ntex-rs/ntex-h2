@@ -1,17 +1,9 @@
-use std::time::Duration;
+use std::{cell::Cell, time::Duration};
 
 use ntex_service::cfg::{CfgContext, Configuration};
 use ntex_util::time::Seconds;
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
-
-bitflags::bitflags! {
-    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct ConfigFlags: u8 {
-        const HTTPS  =    0b0000_0010;
-        const SHUTDOWN  = 0b0000_0100;
-    }
-}
 
 #[derive(Copy, Clone, Debug)]
 /// Http2 connection configuration
@@ -37,9 +29,6 @@ pub struct ServiceConfig {
     pub(crate) handshake_timeout: Seconds,
     pub(crate) ping_timeout: Seconds,
 
-    /// Config flags
-    flags: ConfigFlags,
-
     config: CfgContext,
 }
 
@@ -62,6 +51,7 @@ impl Configuration for ServiceConfig {
     }
 }
 
+#[allow(clippy::new_without_default)]
 impl ServiceConfig {
     /// Create configuration
     pub fn new() -> Self {
@@ -76,10 +66,7 @@ impl ServiceConfig {
         settings.set_enable_push(false);
         settings.set_max_header_list_size(Some(consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE));
 
-        let flags = ConfigFlags::empty();
-
         ServiceConfig {
-            flags,
             window_sz,
             window_sz_threshold,
             connection_window_sz,
@@ -277,16 +264,21 @@ impl ServiceConfig {
         self.ping_timeout = timeout;
         self
     }
+}
 
+thread_local! {
+    static SHUTDOWN: Cell<bool> = const { Cell::new(false) };
+}
+
+// Current limitation, shutdown is thread global
+impl ServiceConfig {
     /// Check if service is shutting down.
     pub fn is_shutdown(&self) -> bool {
-        self.flags.contains(ConfigFlags::SHUTDOWN)
+        SHUTDOWN.with(|v| v.get())
     }
 
     /// Set service shutdown.
-    pub fn shutdown(&self) {
-        //let mut flags = self.0.flags.get();
-        //flags.insert(ConfigFlags::SHUTDOWN);
-        //self.0.flags.set(flags);
+    pub fn shutdown() {
+        SHUTDOWN.with(|v| v.set(true));
     }
 }

@@ -157,21 +157,18 @@ impl Decoder for Codec {
 
             let frame = match kind {
                 Kind::Settings => frame::Settings::load(head, &bytes[frame::HEADER_LEN..])
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         proto_err!(conn: "failed to load SETTINGS frame; err={:?}", e);
-                        e
                     })?
                     .into(),
                 Kind::Ping => frame::Ping::load(head, &bytes[frame::HEADER_LEN..])
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         proto_err!(conn: "failed to load PING frame; err={:?}", e);
-                        e
                     })?
                     .into(),
                 Kind::WindowUpdate => frame::WindowUpdate::load(head, &bytes[frame::HEADER_LEN..])
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         proto_err!(conn: "failed to load WINDOW_UPDATE frame; err={:?}", e);
-                        e
                     })?
                     .into(),
                 Kind::Data => {
@@ -179,9 +176,8 @@ impl Decoder for Codec {
 
                     frame::Data::load(head, bytes.freeze())
                         // TODO: Should this always be connection level? Probably not...
-                        .map_err(|e| {
+                        .inspect_err(|e| {
                             proto_err!(conn: "failed to load DATA frame; err={:?}", e);
-                            e
                         })?
                         .into()
                 }
@@ -232,15 +228,13 @@ impl Decoder for Codec {
                     }
                 }
                 Kind::Reset => frame::Reset::load(head, &bytes[frame::HEADER_LEN..])
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         proto_err!(conn: "failed to load RESET frame; err={:?}", e);
-                        e
                     })?
                     .into(),
                 Kind::GoAway => frame::GoAway::load(&bytes[frame::HEADER_LEN..])
-                    .map_err(|e| {
+                    .inspect_err(|e| {
                         proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
-                        e
                     })?
                     .into(),
                 Kind::Priority => {

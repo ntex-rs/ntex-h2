@@ -1,6 +1,6 @@
-use ntex::service::{fn_service, ServiceFactory};
-use ntex_h2::{server, Control, Message, MessageKind, OperationError};
-use ntex_http::{header, HeaderMap, StatusCode};
+use ntex::service::{ServiceFactory, fn_service};
+use ntex_h2::{Control, Message, MessageKind, OperationError, server};
+use ntex_http::{HeaderMap, StatusCode, header};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, AlpnError, SslFiletype, SslMethod};
 

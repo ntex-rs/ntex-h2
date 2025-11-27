@@ -1,6 +1,8 @@
 # Changes
 
-## [3.0.0] - 2025-11-xx
+## [3.0.0-pre.0] - 2025-11-xx
+
+* Update MSRV 1.85
 
 * Use shared configuration
 

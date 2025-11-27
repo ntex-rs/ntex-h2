@@ -1,7 +1,7 @@
 use ntex::service::fn_service;
-use ntex_h2::{server, Control, Message, MessageKind, OperationError};
-use ntex_http::{header, HeaderMap, StatusCode};
-use ntex_util::time::{sleep, Millis};
+use ntex_h2::{Control, Message, MessageKind, OperationError, server};
+use ntex_http::{HeaderMap, StatusCode, header};
+use ntex_util::time::{Millis, sleep};
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {

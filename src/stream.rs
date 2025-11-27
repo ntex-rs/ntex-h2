@@ -1,7 +1,7 @@
 use std::{cell::Cell, cmp, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
-use ntex_http::{header::CONTENT_LENGTH, HeaderMap, StatusCode};
+use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
 use ntex_util::task::LocalWaker;
 
 use crate::error::{OperationError, StreamError};
@@ -785,9 +785,9 @@ impl fmt::Debug for Stream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = f.debug_struct("Stream");
         builder
-            .field("stream_id", &self.0 .0.id)
-            .field("recv_state", &self.0 .0.recv.get())
-            .field("send_state", &self.0 .0.send.get())
+            .field("stream_id", &self.0.0.id)
+            .field("recv_state", &self.0.0.recv.get())
+            .field("send_state", &self.0.0.send.get())
             .finish()
     }
 }

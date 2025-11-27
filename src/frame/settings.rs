@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::frame::{util, Frame, FrameError, FrameSize, Head, Kind, StreamId};
+use crate::frame::{Frame, FrameError, FrameSize, Head, Kind, StreamId, util};
 use ntex_bytes::{BufMut, BytesMut};
 
 #[derive(Copy, Clone, Default, Eq, PartialEq)]

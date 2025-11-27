@@ -8,7 +8,7 @@ use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};
 
-use crate::client::{stream::InflightStorage, SimpleClient};
+use crate::client::{SimpleClient, stream::InflightStorage};
 use crate::{client::ClientError, config::ServiceConfig};
 
 #[derive(Debug)]
@@ -126,7 +126,7 @@ where
         let fut = async {
             Ok::<_, ClientError>(SimpleClient::with_params(
                 ctx.call(&self.svc, Connect::new(req)).await?.into(),
-                self.config.clone(),
+                self.config,
                 self.scheme.clone(),
                 authority,
                 false,

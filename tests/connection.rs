@@ -1,13 +1,13 @@
 use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
-use ntex::http::{
-    test::server as test_server, uri::Scheme, HeaderMap, HttpService, Method, Response,
-};
-use ntex::service::{fn_service, ServiceFactory};
-use ntex::time::{sleep, Millis, Seconds};
+use ntex::http::{self, HeaderMap, HttpService, Method, Response, test, uri::Scheme};
+use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::time::{Millis, Seconds, sleep};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{client, client::Client, client::SimpleClient, frame, frame::Reason, Codec};
+use ntex_h2::{
+    Codec, ServiceConfig, client, client::Client, client::SimpleClient, frame, frame::Reason,
+};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -36,20 +36,20 @@ fn ssl_acceptor() -> SslAcceptor {
     builder.build()
 }
 
-fn start_server() -> ntex::http::test::TestServer {
-    test_server(move || {
-        HttpService::build()
-            .h2_configure(|cfg| {
-                cfg.max_concurrent_streams(1);
-            })
-            .h2(|mut req: ntex::http::Request| async move {
+async fn start_server() -> test::TestServer {
+    test::server_with_config(
+        move || {
+            HttpService::h2(|mut req: http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;
                 Ok::<_, io::Error>(Response::Ok().body("test body"))
             })
             .openssl(ssl_acceptor())
             .map_err(|_| ())
-    })
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new().max_concurrent_streams(1)),
+    )
+    .await
 }
 
 async fn connect(addr: net::SocketAddr) -> IoBoxed {
@@ -62,7 +62,11 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 
     let addr = ntex::connect::Connect::new("localhost").set_addr(Some(addr));
     openssl::SslConnector::new(builder.build())
-        .connect(addr)
+        .create(SharedCfg::default())
+        .await
+        .map(Pipeline::new)
+        .unwrap()
+        .call(addr)
         .await
         .unwrap()
         .into()
@@ -84,13 +88,17 @@ fn goaway(frm: frame::Frame) -> frame::GoAway {
 
 #[ntex::test]
 async fn test_max_concurrent_streams() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
     let client =
         client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
             .scheme(Scheme::HTTP)
             .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-            .connect("localhost")
+            .create(SharedCfg::default())
+            .await
+            .map(Pipeline::new)
+            .unwrap()
+            .call("localhost")
             .await
             .unwrap();
     assert!(format!("{:?}", client).contains("SimpleClient"));
@@ -133,7 +141,7 @@ async fn test_max_concurrent_streams() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_pool() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
     let client = Client::build(
         "localhost",
@@ -143,11 +151,10 @@ async fn test_max_concurrent_streams_pool() {
     let client = client
         .maxconn(1)
         .scheme(Scheme::HTTPS)
-        .connector(
-            "localhost",
-            fn_service(move |_| async move { Ok(connect(addr).await) }),
-        )
-        .finish();
+        .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
+        .finish(SharedCfg::default())
+        .await
+        .unwrap();
     assert!(format!("{:?}", client).contains("Client"));
     assert!(client.is_ready());
 
@@ -178,7 +185,7 @@ async fn test_max_concurrent_streams_pool() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_pool2() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let cnt = Rc::new(Cell::new(0));
@@ -191,7 +198,9 @@ async fn test_max_concurrent_streams_pool2() {
         }),
     )
     .maxconn(2)
-    .finish();
+    .finish(SharedCfg::default())
+    .await
+    .unwrap();
     assert!(client.is_ready());
 
     let (stream, _recv_stream) = client
@@ -221,14 +230,9 @@ async fn test_max_concurrent_streams_pool2() {
 
 #[ntex::test]
 async fn test_max_concurrent_streams_reset() {
-    let srv = start_server();
+    let srv = start_server().await;
     let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(
-        io,
-        ntex_h2::Config::client(),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
     sleep(Millis(150)).await;
 
     let (stream, _recv_stream) = client
@@ -284,7 +288,7 @@ const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]
 async fn test_goaway_on_overflow() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let io = connect(addr).await;
@@ -328,7 +332,7 @@ async fn test_goaway_on_overflow() {
 
 #[ntex::test]
 async fn test_stream_cancel() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let io = connect(addr).await;
@@ -364,7 +368,7 @@ async fn test_stream_cancel() {
 
 #[ntex::test]
 async fn test_goaway_on_reset() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let io = connect(addr).await;
@@ -416,7 +420,7 @@ async fn test_goaway_on_reset() {
 
 #[ntex::test]
 async fn test_goaway_on_reset2() {
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let io = connect(addr).await;
@@ -473,22 +477,24 @@ async fn test_goaway_on_reset2() {
 
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
-    let _srv = test_server(move || {
-        HttpService::build()
-            .h2_configure(|cfg| {
-                cfg.max_concurrent_streams(1);
-                cfg.ping_timeout(Seconds(1));
-            })
-            .h2(|mut req: ntex::http::Request| async move {
+    let _srv = test::server_with_config(
+        move || {
+            HttpService::h2(|mut req: ntex::http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;
                 Ok::<_, io::Error>(Response::Ok().body("test body"))
             })
             .openssl(ssl_acceptor())
             .map_err(|_| ())
-    });
+        },
+        SharedCfg::new("SRV").add(
+            ServiceConfig::new()
+                .max_concurrent_streams(1)
+                .ping_timeout(Seconds(1)),
+        ),
+    );
 
-    let srv = start_server();
+    let srv = start_server().await;
     let addr = srv.addr();
 
     let io = connect(addr).await;

@@ -5,8 +5,8 @@ use ntex_bytes::BytesMut;
 use serde_json::Value;
 
 use std::fs::File;
-use std::io::prelude::*;
 use std::io::Cursor;
+use std::io::prelude::*;
 use std::path::Path;
 use std::str;
 

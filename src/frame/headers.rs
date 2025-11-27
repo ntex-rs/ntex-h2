@@ -1,12 +1,12 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{ByteString, BytesMut};
-use ntex_http::{header, uri, HeaderMap, HeaderName, Method, StatusCode, Uri};
+use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header, uri};
 
 use crate::hpack;
 
 use super::priority::StreamDependency;
-use super::{util, Frame, FrameError, Head, Kind, Protocol, StreamId};
+use super::{Frame, FrameError, Head, Kind, Protocol, StreamId, util};
 
 /// Header frame
 ///
@@ -545,7 +545,7 @@ mod test {
     use ntex_http::HeaderValue;
 
     use super::*;
-    use crate::hpack::{huffman, Encoder};
+    use crate::hpack::{Encoder, huffman};
 
     #[test]
     fn test_nameless_header_at_resume() {

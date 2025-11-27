@@ -1,9 +1,9 @@
 use std::error::Error;
 
 use ntex_bytes::Bytes;
-use ntex_h2::{client, MessageKind};
-use ntex_http::{header, uri::Scheme, HeaderMap, Method};
-use ntex_util::time::{sleep, Seconds};
+use ntex_h2::{MessageKind, client};
+use ntex_http::{HeaderMap, Method, header, uri::Scheme};
+use ntex_util::time::{Seconds, sleep};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
 #[ntex::main]
@@ -22,7 +22,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         ntex_tls::openssl::SslConnector::new(builder.build()),
     )
     .scheme(Scheme::HTTPS)
-    .finish();
+    .finish(SharedCfg::default());
 
     let mut hdrs = HeaderMap::default();
     hdrs.insert(

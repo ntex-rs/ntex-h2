@@ -1,6 +1,6 @@
 use std::fmt;
 
-use ntex_service::{cfg::SharedCfg, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
 
 use super::control::{Control, ControlAck};
 

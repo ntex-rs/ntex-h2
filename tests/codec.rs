@@ -2,7 +2,7 @@ mod support;
 
 use ntex_bytes::BytesMut;
 use ntex_codec::Decoder;
-use ntex_h2::{frame, frame::FrameError, Codec};
+use ntex_h2::{Codec, frame, frame::FrameError};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode};
 use ntex_io::testing::IoTest;
 use ntex_util::future::join;

@@ -6,7 +6,7 @@ use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_service::cfg::Cfg;
 use ntex_util::time::{self, now, sleep};
-use ntex_util::{channel::pool, future::Either, spawn, HashMap, HashSet};
+use ntex_util::{HashMap, HashSet, channel::pool, future::Either, spawn};
 
 use crate::config::ServiceConfig;
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
@@ -82,7 +82,7 @@ impl Connection {
         }
 
         // send setting to the peer
-        let settings = config.settings.clone();
+        let settings = config.settings;
         log::debug!("Sending local settings {settings:?}");
         io.encode(settings.into(), &codec).unwrap();
 
@@ -970,11 +970,11 @@ impl Pending {
 
 #[cfg(test)]
 mod tests {
-    use ntex::http::{test::server as test_server, uri::Scheme, HeaderMap, Method};
-    use ntex::time::{sleep, Millis, Seconds};
-    use ntex::{io::Io, service::fn_service, util::Bytes};
+    use ntex::http::{HeaderMap, Method, test, uri::Scheme};
+    use ntex::time::{Millis, Seconds, sleep};
+    use ntex::{SharedCfg, io::Io, service::fn_service, util::Bytes};
 
-    use crate::{self as h2, frame, frame::Reason, Codec};
+    use crate::{self as h2, Codec, ServiceConfig, frame, frame::Reason};
 
     const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -994,35 +994,31 @@ mod tests {
 
     #[ntex::test]
     async fn test_remote_stream_refused() {
-        let srv = test_server(|| {
-            fn_service(|io: Io<_>| async move {
-                let _ = h2::server::handle_one(
-                    io.into(),
-                    h2::ServiceConfig::server()
-                        .ping_timeout(Seconds::ZERO)
-                        .clone(),
-                    fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
-                        Ok::<_, ()>(msg.ack())
-                    }),
-                    fn_service(|msg: h2::Message| async move {
-                        msg.stream().reset(Reason::REFUSED_STREAM);
-                        Ok::<_, h2::StreamError>(())
-                    }),
-                )
-                .await;
+        let srv = test::server_with_config(
+            || {
+                fn_service(|io: Io<_>| async move {
+                    let _ = h2::server::handle_one(
+                        io.into(),
+                        fn_service(|msg: h2::Message| async move {
+                            msg.stream().reset(Reason::REFUSED_STREAM);
+                            Ok::<_, h2::StreamError>(())
+                        }),
+                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                            Ok::<_, ()>(msg.ack())
+                        }),
+                    )
+                    .await;
 
-                Ok::<_, ()>(())
-            })
-        });
+                    Ok::<_, ()>(())
+                })
+            },
+            SharedCfg::new("SRV").add(ServiceConfig::new().ping_timeout(Seconds::ZERO)),
+        )
+        .await;
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(
-            io,
-            h2::ServiceConfig::client(),
-            Scheme::HTTP,
-            "localhost".into(),
-        );
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
         sleep(Millis(150)).await;
 
         let (stream, recv_stream) = client
@@ -1045,29 +1041,31 @@ mod tests {
 
     #[ntex::test]
     async fn test_delay_reset_queue() {
-        let _ = env_logger::try_init();
+        let srv = test::server_with_config(
+            || {
+                fn_service(|io: Io<_>| async move {
+                    let _ = h2::server::handle_one(
+                        io.into(),
+                        fn_service(|msg: h2::Message| async move {
+                            msg.stream().reset(Reason::NO_ERROR);
+                            Ok::<_, h2::StreamError>(())
+                        }),
+                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                            Ok::<_, ()>(msg.ack())
+                        }),
+                    )
+                    .await;
 
-        let srv = test_server(|| {
-            fn_service(|io: Io<_>| async move {
-                let _ = h2::server::handle_one(
-                    io.into(),
-                    h2::ServiceConfig::server()
-                        .ping_timeout(Seconds::ZERO)
-                        .reset_stream_duration(Seconds(1))
-                        .clone(),
-                    fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
-                        Ok::<_, ()>(msg.ack())
-                    }),
-                    fn_service(|msg: h2::Message| async move {
-                        msg.stream().reset(Reason::NO_ERROR);
-                        Ok::<_, h2::StreamError>(())
-                    }),
-                )
-                .await;
-
-                Ok::<_, ()>(())
-            })
-        });
+                    Ok::<_, ()>(())
+                })
+            },
+            SharedCfg::new("SRV").add(
+                ServiceConfig::new()
+                    .ping_timeout(Seconds::ZERO)
+                    .reset_stream_duration(Seconds(1)),
+            ),
+        )
+        .await;
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr.clone()).await.unwrap();

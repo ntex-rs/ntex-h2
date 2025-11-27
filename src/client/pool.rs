@@ -3,16 +3,16 @@ use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Dur
 
 use nanorand::{Rng, WyRand};
 use ntex_bytes::ByteString;
-use ntex_http::{uri::Scheme, HeaderMap, Method};
+use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
-use ntex_util::time::{timeout_checked, Millis, Seconds};
+use ntex_util::time::{Millis, Seconds, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
-use super::{simple::SimpleClient, ClientError};
+use super::{ClientError, simple::SimpleClient};
 use crate::ServiceConfig;
 
 type Fut = BoxFuture<'static, Result<IoBoxed, ConnectError>>;
@@ -105,7 +105,10 @@ impl Client {
         } else {
             log::debug!(
                 "New connection is being established {:?} or number of existing cons {} greater than allowed {}",
-                cfg.connecting.get(), num, cfg.maxconn);
+                cfg.connecting.get(),
+                num,
+                cfg.maxconn
+            );
 
             // wait for available connection
             let (tx, rx) = cfg.pool.channel();
