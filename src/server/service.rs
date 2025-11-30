@@ -127,11 +127,8 @@ pub struct ServerHandler<Pub, Ctl> {
 
 impl<Pub, Ctl> ServerHandler<Pub, Ctl> {
     fn new(shared: SharedCfg, inner: ServerInner<Pub, Ctl>) -> Self {
-        Self {
-            cfg: shared.get(),
-            shared,
-            inner,
-        }
+        let cfg = shared.get();
+        Self { cfg, shared, inner }
     }
 }
 

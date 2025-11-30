@@ -184,13 +184,11 @@ impl StreamState {
     }
 
     fn reset_stream(&self, reason: Option<Reason>) {
-        if !self.recv.get().is_closed() {
-            self.recv.set(HalfState::Closed(reason));
-            if let Some(reason) = reason {
-                self.error.set(Some(OperationError::LocalReset(reason)));
-            }
-        }
+        self.recv.set(HalfState::Closed(reason));
         self.send.set(HalfState::Closed(None));
+        if let Some(reason) = reason {
+            self.error.set(Some(OperationError::LocalReset(reason)));
+        }
         self.review_state();
     }
 
@@ -380,11 +378,17 @@ impl StreamRef {
     }
 
     /// Reset stream
+    ///
+    /// Returns `true` if the stream state is updated and a `Reset` frame
+    /// has been sent to the peer.
     #[inline]
-    pub fn reset(&self, reason: Reason) {
+    pub fn reset(&self, reason: Reason) -> bool {
         if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
             self.0.con.encode(Reset::new(self.0.id, reason));
             self.0.reset_stream(Some(reason));
+            true
+        } else {
+            false
         }
     }
 

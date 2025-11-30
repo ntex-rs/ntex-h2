@@ -399,7 +399,6 @@ async fn test_goaway_on_reset() {
         io.recv(&codec).await.unwrap().unwrap(); // data
         io.recv(&codec).await.unwrap().unwrap(); // data eof
     }
-
     for _ in 0..4 {
         let rst = frame::Reset::new(id, Reason::NO_ERROR);
         let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
@@ -477,7 +476,7 @@ async fn test_goaway_on_reset2() {
 
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
-    let _srv = test::server_with_config(
+    let srv = test::server_with_config(
         async move || {
             HttpService::h2(|mut req: ntex::http::Request| async move {
                 let mut pl = req.take_payload();
@@ -492,11 +491,10 @@ async fn test_ping_timeout_on_idle() {
                 .max_concurrent_streams(1)
                 .ping_timeout(Seconds(1)),
         ),
-    );
+    )
+    .await;
 
-    let srv = start_server().await;
     let addr = srv.addr();
-
     let io = connect(addr).await;
     let codec = Codec::default();
     let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
@@ -512,6 +510,7 @@ async fn test_ping_timeout_on_idle() {
     // ping & goaway
     let _ = io.recv(&codec).await;
     let _ = goaway(io.recv(&codec).await.unwrap().unwrap());
+
     sleep(Millis(500)).await;
     assert!(io.is_closed());
 }

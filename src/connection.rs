@@ -84,7 +84,7 @@ impl Connection {
 
         // send setting to the peer
         let settings = config.settings;
-        log::debug!("Sending local settings {settings:?}");
+        log::debug!("{}: Sending local settings {settings:?}", io.tag());
         io.encode(settings.into(), &codec).unwrap();
 
         let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
@@ -96,7 +96,7 @@ impl Connection {
             config.connection_window_sz,
             config.connection_window_sz_threshold,
         ) {
-            log::debug!("Sending connection window update to {val:?}");
+            log::debug!("{}: Sending connection window update to {val:?}", io.tag());
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
@@ -895,10 +895,13 @@ impl fmt::Debug for Connection {
 }
 
 async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
-    log::debug!("start http client ping/pong task");
-
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
+
+    log::debug!(
+        "{}: start http client ping/pong task, ka: {keepalive:?}",
+        io.tag()
+    );
 
     st.set_flags(ConnectionFlags::RECV_PONG);
     loop {

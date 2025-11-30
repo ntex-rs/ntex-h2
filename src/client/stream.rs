@@ -118,9 +118,12 @@ impl SendStream {
         self.0.send_trailers(map)
     }
 
-    #[inline]
     /// Reset stream
-    pub fn reset(&self, reason: Reason) {
+    ///
+    /// Returns `true` if the stream state is updated and a `Reset` frame
+    /// has been sent to the peer.
+    #[inline]
+    pub fn reset(&self, reason: Reason) -> bool {
         self.0.reset(reason)
     }
 

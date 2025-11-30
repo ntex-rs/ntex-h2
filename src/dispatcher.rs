@@ -83,7 +83,10 @@ where
                     stream.set_failed_stream(kind.into());
                 }
 
-                stream.reset(kind.reason());
+                if !stream.reset(kind.reason()) {
+                    self.connection
+                        .encode(Reset::new(stream.id(), kind.reason()));
+                }
                 publish(Message::error(kind, &stream), stream, &self.inner, ctx).await
             }
         }
