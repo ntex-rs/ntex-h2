@@ -8,7 +8,7 @@ async fn main() -> std::io::Result<()> {
     let _ = env_logger::try_init();
 
     ntex::server::build()
-        .bind("http", "127.0.0.1:5928", move |_| {
+        .bind("http", "127.0.0.1:5928", async move |_| {
             server::Server::new(fn_service(|msg: Message| async move {
                 let Message { stream, kind } = msg;
                 match kind {

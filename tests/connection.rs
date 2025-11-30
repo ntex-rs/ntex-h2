@@ -38,7 +38,7 @@ fn ssl_acceptor() -> SslAcceptor {
 
 async fn start_server() -> test::TestServer {
     test::server_with_config(
-        move || {
+        async move || {
             HttpService::h2(|mut req: http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;
@@ -478,7 +478,7 @@ async fn test_goaway_on_reset2() {
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
     let _srv = test::server_with_config(
-        move || {
+        async move || {
             HttpService::h2(|mut req: ntex::http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;

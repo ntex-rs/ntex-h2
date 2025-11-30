@@ -995,7 +995,7 @@ mod tests {
     #[ntex::test]
     async fn test_remote_stream_refused() {
         let srv = test::server_with_config(
-            || {
+            async || {
                 fn_service(|io: Io<_>| async move {
                     let _ = h2::server::handle_one(
                         io.into(),
@@ -1042,7 +1042,7 @@ mod tests {
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
-            || {
+            async || {
                 fn_service(|io: Io<_>| async move {
                     let _ = h2::server::handle_one(
                         io.into(),

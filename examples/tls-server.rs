@@ -29,7 +29,7 @@ async fn main() -> std::io::Result<()> {
     let acceptor = builder.build();
 
     ntex::server::build()
-        .bind("http", "127.0.0.1:5928", move |_| {
+        .bind("http", "127.0.0.1:5928", async move |_| {
             SslAcceptor::new(acceptor.clone())
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
