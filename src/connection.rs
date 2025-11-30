@@ -47,6 +47,7 @@ struct ConnectionState {
     rst_count: Cell<u32>,
     streams_count: Cell<u32>,
     pings_count: Cell<u16>,
+    last_id: Cell<StreamId>,
 
     // Local config
     local_config: Cfg<ServiceConfig>,
@@ -132,6 +133,7 @@ impl Connection {
             rst_count: Cell::new(0),
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
+            last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
@@ -487,6 +489,29 @@ impl RecvHalfConnection {
                 "Invalid id in received headers frame",
             )));
         }
+
+        // Check id, HTTP2/5.1.1
+        let last_id = self.0.last_id.get();
+        if last_id > id {
+            return Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Invalid id in received headers frame",
+            )));
+        } else if last_id == id {
+            // If last_id is the same as the current id, it means we have already
+            // processed the headers associated with this stream id
+            return if let Some(stream) = self.query(id) {
+                match stream.recv_headers(frm) {
+                    Ok(item) => Ok(item.map(move |msg| (stream, msg))),
+                    Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
+                }
+            } else {
+                // self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
+                Err(Either::Left(ConnectionError::GoAway(
+                    frame::Reason::STREAM_CLOSED,
+                )))
+            };
+        }
+        self.0.last_id.set(id);
 
         if let Some(stream) = self.query(id) {
             match stream.recv_headers(frm) {

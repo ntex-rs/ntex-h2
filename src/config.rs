@@ -73,7 +73,7 @@ impl ServiceConfig {
             settings,
             reset_max: consts::DEFAULT_RESET_STREAM_MAX,
             reset_duration: consts::DEFAULT_RESET_STREAM_SECS.into(),
-            remote_max_concurrent_streams: None,
+            remote_max_concurrent_streams: Some(256),
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),

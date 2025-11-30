@@ -184,11 +184,13 @@ impl StreamState {
     }
 
     fn reset_stream(&self, reason: Option<Reason>) {
-        self.recv.set(HalfState::Closed(reason));
-        self.send.set(HalfState::Closed(None));
-        if let Some(reason) = reason {
-            self.error.set(Some(OperationError::LocalReset(reason)));
+        if !self.recv.get().is_closed() {
+            self.recv.set(HalfState::Closed(reason));
+            if let Some(reason) = reason {
+                self.error.set(Some(OperationError::LocalReset(reason)));
+            }
         }
+        self.send.set(HalfState::Closed(None));
         self.review_state();
     }
 

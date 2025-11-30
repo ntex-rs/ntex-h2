@@ -23,7 +23,7 @@ unstable = []
 features = []
 
 [dependencies]
-ntex-net = "3.0.0-pre.1"
+ntex-net = "3.0.0-pre.2"
 ntex-io = "3.0.0-pre.2"
 ntex-http = "1"
 ntex-bytes = "1"

@@ -9,7 +9,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("http", "127.0.0.1:5928", async move |_| {
-            server::Server::new(fn_service(|msg: Message| async move {
+            server::Server::new(fn_service(async move |msg: Message| {
                 let Message { stream, kind } = msg;
                 match kind {
                     MessageKind::Headers {
