@@ -505,7 +505,6 @@ impl RecvHalfConnection {
                     Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
                 }
             } else {
-                // self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
                 Err(Either::Left(ConnectionError::GoAway(
                     frame::Reason::STREAM_CLOSED,
                 )))
