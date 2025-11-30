@@ -1,6 +1,12 @@
 # Changes
 
-## [3.0.0-pre.0] - 2025-11-xx
+## [3.0.0-pre.1] - 2025-11-30
+
+* Set default max concurrent streams
+
+* Fix spec compliance issues
+
+## [3.0.0-pre.0] - 2025-11-27
 
 * Update MSRV 1.85
 

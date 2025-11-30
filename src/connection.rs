@@ -47,6 +47,7 @@ struct ConnectionState {
     rst_count: Cell<u32>,
     streams_count: Cell<u32>,
     pings_count: Cell<u16>,
+    last_id: Cell<StreamId>,
 
     // Local config
     local_config: Cfg<ServiceConfig>,
@@ -83,7 +84,7 @@ impl Connection {
 
         // send setting to the peer
         let settings = config.settings;
-        log::debug!("Sending local settings {settings:?}");
+        log::debug!("{}: Sending local settings {settings:?}", io.tag());
         io.encode(settings.into(), &codec).unwrap();
 
         let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
@@ -95,7 +96,7 @@ impl Connection {
             config.connection_window_sz,
             config.connection_window_sz_threshold,
         ) {
-            log::debug!("Sending connection window update to {val:?}");
+            log::debug!("{}: Sending connection window update to {val:?}", io.tag());
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
         };
@@ -132,6 +133,7 @@ impl Connection {
             rst_count: Cell::new(0),
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
+            last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
@@ -487,6 +489,28 @@ impl RecvHalfConnection {
                 "Invalid id in received headers frame",
             )));
         }
+
+        // Check id, HTTP2/5.1.1
+        let last_id = self.0.last_id.get();
+        if last_id > id {
+            return Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Invalid id in received headers frame",
+            )));
+        } else if last_id == id {
+            // If last_id is the same as the current id, it means we have already
+            // processed the headers associated with this stream id
+            return if let Some(stream) = self.query(id) {
+                match stream.recv_headers(frm) {
+                    Ok(item) => Ok(item.map(move |msg| (stream, msg))),
+                    Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
+                }
+            } else {
+                Err(Either::Left(ConnectionError::GoAway(
+                    frame::Reason::STREAM_CLOSED,
+                )))
+            };
+        }
+        self.0.last_id.set(id);
 
         if let Some(stream) = self.query(id) {
             match stream.recv_headers(frm) {
@@ -870,10 +894,13 @@ impl fmt::Debug for Connection {
 }
 
 async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
-    log::debug!("start http client ping/pong task");
-
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
+
+    log::debug!(
+        "{}: start http client ping/pong task, ka: {keepalive:?}",
+        io.tag()
+    );
 
     st.set_flags(ConnectionFlags::RECV_PONG);
     loop {
@@ -995,7 +1022,7 @@ mod tests {
     #[ntex::test]
     async fn test_remote_stream_refused() {
         let srv = test::server_with_config(
-            || {
+            async || {
                 fn_service(|io: Io<_>| async move {
                     let _ = h2::server::handle_one(
                         io.into(),
@@ -1042,7 +1069,7 @@ mod tests {
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
-            || {
+            async || {
                 fn_service(|io: Io<_>| async move {
                     let _ = h2::server::handle_one(
                         io.into(),

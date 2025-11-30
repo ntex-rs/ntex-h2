@@ -378,11 +378,17 @@ impl StreamRef {
     }
 
     /// Reset stream
+    ///
+    /// Returns `true` if the stream state is updated and a `Reset` frame
+    /// has been sent to the peer.
     #[inline]
-    pub fn reset(&self, reason: Reason) {
+    pub fn reset(&self, reason: Reason) -> bool {
         if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
             self.0.con.encode(Reset::new(self.0.id, reason));
             self.0.reset_stream(Some(reason));
+            true
+        } else {
+            false
         }
     }
 
