@@ -90,7 +90,7 @@ impl ServiceConfig {
     /// details, see [`FlowControl`].
     ///
     /// The default value is 65,535.
-    pub fn initial_window_size(mut self, size: u32) -> Self {
+    pub fn set_initial_window_size(mut self, size: u32) -> Self {
         self.window_sz = size;
         self.window_sz_threshold = ((size as f32) / 3.0) as u32;
         self.settings.set_initial_window_size(Some(size));
@@ -106,7 +106,7 @@ impl ServiceConfig {
     /// The default value is 1Mb.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
-    pub fn initial_connection_window_size(mut self, size: u32) -> Self {
+    pub fn set_initial_connection_window_size(mut self, size: u32) -> Self {
         assert!(size <= consts::MAX_WINDOW_SIZE);
         self.connection_window_sz = size;
         self.connection_window_sz_threshold = ((size as f32) / 4.0) as u32;
@@ -126,7 +126,7 @@ impl ServiceConfig {
     ///
     /// This function panics if `max` is not within the legal range specified
     /// above.
-    pub fn max_frame_size(mut self, max: u32) -> Self {
+    pub fn set_max_frame_size(mut self, max: u32) -> Self {
         self.settings.set_max_frame_size(max);
         self
     }
@@ -142,7 +142,7 @@ impl ServiceConfig {
     /// buffered to decode HEADERS frames.
     ///
     /// By default value is set to 48Kb.
-    pub fn max_header_list_size(mut self, max: u32) -> Self {
+    pub fn set_max_header_list_size(mut self, max: u32) -> Self {
         self.settings.set_max_header_list_size(Some(max));
         self
     }
@@ -150,7 +150,7 @@ impl ServiceConfig {
     /// Sets the max number of continuation frames for HEADERS
     ///
     /// By default value is set to 5
-    pub fn max_header_continuation_frames(mut self, max: usize) -> Self {
+    pub fn set_max_header_continuation_frames(mut self, max: usize) -> Self {
         self.max_header_continuations = max;
         self
     }
@@ -178,7 +178,7 @@ impl ServiceConfig {
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
     /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
-    pub fn max_concurrent_streams(mut self, max: u32) -> Self {
+    pub fn set_max_concurrent_streams(mut self, max: u32) -> Self {
         self.remote_max_concurrent_streams = Some(max);
         self.settings.set_max_concurrent_streams(Some(max));
         self
@@ -205,7 +205,7 @@ impl ServiceConfig {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 32.
-    pub fn max_concurrent_reset_streams(mut self, val: usize) -> Self {
+    pub fn set_max_concurrent_reset_streams(mut self, val: usize) -> Self {
         self.reset_max = val;
         self
     }
@@ -231,7 +231,7 @@ impl ServiceConfig {
     /// error, forcing the connection to terminate.
     ///
     /// The default value is 30 seconds.
-    pub fn reset_stream_duration(mut self, dur: Seconds) -> Self {
+    pub fn set_reset_stream_duration(mut self, dur: Seconds) -> Self {
         self.reset_duration = dur.into();
         self
     }
@@ -251,7 +251,7 @@ impl ServiceConfig {
     /// Hadnshake includes receiving preface and completing connection preparation.
     ///
     /// By default handshake timeuot is 5 seconds.
-    pub fn handshake_timeout(mut self, timeout: Seconds) -> Self {
+    pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
     }
@@ -259,7 +259,7 @@ impl ServiceConfig {
     /// Set ping timeout.
     ///
     /// By default ping time-out is set to 60 seconds.
-    pub fn ping_timeout(mut self, timeout: Seconds) -> Self {
+    pub fn set_ping_timeout(mut self, timeout: Seconds) -> Self {
         self.ping_timeout = timeout;
         self
     }
