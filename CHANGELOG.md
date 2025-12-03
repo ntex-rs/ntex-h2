@@ -1,5 +1,11 @@
 # Changes
 
+## [3.1.0] - 2025-12-04
+
+* Refactor stream ID validation and error handling #71
+
+* Naming for ServiceConfig and ClientBuilder
+
 ## [3.0.0-pre.1] - 2025-11-30
 
 * Set default max concurrent streams

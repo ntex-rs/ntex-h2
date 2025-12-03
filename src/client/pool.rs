@@ -44,7 +44,7 @@ fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
 impl Client {
     #[inline]
     /// Configure and build client
-    pub fn build<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
+    pub fn builder<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
     where
         A: Address + Clone,
         F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
@@ -53,16 +53,6 @@ impl Client {
         Connect<A>: From<U>,
     {
         ClientBuilder::new(addr, connector)
-    }
-
-    #[inline]
-    /// Configure and build client
-    pub fn with_default<A, U>(addr: U) -> ClientBuilder<A, DefaultConnector<A>>
-    where
-        A: Address + Clone,
-        Connect<A>: From<U>,
-    {
-        ClientBuilder::with_default(addr)
     }
 
     /// Send request to the peer
@@ -437,7 +427,7 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Finish configuration process and create connections pool.
-    pub async fn finish(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
+    pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
         let connect = self.connect;
         let svc = Pipeline::new(self.connector.create(cfg).await?);
 
