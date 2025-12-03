@@ -483,48 +483,50 @@ impl RecvHalfConnection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
-
+    
+        // 1. Check if ID parity is correct (Client must send odd, Server even)
         if is_server && !id.is_client_initiated() {
             return Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Invalid id in received headers frame",
             )));
         }
-
-        // Check id, HTTP2/5.1.1
-        let last_id = self.0.last_id.get();
-        if last_id > id {
-            return Err(Either::Left(ConnectionError::InvalidStreamId(
-                "Invalid id in received headers frame",
-            )));
-        } else if last_id == id {
-            // If last_id is the same as the current id, it means we have already
-            // processed the headers associated with this stream id
-            return if let Some(stream) = self.query(id) {
-                match stream.recv_headers(frm) {
-                    Ok(item) => Ok(item.map(move |msg| (stream, msg))),
-                    Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
-                }
-            } else {
-                Err(Either::Left(ConnectionError::GoAway(
-                    frame::Reason::STREAM_CLOSED,
-                )))
-            };
-        }
-        self.0.last_id.set(id);
-
+    
+        // 2. CORRECTION: Check logic priority
+        // First we check if it's an ALREADY EXISTING stream.
+        // If the stream exists (is OPEN or HALF_CLOSED), we accept the frame regardless of the last_id.
+        // This allows intermediate trailers and headers.
         if let Some(stream) = self.query(id) {
             match stream.recv_headers(frm) {
-                Ok(item) => Ok(item.map(move |msg| (stream, msg))),
-                Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
+                Ok(item) => return Ok(item.map(move |msg| (stream, msg))),
+                Err(kind) => return Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if !is_server
+        }
+    
+        // 3. Validation of RFC 5.1.1 for NEW streams
+        // If we've arrived here, the stream does NOT exist on our map.
+        // Therefore, it must be a newly created stream. The ID must be higher than the last one viewed.
+        let last_id = self.0.last_id.get();
+        if last_id >= id {
+            // If the ID is old and the stream was not found above, it's an error (Stream Closed or ID Reuse).
+            return Err(Either::Left(ConnectionError::InvalidStreamId(
+                "Invalid id in received headers frame (stream closed or ID reused)",
+            )));
+        }
+    
+        // 4. Update last_id (Valid new stream)
+        self.0.last_id.set(id);
+    
+        // 5. Handle specific client closed/pending cases for new streams
+        if !is_server
             && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id))
         {
             // if client and no stream, then it was closed
             self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
             Ok(None)
         } else {
-            // refuse stream if connection is preparing for disconnect
+            // 6. New Stream Validation Logic (Disconnect, Max Concurrency, Pseudo Headers)
+            
+            // Refuse stream if connection is preparing for disconnect
             if self
                 .0
                 .flags
@@ -535,7 +537,8 @@ impl RecvHalfConnection {
                 self.set_flags(ConnectionFlags::STREAM_REFUSED);
                 return Ok(None);
             }
-
+    
+            // Max concurrent streams check
             if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
                 if self.0.active_remote_streams.get() >= max {
                     // check if client opened more streams than allowed
@@ -549,7 +552,8 @@ impl RecvHalfConnection {
                     };
                 }
             }
-
+    
+            // Pseudo-headers validation
             let pseudo = frm.pseudo();
             if pseudo
                 .path
@@ -572,6 +576,7 @@ impl RecvHalfConnection {
             } else if frm.pseudo().status.is_some() {
                 Err(Either::Left(ConnectionError::UnexpectedPseudo("scheme")))
             } else {
+                // Create the new stream
                 let stream = StreamRef::new(id, true, Connection(self.0.clone()));
                 self.0.streams_count.set(self.0.streams_count.get() + 1);
                 self.0.streams.borrow_mut().insert(id, stream.clone());
