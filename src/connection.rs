@@ -483,14 +483,14 @@ impl RecvHalfConnection {
     ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
-    
+
         // 1. Check if ID parity is correct (Client must send odd, Server even)
         if is_server && !id.is_client_initiated() {
             return Err(Either::Left(ConnectionError::InvalidStreamId(
                 "Invalid id in received headers frame",
             )));
         }
-    
+
         // 2. CORRECTION: Check logic priority
         // First we check if it's an ALREADY EXISTING stream.
         // If the stream exists (is OPEN or HALF_CLOSED), we accept the frame regardless of the last_id.
@@ -501,7 +501,7 @@ impl RecvHalfConnection {
                 Err(kind) => return Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         }
-    
+
         // 3. Validation of RFC 5.1.1 for NEW streams
         // If we've arrived here, the stream does NOT exist on our map.
         // Therefore, it must be a newly created stream. The ID must be higher than the last one viewed.
@@ -512,10 +512,10 @@ impl RecvHalfConnection {
                 "Invalid id in received headers frame (stream closed or ID reused)",
             )));
         }
-    
+
         // 4. Update last_id (Valid new stream)
         self.0.last_id.set(id);
-    
+
         // 5. Handle specific client closed/pending cases for new streams
         if !is_server
             && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id))
@@ -525,7 +525,7 @@ impl RecvHalfConnection {
             Ok(None)
         } else {
             // 6. New Stream Validation Logic (Disconnect, Max Concurrency, Pseudo Headers)
-            
+
             // Refuse stream if connection is preparing for disconnect
             if self
                 .0
@@ -537,7 +537,7 @@ impl RecvHalfConnection {
                 self.set_flags(ConnectionFlags::STREAM_REFUSED);
                 return Ok(None);
             }
-    
+
             // Max concurrent streams check
             if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
                 if self.0.active_remote_streams.get() >= max {
@@ -552,7 +552,7 @@ impl RecvHalfConnection {
                     };
                 }
             }
-    
+
             // Pseudo-headers validation
             let pseudo = frm.pseudo();
             if pseudo
