@@ -58,7 +58,7 @@ async fn main() -> std::io::Result<()> {
         })?
         .config(
             "http",
-            SharedCfg::new("SRV").add(ServiceConfig::new().max_concurrent_streams(10)),
+            SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(10)),
         )
         .workers(1)
         .stop_runtime()
