@@ -1044,7 +1044,7 @@ mod tests {
                     Ok::<_, ()>(())
                 })
             },
-            SharedCfg::new("SRV").add(ServiceConfig::new().ping_timeout(Seconds::ZERO)),
+            SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
         )
         .await;
 
@@ -1093,8 +1093,8 @@ mod tests {
             },
             SharedCfg::new("SRV").add(
                 ServiceConfig::new()
-                    .ping_timeout(Seconds::ZERO)
-                    .reset_stream_duration(Seconds(1)),
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_reset_stream_duration(Seconds(1)),
             ),
         )
         .await;
