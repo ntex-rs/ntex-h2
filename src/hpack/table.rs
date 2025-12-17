@@ -1,4 +1,4 @@
-use std::{cmp, collections::VecDeque, hash::Hash, hash::Hasher, mem};
+use std::{cmp, collections::VecDeque, hash::BuildHasher, hash::Hash, hash::Hasher, mem};
 
 use ntex_http::{Method, header};
 
@@ -660,7 +660,7 @@ fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
 fn hash_header(header: &Header) -> HashValue {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
-    let mut h = ahash::AHasher::default();
+    let mut h = foldhash::fast::FixedState::default().build_hasher();
     header.name().hash(&mut h);
     HashValue((h.finish() & MASK) as usize)
 }

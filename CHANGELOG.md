@@ -1,5 +1,9 @@
 # Changes
 
+## [3.2.0] - 2025-12-17
+
+* Upgrade to ntex-service v4
+
 ## [3.1.0] - 2025-12-04
 
 * Refactor stream ID validation and error handling #71
