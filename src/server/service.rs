@@ -248,7 +248,7 @@ async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
         let ready = io.with_read_buf(|buf| {
             if buf.len() >= consts::PREFACE.len() {
                 if buf[..consts::PREFACE.len()] == consts::PREFACE {
-                    buf.split_to(consts::PREFACE.len());
+                    buf.advance_to(consts::PREFACE.len());
                     Ok(true)
                 } else {
                     log::trace!("read_preface: invalid preface {buf:?}");

@@ -99,7 +99,7 @@ impl LengthDelimitedCodec {
 
         let num_skip = self.builder.get_num_skip();
         if num_skip > 0 {
-            src.advance(num_skip);
+            src.advance_to(num_skip);
         }
 
         // Ensure that the buffer has enough space to read the incoming

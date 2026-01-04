@@ -37,7 +37,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> 
         return Err(DecoderError::InvalidHuffmanCode);
     }
 
-    Ok(buf.split())
+    Ok(buf.take())
 }
 
 pub fn encode(src: &[u8], dst: &mut BytesMut) {

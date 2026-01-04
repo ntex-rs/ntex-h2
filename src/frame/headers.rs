@@ -111,7 +111,7 @@ impl Headers {
             let pad = src[0] as usize;
 
             // Drop the padding
-            let _ = src.split_to(1);
+            src.advance_to(1);
             pad
         } else {
             0
@@ -129,7 +129,7 @@ impl Headers {
             }
 
             // Drop the next 5 bytes
-            let _ = src.split_to(5);
+            src.advance_to(5);
         }
 
         if pad > 0 {

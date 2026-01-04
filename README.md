@@ -5,7 +5,7 @@ HTTP/2 client & server implementation for Rust.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Crates.io](https://img.shields.io/crates/v/ntex-h2.svg)](https://crates.io/crates/ntex-h2)
 [![Documentation](https://img.shields.io/docsrs/ntex-h2/latest)](https://docs.rs/ntex-h2) 
-[![Version](https://img.shields.io/badge/rustc-1.85+-lightgray.svg)](https://releases.rs/docs/1.85.0/) 
+[![Version](https://img.shields.io/badge/rustc-1.86+-lightgray.svg)](https://releases.rs/docs/1.85.0/) 
 [![CI](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml/badge.svg)](https://github.com/ntex-rs/ntex-h2/actions/workflows/CI.yml) 
 [![codecov](https://codecov.io/gh/ntex-rs/ntex-h2/branch/main/graph/badge.svg)](https://codecov.io/gh/ntex-rs/ntex-h2) 
 
