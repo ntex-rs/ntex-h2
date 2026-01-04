@@ -172,7 +172,7 @@ impl Decoder for Codec {
                     })?
                     .into(),
                 Kind::Data => {
-                    let _ = bytes.split_to(frame::HEADER_LEN);
+                    bytes.advance_to(frame::HEADER_LEN);
 
                     frame::Data::load(head, bytes.freeze())
                         // TODO: Should this always be connection level? Probably not...
@@ -183,7 +183,7 @@ impl Decoder for Codec {
                 }
                 Kind::Headers => {
                     // Drop the frame header
-                    let _ = bytes.split_to(frame::HEADER_LEN);
+                    bytes.advance_to(frame::HEADER_LEN);
 
                     // Parse the header frame w/o parsing the payload
                     let mut frame = match frame::Headers::load(head, &mut bytes) {
@@ -220,7 +220,7 @@ impl Decoder for Codec {
                         // Defer returning the frame
                         inner.partial = Some(Partial {
                             frame,
-                            buf: bytes.split(),
+                            buf: bytes.take(),
                             count: 0,
                         });
 

@@ -47,7 +47,7 @@ async fn start_server() -> test::TestServer {
             .openssl(ssl_acceptor())
             .map_err(|_| ())
         },
-        SharedCfg::new("SRV").add(ServiceConfig::new().max_concurrent_streams(1)),
+        SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(1)),
     )
     .await
 }
@@ -143,7 +143,7 @@ async fn test_max_concurrent_streams() {
 async fn test_max_concurrent_streams_pool() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client = Client::build(
+    let client = Client::builder(
         "localhost",
         fn_service(move |_| async move { Ok(connect(addr).await) }),
     );
@@ -152,7 +152,7 @@ async fn test_max_concurrent_streams_pool() {
         .maxconn(1)
         .scheme(Scheme::HTTPS)
         .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-        .finish(SharedCfg::default())
+        .build(SharedCfg::default())
         .await
         .unwrap();
     assert!(format!("{:?}", client).contains("Client"));
@@ -190,7 +190,7 @@ async fn test_max_concurrent_streams_pool2() {
 
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
-    let client = Client::build(
+    let client = Client::builder(
         "localhost",
         fn_service(move |_| {
             cnt2.set(cnt2.get() + 1);
@@ -198,7 +198,7 @@ async fn test_max_concurrent_streams_pool2() {
         }),
     )
     .maxconn(2)
-    .finish(SharedCfg::default())
+    .build(SharedCfg::default())
     .await
     .unwrap();
     assert!(client.is_ready());
@@ -488,8 +488,8 @@ async fn test_ping_timeout_on_idle() {
         },
         SharedCfg::new("SRV").add(
             ServiceConfig::new()
-                .max_concurrent_streams(1)
-                .ping_timeout(Seconds(1)),
+                .set_max_concurrent_streams(1)
+                .set_ping_timeout(Seconds(1)),
         ),
     )
     .await;

@@ -32,7 +32,7 @@ pub fn strip_padding(payload: &mut Bytes) -> Result<u8, FrameError> {
         return Err(FrameError::TooMuchPadding);
     }
 
-    let _ = payload.split_to(1);
+    payload.advance_to(1);
     let _ = payload.split_off(payload_len - pad_len - 1);
 
     Ok(pad_len as u8)

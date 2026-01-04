@@ -1,5 +1,9 @@
 # Changes
 
+## [3.3.0] - 2026-01-04
+
+* Use Bytes::advance_to() instead of .split_to()
+
 ## [3.2.0] - 2025-12-17
 
 * Upgrade to ntex-service v4
