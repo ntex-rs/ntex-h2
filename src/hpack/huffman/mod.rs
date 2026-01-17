@@ -104,7 +104,7 @@ impl Decoder {
 mod test {
     use super::*;
 
-    fn decode(src: &[u8]) -> Result<BytesMut, DecoderError> {
+    fn decode(src: &[u8]) -> Result<Bytes, DecoderError> {
         let mut buf = BytesMut::new();
         super::decode(src, &mut buf)
     }

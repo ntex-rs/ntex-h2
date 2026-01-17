@@ -836,7 +836,7 @@ mod test {
     #[test]
     fn test_decode_string_empty() {
         let mut de = Decoder::new(0);
-        let mut buf = BytesMut::new();
+        let mut buf = Bytes::new();
         let err = de.decode_string(&mut Cursor::new(&mut buf)).unwrap_err();
         assert_eq!(err, DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
     }
@@ -845,7 +845,7 @@ mod test {
     #[allow(clippy::unit_cmp, clippy::let_unit_value)]
     fn test_decode_empty() {
         let mut de = Decoder::new(0);
-        let mut buf = BytesMut::new();
+        let mut buf = Bytes::new();
         let empty = de.decode(&mut Cursor::new(&mut buf), |_| {}).unwrap();
         assert_eq!(empty, ());
     }
@@ -859,6 +859,7 @@ mod test {
         buf.extend(huff_encode(b"foo"));
         buf.extend(&[0x80 | 3]);
         buf.extend(huff_encode(b"bar"));
+        let mut buf = buf.freeze();
 
         let mut res = vec![];
         de.decode(&mut Cursor::new(&mut buf), |h| {
@@ -898,6 +899,7 @@ mod test {
         // header value is partial
         buf.extend(&[0x80 | 3]);
         buf.extend(&value[0..1]);
+        let mut buf = buf.freeze();
 
         let mut res = vec![];
         let e = de
@@ -909,7 +911,9 @@ mod test {
         assert_eq!(e, DecoderError::NeedMore(NeedMore::StringUnderflow));
 
         // extend buf with the remaining header value
+        let mut buf = BytesMut::from(buf);
         buf.extend(&value[1..]);
+        let mut buf = buf.freeze();
         de.decode(&mut Cursor::new(&mut buf), |h| {
             res.push(h);
         })

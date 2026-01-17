@@ -294,6 +294,7 @@ fn position(buf: &BytesMut) -> usize {
 
 #[cfg(test)]
 mod test {
+    use ntex_bytes::Bytes;
     use ntex_http::*;
 
     use super::*;
@@ -710,7 +711,7 @@ mod test {
         }
     }
 
-    fn huff_decode(src: &[u8]) -> BytesMut {
+    fn huff_decode(src: &[u8]) -> Bytes {
         let mut buf = BytesMut::new();
         huffman::decode(src, &mut buf).unwrap()
     }
