@@ -3,7 +3,7 @@ mod table;
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
 
-use ntex_bytes::{BufMut, BytesMut};
+use ntex_bytes::{BufMut, Bytes, BytesMut};
 
 // Constructed in the generated `table.rs` file
 struct Decoder {
@@ -17,7 +17,7 @@ const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
 const ERROR: u8 = 4;
 
-pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
+pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
     let mut decoder = Decoder::new();
 
     // Max compression ratio is >= 0.5

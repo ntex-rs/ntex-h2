@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use ntex_bytes::BytesMut;
+use ntex_bytes::{Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 mod error;
@@ -23,7 +23,7 @@ struct Partial {
     /// Empty frame
     frame: frame::Headers,
     /// Partial header payload
-    buf: BytesMut,
+    buf: Bytes,
     /// Number of continuations
     count: usize,
 }
@@ -174,7 +174,7 @@ impl Decoder for Codec {
                 Kind::Data => {
                     bytes.advance_to(frame::HEADER_LEN);
 
-                    frame::Data::load(head, bytes.freeze())
+                    frame::Data::load(head, bytes)
                         // TODO: Should this always be connection level? Probably not...
                         .inspect_err(|e| {
                             proto_err!(conn: "failed to load DATA frame; err={:?}", e);
@@ -220,7 +220,7 @@ impl Decoder for Codec {
                         // Defer returning the frame
                         inner.partial = Some(Partial {
                             frame,
-                            buf: bytes.take(),
+                            buf: bytes,
                             count: 0,
                         });
 
@@ -307,7 +307,12 @@ impl Decoder for Codec {
                                 frame::FrameContinuationError::MaxLeftoverSize,
                             ));
                         }
-                        partial.buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
+                        let mut buf = BytesMut::with_capacity(
+                            partial.buf.len() + bytes.len() - frame::HEADER_LEN,
+                        );
+                        buf.extend_from_slice(&partial.buf);
+                        buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
+                        partial.buf = buf.into();
                     }
 
                     if (head.flag() & 0x4) == 0x4 {

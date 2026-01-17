@@ -1,5 +1,9 @@
 # Changes
 
+## [3.4.0] - 2026-01-17
+
+* Update bytes and codec apis
+
 ## [3.3.0] - 2026-01-04
 
 * Use Bytes::advance_to() instead of .split_to()
