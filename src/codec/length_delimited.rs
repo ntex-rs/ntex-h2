@@ -109,7 +109,7 @@ impl LengthDelimitedCodec {
         Ok(Some(n))
     }
 
-    fn decode_data(&self, n: usize, src: &mut BytesMut) -> Option<BytesMut> {
+    fn decode_data(&self, n: usize, src: &mut BytesMut) -> Option<Bytes> {
         // At this point, the buffer has already had the required capacity
         // reserved. All there is to do is read.
         if src.len() < n {
@@ -121,10 +121,10 @@ impl LengthDelimitedCodec {
 }
 
 impl Decoder for LengthDelimitedCodec {
-    type Item = BytesMut;
+    type Item = Bytes;
     type Error = LengthDelimitedCodecError;
 
-    fn decode(&self, src: &mut BytesMut) -> Result<Option<BytesMut>, LengthDelimitedCodecError> {
+    fn decode(&self, src: &mut BytesMut) -> Result<Option<Bytes>, LengthDelimitedCodecError> {
         let n = match self.state.get() {
             DecodeState::Head => match self.decode_head(src)? {
                 Some(n) => {

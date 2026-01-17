@@ -1,6 +1,6 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
-use ntex_bytes::{ByteString, BytesMut};
+use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header, uri};
 
 use crate::hpack;
@@ -96,7 +96,7 @@ impl Headers {
     /// Loads the header frame but doesn't actually do HPACK decoding.
     ///
     /// HPACK decoding is done in the `load_hpack` step.
-    pub fn load(head: Head, src: &mut BytesMut) -> Result<Self, FrameError> {
+    pub fn load(head: Head, src: &mut Bytes) -> Result<Self, FrameError> {
         let flags = HeadersFlag(head.flag());
 
         if head.stream_id().is_zero() {
@@ -151,7 +151,7 @@ impl Headers {
 
     pub fn load_hpack(
         &mut self,
-        src: &mut BytesMut,
+        src: &mut Bytes,
         decoder: &mut hpack::Decoder,
     ) -> Result<(), FrameError> {
         self.header_block.load(src, decoder)
@@ -417,7 +417,7 @@ thread_local! {
 }
 
 impl HeaderBlock {
-    fn load(&mut self, src: &mut BytesMut, decoder: &mut hpack::Decoder) -> Result<(), FrameError> {
+    fn load(&mut self, src: &mut Bytes, decoder: &mut hpack::Decoder) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
 

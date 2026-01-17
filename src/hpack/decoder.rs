@@ -180,11 +180,7 @@ impl Decoder {
     }
 
     /// Decodes the headers found in the given buffer.
-    pub fn decode<F>(
-        &mut self,
-        src: &mut Cursor<&mut BytesMut>,
-        mut f: F,
-    ) -> Result<(), DecoderError>
+    pub fn decode<F>(&mut self, src: &mut Cursor<&mut Bytes>, mut f: F) -> Result<(), DecoderError>
     where
         F: FnMut(Header),
     {
@@ -252,7 +248,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn process_size_update(&mut self, buf: &mut Cursor<&mut BytesMut>) -> Result<(), DecoderError> {
+    fn process_size_update(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<(), DecoderError> {
         let new_size = decode_int(buf, 5)?;
 
         if new_size > self.last_max_update {
@@ -270,14 +266,14 @@ impl Decoder {
         Ok(())
     }
 
-    fn decode_indexed(&self, buf: &mut Cursor<&mut BytesMut>) -> Result<Header, DecoderError> {
+    fn decode_indexed(&self, buf: &mut Cursor<&mut Bytes>) -> Result<Header, DecoderError> {
         let index = decode_int(buf, 7)?;
         self.table.get(index)
     }
 
     fn decode_literal(
         &mut self,
-        buf: &mut Cursor<&mut BytesMut>,
+        buf: &mut Cursor<&mut Bytes>,
         index: bool,
     ) -> Result<Header, DecoderError> {
         let prefix = if index { 6 } else { 4 };
@@ -305,7 +301,7 @@ impl Decoder {
 
     fn try_decode_string(
         &mut self,
-        buf: &mut Cursor<&mut BytesMut>,
+        buf: &mut Cursor<&mut Bytes>,
     ) -> Result<StringMarker, DecoderError> {
         let old_pos = buf.position();
         const HUFF_FLAG: u8 = 0b1000_0000;
@@ -331,7 +327,7 @@ impl Decoder {
                 huffman::decode(raw, &mut self.buffer).map(|buf| StringMarker {
                     offset,
                     len,
-                    string: Some(BytesMut::freeze(buf)),
+                    string: Some(buf),
                 })
             };
 
@@ -347,7 +343,7 @@ impl Decoder {
         }
     }
 
-    fn decode_string(&mut self, buf: &mut Cursor<&mut BytesMut>) -> Result<Bytes, DecoderError> {
+    fn decode_string(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<Bytes, DecoderError> {
         let old_pos = buf.position();
         let marker = self.try_decode_string(buf)?;
         buf.set_position(old_pos);
@@ -457,16 +453,16 @@ fn peek_u8<B: Buf>(buf: &B) -> Option<u8> {
     }
 }
 
-fn take(buf: &mut Cursor<&mut BytesMut>, n: usize) -> Bytes {
+fn take(buf: &mut Cursor<&mut Bytes>, n: usize) -> Bytes {
     let pos = buf.position() as usize;
     let mut head = buf.get_mut().split_to(pos + n);
     buf.set_position(0);
     head.advance(pos);
-    head.freeze()
+    head
 }
 
 impl StringMarker {
-    fn consume(self, buf: &mut Cursor<&mut BytesMut>) -> Bytes {
+    fn consume(self, buf: &mut Cursor<&mut Bytes>) -> Bytes {
         buf.advance(self.offset);
         match self.string {
             Some(string) => {
@@ -478,7 +474,7 @@ impl StringMarker {
     }
 }
 
-fn consume(buf: &mut Cursor<&mut BytesMut>) {
+fn consume(buf: &mut Cursor<&mut Bytes>) {
     // remove bytes from the internal BytesMut when they have been successfully
     // decoded. This is a more permanent cursor position, which will be
     // used to resume if decoding was only partial.
