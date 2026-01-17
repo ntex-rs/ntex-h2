@@ -163,6 +163,7 @@ impl FuzzHpack {
             encoder.encode(frame.headers, &mut buf);
 
             // Decode the chunk!
+            let mut buf = buf.freeze();
             decoder
                 .decode(&mut Cursor::new(&mut buf), |h| {
                     let e = expect.remove(0);
