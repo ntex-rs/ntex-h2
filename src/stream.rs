@@ -462,14 +462,14 @@ impl StreamRef {
                 }
                 let (pseudo, headers) = hdrs.into_parts();
 
-                if self.0.content_length.get() != ContentLength::Head {
-                    if let Some(content_length) = headers.get(CONTENT_LENGTH) {
-                        if let Some(v) = parse_u64(content_length.as_bytes()) {
-                            self.0.content_length.set(ContentLength::Remaining(v));
-                        } else {
-                            proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
-                            return Err(StreamError::InvalidContentLength);
-                        }
+                if self.0.content_length.get() != ContentLength::Head
+                    && let Some(content_length) = headers.get(CONTENT_LENGTH)
+                {
+                    if let Some(v) = parse_u64(content_length.as_bytes()) {
+                        self.0.content_length.set(ContentLength::Remaining(v));
+                    } else {
+                        proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
+                        return Err(StreamError::InvalidContentLength);
                     }
                 }
                 Ok(Some(Message::new(pseudo, headers, eof, self)))

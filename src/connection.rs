@@ -403,13 +403,13 @@ impl Connection {
                 } else {
                     let local = self.0.active_local_streams.get();
                     self.0.active_local_streams.set(local - 1);
-                    if let Some(max) = self.0.local_max_concurrent_streams.get() {
-                        if local == max {
-                            while let Some(tx) = self.0.readiness.borrow_mut().pop_front() {
-                                if !tx.is_canceled() {
-                                    let _ = tx.send(());
-                                    break;
-                                }
+                    if let Some(max) = self.0.local_max_concurrent_streams.get()
+                        && local == max
+                    {
+                        while let Some(tx) = self.0.readiness.borrow_mut().pop_front() {
+                            if !tx.is_canceled() {
+                                let _ = tx.send(());
+                                break;
                             }
                         }
                     }
@@ -539,18 +539,18 @@ impl RecvHalfConnection {
             }
 
             // Max concurrent streams check
-            if let Some(max) = self.0.local_config.remote_max_concurrent_streams {
-                if self.0.active_remote_streams.get() >= max {
-                    // check if client opened more streams than allowed
-                    // in that case close connection
-                    return if self.flags().contains(ConnectionFlags::STREAM_REFUSED) {
-                        Err(Either::Left(ConnectionError::ConcurrencyOverflow))
-                    } else {
-                        self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
-                        self.set_flags(ConnectionFlags::STREAM_REFUSED);
-                        Ok(None)
-                    };
-                }
+            if let Some(max) = self.0.local_config.remote_max_concurrent_streams
+                && self.0.active_remote_streams.get() >= max
+            {
+                // check if client opened more streams than allowed
+                // in that case close connection
+                return if self.flags().contains(ConnectionFlags::STREAM_REFUSED) {
+                    Err(Either::Left(ConnectionError::ConcurrencyOverflow))
+                } else {
+                    self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
+                    self.set_flags(ConnectionFlags::STREAM_REFUSED);
+                    Ok(None)
+                };
             }
 
             // Pseudo-headers validation

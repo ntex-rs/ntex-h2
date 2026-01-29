@@ -1,5 +1,9 @@
 # Changes
 
+## [3.5.0] - 2026-01-29
+
+* Use ntex_dispatcher::Dispatcher instead of ntex-io
+
 ## [3.4.0] - 2026-01-17
 
 * Update bytes and codec apis

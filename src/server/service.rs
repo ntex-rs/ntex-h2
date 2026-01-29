@@ -1,6 +1,7 @@
 use std::{fmt, future::Future, future::poll_fn, pin::Pin, rc::Rc};
 
-use ntex_io::{Dispatcher as IoDispatcher, Filter, Io, IoBoxed};
+use ntex_dispatcher::Dispatcher as IoDispatcher;
+use ntex_io::{Filter, Io, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};

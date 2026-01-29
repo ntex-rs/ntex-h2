@@ -2,8 +2,9 @@ use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use nanorand::Rng;
 use ntex_bytes::ByteString;
+use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
-use ntex_io::{Dispatcher as IoDispatcher, IoBoxed, IoRef, OnDisconnect};
+use ntex_io::{IoBoxed, IoRef, OnDisconnect};
 use ntex_service::cfg::Cfg;
 use ntex_util::{channel::pool, time::Millis, time::Sleep};
 
@@ -266,11 +267,11 @@ impl Future for ClientDisconnect {
 
         if Pin::new(&mut this.disconnect).poll(cx).is_ready() {
             return Poll::Ready(this.client.0.con.check_error_with_disconnect());
-        } else if let Some(ref mut sleep) = this.timeout {
-            if sleep.poll_elapsed(cx).is_ready() {
-                this.client.0.con.close();
-                return Poll::Ready(Err(OperationError::Disconnected));
-            }
+        } else if let Some(ref mut sleep) = this.timeout
+            && sleep.poll_elapsed(cx).is_ready()
+        {
+            this.client.0.con.close();
+            return Poll::Ready(Err(OperationError::Disconnected));
         }
         Poll::Pending
     }
