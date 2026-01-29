@@ -43,14 +43,14 @@ impl StreamId {
     /// was initiated by the client.
     pub const fn is_client_initiated(&self) -> bool {
         let id = self.0;
-        id != 0 && id % 2 == 1
+        id != 0 && !id.is_multiple_of(2)
     }
 
     /// Returns true if this stream ID corresponds to a stream that
     /// was initiated by the server.
     pub const fn is_server_initiated(&self) -> bool {
         let id = self.0;
-        id != 0 && id % 2 == 0
+        id != 0 && id.is_multiple_of(2)
     }
 
     /// Return a new `StreamId` for stream 0.

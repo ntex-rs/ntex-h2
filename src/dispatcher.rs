@@ -1,9 +1,8 @@
 use std::{fmt, future::Future, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
-use ntex_io::DispatchItem;
+use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_service::{Pipeline, Service, ServiceCtx};
-use ntex_util::future::{Either, join};
-use ntex_util::{HashMap, spawn};
+use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
@@ -247,19 +246,19 @@ where
                     Ok(None)
                 }
             },
-            DispatchItem::EncoderError(err) => {
+            DispatchItem::Stop(DispReason::Encoder(err)) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
                 control(Control::proto_error(err), &self.inner, ctx).await
             }
-            DispatchItem::DecoderError(err) => {
+            DispatchItem::Stop(DispReason::Decoder(err)) => {
                 let err = ConnectionError::from(err);
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.into());
                 control(Control::proto_error(err), &self.inner, ctx).await
             }
-            DispatchItem::KeepAliveTimeout => {
+            DispatchItem::Stop(DispReason::KeepAliveTimeout) => {
                 log::warn!(
                     "{}: did not receive pong response in time, closing connection",
                     self.connection.tag(),
@@ -273,7 +272,7 @@ where
                 )
                 .await
             }
-            DispatchItem::ReadTimeout => {
+            DispatchItem::Stop(DispReason::ReadTimeout) => {
                 log::warn!(
                     "{}: did not receive complete frame in time, closing connection",
                     self.connection.tag(),
@@ -287,12 +286,12 @@ where
                 )
                 .await
             }
-            DispatchItem::Disconnect(err) => {
+            DispatchItem::Stop(DispReason::Io(err)) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(streams, OperationError::Disconnected);
                 control(Control::peer_gone(err), &self.inner, ctx).await
             }
-            DispatchItem::WBackPressureEnabled | DispatchItem::WBackPressureDisabled => Ok(None),
+            DispatchItem::Control(_) => Ok(None),
         }
     }
 }
@@ -346,10 +345,10 @@ where
 {
     match ctx.call(inner.control.get_ref(), pkt).await {
         Ok(res) => {
-            if let Some(Frame::Reset(ref rst)) = res.frame {
-                if !rst.stream_id().is_zero() {
-                    inner.connection.rst_stream(rst.stream_id(), rst.reason());
-                }
+            if let Some(Frame::Reset(ref rst)) = res.frame
+                && !rst.stream_id().is_zero()
+            {
+                inner.connection.rst_stream(rst.stream_id(), rst.reason());
             }
             if let Some(frm) = res.frame {
                 inner.connection.encode(frm);
