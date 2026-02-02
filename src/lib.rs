@@ -87,7 +87,7 @@ mod codec;
 mod config;
 mod connection;
 mod consts;
-mod control;
+pub mod control;
 mod default;
 mod dispatcher;
 mod error;

@@ -1,5 +1,9 @@
 # Changes
 
+## [3.6.1] - 2026-02-02
+
+* Make control module public
+
 ## [3.6.0] - 2026-02-02
 
 * Refactor control messages
