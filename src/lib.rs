@@ -106,3 +106,10 @@ pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Capacity, Stream, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
+
+#[doc(hidden)]
+#[deprecated]
+pub type ControlMessage<E> = Control<E>;
+#[doc(hidden)]
+#[deprecated]
+pub type ControlResult = ControlAck;

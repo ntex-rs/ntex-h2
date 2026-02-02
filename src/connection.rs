@@ -1028,7 +1028,7 @@ mod tests {
                             msg.stream().reset(Reason::REFUSED_STREAM);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
                             Ok::<_, ()>(msg.ack())
                         }),
                     )
@@ -1075,7 +1075,7 @@ mod tests {
                             msg.stream().reset(Reason::NO_ERROR);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
                             Ok::<_, ()>(msg.ack())
                         }),
                     )
