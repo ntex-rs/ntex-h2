@@ -430,10 +430,6 @@ impl StreamRef {
         self.0.con.encode(hdrs);
     }
 
-    pub(crate) fn set_failed(&self, reason: Option<Reason>) {
-        self.0.reset_stream(reason);
-    }
-
     pub(crate) fn set_go_away(&self, reason: Reason) {
         self.0.remote_reset_stream(reason)
     }

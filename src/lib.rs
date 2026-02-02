@@ -108,4 +108,8 @@ pub use self::stream::{Capacity, Stream, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
 
 #[doc(hidden)]
-pub use self::control::{ControlMessage, ControlResult};
+#[deprecated]
+pub type ControlMessage<E> = Control<E>;
+#[doc(hidden)]
+#[deprecated]
+pub type ControlResult = ControlAck;

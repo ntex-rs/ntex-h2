@@ -380,13 +380,6 @@ impl Connection {
         Ok(stream.into_stream())
     }
 
-    pub(crate) fn rst_stream(&self, id: StreamId, reason: frame::Reason) {
-        let stream = self.0.streams.borrow_mut().get(&id).cloned();
-        if let Some(stream) = stream {
-            stream.set_failed(Some(reason))
-        }
-    }
-
     pub(crate) fn drop_stream(&self, id: StreamId) {
         let empty = {
             let mut streams = self.0.streams.borrow_mut();
@@ -1035,7 +1028,7 @@ mod tests {
                             msg.stream().reset(Reason::REFUSED_STREAM);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
                             Ok::<_, ()>(msg.ack())
                         }),
                     )
@@ -1082,7 +1075,7 @@ mod tests {
                             msg.stream().reset(Reason::NO_ERROR);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::ControlMessage<h2::StreamError>| async move {
+                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
                             Ok::<_, ()>(msg.ack())
                         }),
                     )

@@ -1,5 +1,9 @@
 # Changes
 
+## [3.6.0] - 2026-02-02
+
+* Refactor control messages
+
 ## [3.5.0] - 2026-01-29
 
 * Use ntex_dispatcher::Dispatcher instead of ntex-io

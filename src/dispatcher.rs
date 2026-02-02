@@ -1,4 +1,4 @@
-use std::{fmt, future::Future, future::poll_fn, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, fmt, future::Future, future::poll_fn, rc::Rc, task::Context, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_service::{Pipeline, Service, ServiceCtx};
@@ -29,6 +29,7 @@ where
     publish: Pub,
     connection: Connection,
     last_stream_id: StreamId,
+    disconnected: Cell<bool>,
 }
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
@@ -46,6 +47,7 @@ where
                 connection,
                 control: Pipeline::new(control),
                 last_stream_id: 0.into(),
+                disconnected: Cell::new(false),
             }),
         }
     }
@@ -127,7 +129,7 @@ where
                 Err(())
             } else {
                 match ctx
-                    .call_nowait(self.inner.control.get_ref(), Control::error(e))
+                    .call_nowait(self.inner.control.get_ref(), Control::error(e, None))
                     .await
                 {
                     Ok(_) => {
@@ -147,7 +149,12 @@ where
             let inner = self.inner.clone();
             let con = self.connection.connection();
             let _ = ntex_util::spawn(async move {
-                if inner.control.call_nowait(Control::error(e)).await.is_ok() {
+                if inner
+                    .control
+                    .call_nowait(Control::error(e, None))
+                    .await
+                    .is_ok()
+                {
                     con.close();
                 }
             });
@@ -328,7 +335,22 @@ where
 
     match result {
         Ok(_) => Ok(None),
-        Err(e) => control(Control::app_error(e, stream), inner, ctx).await,
+        Err(e) => control(Control::error(e, Some(stream)), inner, ctx).await,
+    }
+}
+
+impl<Ctl, Pub> Inner<Ctl, Pub>
+where
+    Ctl: Service<Control<Pub::Error>>,
+    Pub: Service<Message>,
+{
+    fn can_disconnect(&self) -> bool {
+        if self.disconnected.get() {
+            false
+        } else {
+            self.disconnected.set(true);
+            true
+        }
     }
 }
 
@@ -343,31 +365,26 @@ where
     Pub: Service<Message>,
     Pub::Error: fmt::Debug,
 {
-    match ctx.call(inner.control.get_ref(), pkt).await {
-        Ok(res) => {
-            if let Some(Frame::Reset(ref rst)) = res.frame
-                && !rst.stream_id().is_zero()
-            {
-                inner.connection.rst_stream(rst.stream_id(), rst.reason());
-            }
-            if let Some(frm) = res.frame {
-                inner.connection.encode(frm);
-            }
-            if res.disconnect {
+    if inner.can_disconnect() {
+        match ctx.call(inner.control.get_ref(), pkt).await {
+            Ok(res) => {
+                if let Some(frm) = res.frame {
+                    inner.connection.encode(frm);
+                }
                 inner.connection.close();
             }
-        }
-        Err(err) => {
-            log::error!(
-                "{}: control service has failed with {:?}",
-                inner.connection.tag(),
-                err
-            );
-            // we cannot handle control service errors, close connection
-            inner.connection.encode(
-                GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id),
-            );
-            inner.connection.close();
+            Err(err) => {
+                log::error!(
+                    "{}: control service has failed with {:?}",
+                    inner.connection.tag(),
+                    err
+                );
+                // we cannot handle control service errors, close connection
+                inner.connection.encode(
+                    GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id),
+                );
+                inner.connection.close();
+            }
         }
     }
     Ok(None)
