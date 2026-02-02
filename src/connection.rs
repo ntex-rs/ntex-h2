@@ -380,13 +380,6 @@ impl Connection {
         Ok(stream.into_stream())
     }
 
-    pub(crate) fn rst_stream(&self, id: StreamId, reason: frame::Reason) {
-        let stream = self.0.streams.borrow_mut().get(&id).cloned();
-        if let Some(stream) = stream {
-            stream.set_failed(Some(reason))
-        }
-    }
-
     pub(crate) fn drop_stream(&self, id: StreamId) {
         let empty = {
             let mut streams = self.0.streams.borrow_mut();

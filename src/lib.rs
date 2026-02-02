@@ -106,6 +106,3 @@ pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Capacity, Stream, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
-
-#[doc(hidden)]
-pub use self::control::{ControlMessage, ControlResult};

@@ -1,90 +1,96 @@
 use std::io;
 
-use crate::frame::{Frame, Reason, Reset};
+use crate::frame::Frame;
 use crate::{error, frame, stream::StreamRef};
-
-#[doc(hidden)]
-pub type ControlMessage<E> = Control<E>;
-#[doc(hidden)]
-pub type ControlResult = ControlAck;
 
 #[derive(Debug)]
 pub enum Control<E> {
+    /// Connection is prepared to disconnect
+    Disconnect(Reason<E>),
+    /// Protocol dispatcher is terminated
+    Terminated(Terminated),
+}
+
+#[derive(Debug)]
+/// Disconnect reason
+pub enum Reason<E> {
     /// Application level error from publish service
-    AppError(AppError<E>),
+    Error(Error<E>),
     /// Protocol level error
-    ConnectionError(ConnectionError),
+    ProtocolError(ConnectionError),
     /// Remote GoAway is received
     GoAway(GoAway),
     /// Peer is gone
     PeerGone(PeerGone),
-    /// Protocol dispatcher is terminated
-    Terminated(Terminated),
 }
 
 #[derive(Clone, Debug)]
 pub struct ControlAck {
     pub(crate) frame: Option<Frame>,
-    pub(crate) disconnect: bool,
 }
 
 impl<E> Control<E> {
     /// Create a new `Control` message for app level errors
-    pub(super) fn error(err: E) -> Self {
-        Control::AppError(AppError::new(err, None))
-    }
-
-    /// Create a new `Control` message for app level errors
-    pub(super) fn app_error(err: E, stream: StreamRef) -> Self {
-        Control::AppError(AppError::new(err, Some(stream)))
+    pub(super) fn error(err: E, stream: Option<StreamRef>) -> Self {
+        Control::Disconnect(Reason::Error(Error::new(err, stream)))
     }
 
     /// Create a new `Control` message from GOAWAY packet.
     pub(super) fn go_away(frm: frame::GoAway) -> Self {
-        Control::GoAway(GoAway(frm))
+        Control::Disconnect(Reason::GoAway(GoAway(frm)))
     }
 
     /// Create a new `Control` message from DISCONNECT packet.
     pub(super) fn peer_gone(err: Option<io::Error>) -> Self {
-        Control::PeerGone(PeerGone(err))
+        Control::Disconnect(Reason::PeerGone(PeerGone(err)))
+    }
+
+    /// Create a new `Control` message for protocol level errors
+    pub(super) fn proto_error(err: error::ConnectionError) -> Self {
+        Control::Disconnect(Reason::ProtocolError(ConnectionError::new(err)))
     }
 
     pub(super) fn terminated() -> Self {
         Control::Terminated(Terminated)
     }
 
-    /// Create a new `Control` message for protocol level errors
-    pub(super) fn proto_error(err: error::ConnectionError) -> Self {
-        Control::ConnectionError(ConnectionError::new(err))
-    }
-
     /// Default ack impl
     pub fn ack(self) -> ControlAck {
         match self {
-            Control::AppError(item) => item.ack(),
-            Control::ConnectionError(item) => item.ack(),
-            Control::GoAway(item) => item.ack(),
-            Control::PeerGone(item) => item.ack(),
+            Control::Disconnect(item) => item.ack(),
             Control::Terminated(item) => item.ack(),
         }
     }
 }
 
-/// Service level error
-#[derive(Debug)]
-pub struct AppError<E> {
-    err: E,
-    reason: Reason,
-    stream: Option<StreamRef>,
+impl<E> Reason<E> {
+    /// Default ack impl
+    pub fn ack(self) -> ControlAck {
+        match self {
+            Reason::Error(item) => item.ack(),
+            Reason::ProtocolError(item) => item.ack(),
+            Reason::GoAway(item) => item.ack(),
+            Reason::PeerGone(item) => item.ack(),
+        }
+    }
 }
 
-impl<E> AppError<E> {
+/// Application level error
+#[derive(Debug)]
+pub struct Error<E> {
+    err: E,
+    goaway: frame::GoAway,
+}
+
+impl<E> Error<E> {
     fn new(err: E, stream: Option<StreamRef>) -> Self {
-        Self {
-            err,
-            stream,
-            reason: Reason::CANCEL,
-        }
+        let goaway = if let Some(ref stream) = stream {
+            frame::GoAway::new(frame::Reason::INTERNAL_ERROR).set_last_stream_id(stream.id())
+        } else {
+            frame::GoAway::new(frame::Reason::INTERNAL_ERROR)
+        };
+
+        Self { err, goaway }
     }
 
     #[inline]
@@ -95,24 +101,16 @@ impl<E> AppError<E> {
 
     #[inline]
     /// Set reason code for go away packet
-    pub fn reason(mut self, reason: Reason) -> Self {
-        self.reason = reason;
+    pub fn reason(mut self, reason: frame::Reason) -> Self {
+        self.goaway = self.goaway.set_reason(reason);
         self
     }
 
     #[inline]
     /// Ack service error, return disconnect packet and close connection.
     pub fn ack(self) -> ControlAck {
-        if let Some(ref stream) = self.stream {
-            ControlAck {
-                frame: Some(Reset::new(stream.id(), self.reason).into()),
-                disconnect: false,
-            }
-        } else {
-            ControlAck {
-                frame: None,
-                disconnect: true,
-            }
+        ControlAck {
+            frame: Some(self.goaway.into()),
         }
     }
 }
@@ -125,10 +123,7 @@ impl Terminated {
     #[inline]
     /// convert packet to a result
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: None,
-            disconnect: true,
-        }
+        ControlAck { frame: None }
     }
 }
 
@@ -155,7 +150,7 @@ impl ConnectionError {
 
     #[inline]
     /// Set reason code for go away packet
-    pub fn reason(mut self, reason: Reason) -> Self {
+    pub fn reason(mut self, reason: frame::Reason) -> Self {
         self.frm = self.frm.set_reason(reason);
         self
     }
@@ -165,7 +160,6 @@ impl ConnectionError {
     pub fn ack(self) -> ControlAck {
         ControlAck {
             frame: Some(self.frm.into()),
-            disconnect: true,
         }
     }
 }
@@ -185,10 +179,7 @@ impl PeerGone {
     }
 
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: None,
-            disconnect: true,
-        }
+        ControlAck { frame: None }
     }
 }
 
@@ -202,9 +193,6 @@ impl GoAway {
     }
 
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: None,
-            disconnect: true,
-        }
+        ControlAck { frame: None }
     }
 }
