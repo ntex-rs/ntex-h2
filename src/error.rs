@@ -130,14 +130,14 @@ impl StreamError {
     #[inline]
     pub(crate) fn reason(&self) -> Reason {
         match self {
-            StreamError::Idle(_) => Reason::PROTOCOL_ERROR,
             StreamError::Closed => Reason::STREAM_CLOSED,
             StreamError::WindowOverflowed => Reason::FLOW_CONTROL_ERROR,
-            StreamError::WindowZeroUpdateValue => Reason::PROTOCOL_ERROR,
-            StreamError::TrailersWithoutEos => Reason::PROTOCOL_ERROR,
-            StreamError::InvalidContentLength => Reason::PROTOCOL_ERROR,
-            StreamError::WrongPayloadLength => Reason::PROTOCOL_ERROR,
-            StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
+            StreamError::Idle(_)
+            | StreamError::WindowZeroUpdateValue
+            | StreamError::TrailersWithoutEos
+            | StreamError::InvalidContentLength
+            | StreamError::WrongPayloadLength
+            | StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
             StreamError::Reset(r) => *r,
         }
     }

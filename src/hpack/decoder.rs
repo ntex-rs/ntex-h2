@@ -184,8 +184,6 @@ impl Decoder {
     where
         F: FnMut(Header),
     {
-        use self::Representation::*;
-
         let mut can_resize = true;
 
         if let Some(size) = self.max_size_update.take() {
@@ -197,14 +195,14 @@ impl Decoder {
             // within the HPACK data. The type of the block can always be
             // determined from the first byte.
             match Representation::load(ty)? {
-                Indexed => {
+                Representation::Indexed => {
                     // tracing::trace!(rem = src.remaining(), kind = %"Indexed");
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
                     consume(src);
                     f(entry);
                 }
-                LiteralWithIndexing => {
+                Representation::LiteralWithIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
                     can_resize = false;
                     let entry = self.decode_literal(src, true)?;
@@ -215,14 +213,14 @@ impl Decoder {
 
                     f(entry);
                 }
-                LiteralWithoutIndexing => {
+                Representation::LiteralWithoutIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
                     consume(src);
                     f(entry);
                 }
-                LiteralNeverIndexed => {
+                Representation::LiteralNeverIndexed => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
@@ -232,7 +230,7 @@ impl Decoder {
 
                     f(entry);
                 }
-                SizeUpdate => {
+                Representation::SizeUpdate => {
                     // tracing::trace!(rem = src.remaining(), kind = %"SizeUpdate");
                     if !can_resize {
                         return Err(DecoderError::InvalidMaxDynamicSize);
@@ -290,7 +288,7 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = value_marker.consume(buf);
-            Header::new(name, value)
+            Header::new(&name, value)
         } else {
             let e = self.table.get(table_idx)?;
             let value = self.decode_string(buf)?;
@@ -303,8 +301,9 @@ impl Decoder {
         &mut self,
         buf: &mut Cursor<&mut Bytes>,
     ) -> Result<StringMarker, DecoderError> {
-        let old_pos = buf.position();
         const HUFF_FLAG: u8 = 0b1000_0000;
+
+        let old_pos = buf.position();
 
         // The first bit in the first byte contains the huffman encoded flag.
         let huff = match peek_u8(buf) {
@@ -360,7 +359,7 @@ impl Default for Decoder {
 // ===== impl Representation =====
 
 impl Representation {
-    pub fn load(byte: u8) -> Result<Representation, DecoderError> {
+    pub(super) fn load(byte: u8) -> Result<Representation, DecoderError> {
         const INDEXED: u8 = 0b1000_0000;
         const LITERAL_WITH_INDEXING: u8 = 0b0100_0000;
         const LITERAL_WITHOUT_INDEXING: u8 = 0b1111_0000;
@@ -503,8 +502,8 @@ impl Table {
     /// table. They are merged into a single index address space, though.
     ///
     /// This is according to the [HPACK spec, section 2.3.3.]
-    /// (http://http2.github.io/http2-spec/compression.html#index.address.space)
-    pub fn get(&self, index: usize) -> Result<Header, DecoderError> {
+    /// `<http://http2.github.io/http2-spec/compression.html#index.address.space>`
+    pub(super) fn get(&self, index: usize) -> Result<Header, DecoderError> {
         if index == 0 {
             return Err(DecoderError::InvalidTableIndex);
         }
@@ -553,13 +552,10 @@ impl Table {
     fn consolidate(&mut self) {
         while self.size > self.max_size {
             {
-                let last = match self.entries.back() {
-                    Some(x) => x,
-                    None => {
-                        // Can never happen as the size of the table must reach
-                        // 0 by the time we've exhausted all elements.
-                        panic!("Size of table != 0, but no headers left!");
-                    }
+                let Some(last) = self.entries.back() else {
+                    // Can never happen as the size of the table must reach
+                    // 0 by the time we've exhausted all elements.
+                    panic!("Size of table != 0, but no headers left!");
                 };
 
                 self.size -= last.len();
@@ -579,7 +575,7 @@ impl From<Utf8Error> for DecoderError {
 }
 
 impl From<()> for DecoderError {
-    fn from(_: ()) -> DecoderError {
+    fn from(_e: ()) -> DecoderError {
         DecoderError::InvalidUtf8
     }
 }
@@ -610,7 +606,7 @@ impl From<compat::InvalidStatusCode> for DecoderError {
 }
 
 /// Get an entry from the static table
-pub fn get_static(idx: usize) -> Header {
+pub(super) fn get_static(idx: usize) -> Header {
     use ntex_http::header::HeaderValue;
 
     match idx {

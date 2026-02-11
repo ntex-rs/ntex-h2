@@ -14,7 +14,7 @@ use crate::{client::ClientError, config::ServiceConfig};
 #[derive(Debug)]
 /// Http2 client connector
 pub struct Connector<A: Address, T> {
-    connector: T,
+    svc: T,
     scheme: Scheme,
     pool: pool::Pool<()>,
 
@@ -28,12 +28,12 @@ where
     IoBoxed: From<T::Response>,
 {
     /// Create new http2 connector
-    pub fn new<F>(connector: F) -> Connector<A, T>
+    pub fn new<F>(svc: F) -> Connector<A, T>
     where
         F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
     {
         Connector {
-            connector: connector.into_factory(),
+            svc: svc.into_factory(),
             scheme: Scheme::HTTP,
             pool: pool::new(),
             _t: PhantomData,
@@ -63,14 +63,14 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U, F>(&self, connector: F) -> Connector<A, U>
+    pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
         U: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
         IoBoxed: From<U::Response>,
     {
         Connector {
-            connector: connector.into_factory(),
+            svc: svc.into_factory(),
             scheme: self.scheme.clone(),
             pool: self.pool.clone(),
             _t: PhantomData,
@@ -90,7 +90,7 @@ where
     type Service = ConnectorService<A, T::Service>;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
-        let svc = self.connector.create(cfg).await?;
+        let svc = self.svc.create(cfg).await?;
         Ok(ConnectorService {
             svc,
             scheme: self.scheme.clone(),
@@ -127,7 +127,7 @@ where
             Ok::<_, ClientError>(SimpleClient::with_params(
                 ctx.call(&self.svc, Connect::new(req)).await?.into(),
                 self.config,
-                self.scheme.clone(),
+                &self.scheme,
                 authority,
                 false,
                 InflightStorage::default(),
@@ -137,7 +137,7 @@ where
 
         timeout_checked(self.config.handshake_timeout, fut)
             .await
-            .map_err(|_| ClientError::HandshakeTimeout)
+            .map_err(|()| ClientError::HandshakeTimeout)
             .and_then(|item| item)
     }
 

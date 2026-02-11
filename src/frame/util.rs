@@ -16,7 +16,7 @@ use super::FrameError;
 ///
 /// If the padded payload is invalid (e.g. the length of the padding is equal
 /// to the total length), returns `None`.
-pub fn strip_padding(payload: &mut Bytes) -> Result<u8, FrameError> {
+pub(super) fn strip_padding(payload: &mut Bytes) -> Result<u8, FrameError> {
     let payload_len = payload.len();
     if payload_len == 0 {
         // If this is the case, the frame is invalid as no padding length can be

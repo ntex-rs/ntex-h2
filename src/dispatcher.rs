@@ -73,15 +73,15 @@ where
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
 
-                if !matches!(kind, StreamError::Reset(_)) {
+                if matches!(kind, StreamError::Reset(_)) {
+                    stream.set_failed_stream(kind.into());
+                } else {
                     log::error!(
                         "{}: Failed to handle frame, err: {:?} stream: {:?}",
                         stream.tag(),
                         kind,
                         stream
                     );
-                } else {
-                    stream.set_failed_stream(kind.into());
                 }
 
                 if !stream.reset(kind.reason()) {
@@ -96,12 +96,12 @@ where
     fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: OperationError) {
         if !streams.is_empty() {
             let inner = self.inner.clone();
-            let _ = spawn(Box::pin(async move {
+            spawn(async move {
                 let p = Pipeline::new(&inner.publish);
                 for stream in streams.into_values() {
                     let _ = p.call(Message::disconnect(err.clone(), stream)).await;
                 }
-            }));
+            });
         }
     }
 }
@@ -148,7 +148,7 @@ where
         if let Err(e) = self.inner.publish.poll(cx) {
             let inner = self.inner.clone();
             let con = self.connection.connection();
-            let _ = ntex_util::spawn(async move {
+            ntex_util::spawn(async move {
                 if inner
                     .control
                     .call_nowait(Control::error(e, None))
@@ -215,17 +215,17 @@ where
                         }
                         Ok(None)
                     }
-                    Ok(_) => Ok(None),
+                    Ok(()) => Ok(None),
                 },
                 Frame::WindowUpdate(update) => {
                     self.handle_message(
-                        self.connection.recv_window_update(update).map(|_| None),
+                        self.connection.recv_window_update(update).map(|()| None),
                         ctx,
                     )
                     .await
                 }
                 Frame::Reset(reset) => {
-                    self.handle_message(self.connection.recv_rst_stream(reset).map(|_| None), ctx)
+                    self.handle_message(self.connection.recv_rst_stream(reset).map(|()| None), ctx)
                         .await
                 }
                 Frame::Ping(ping) => {
@@ -319,12 +319,9 @@ where
         let fut = ctx.call(&inner.publish, msg);
         let mut pinned = std::pin::pin!(fut);
         poll_fn(|cx| {
-            match stream.poll_send_reset(cx) {
-                Poll::Ready(Ok(())) | Poll::Ready(Err(_)) => {
-                    log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
-                    return Poll::Ready(Ok(()));
-                }
-                Poll::Pending => (),
+            if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
+                log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
+                return Poll::Ready(Ok(()));
             }
             pinned.as_mut().poll(cx)
         })
@@ -334,8 +331,8 @@ where
     };
 
     match result {
-        Ok(_) => Ok(None),
-        Err(e) => control(Control::error(e, Some(stream)), inner, ctx).await,
+        Ok(()) => Ok(None),
+        Err(e) => control(Control::error(e, Some(&stream)), inner, ctx).await,
     }
 }
 

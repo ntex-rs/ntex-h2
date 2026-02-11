@@ -102,7 +102,7 @@ fn test_story(story: Value) {
                 .expect
                 .iter()
                 .map(|(name, value)| {
-                    Header::new(name.clone().into(), value.clone().into())
+                    Header::new(&name.clone().into(), value.clone().into())
                         .unwrap()
                         .into()
                 })

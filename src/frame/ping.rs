@@ -4,7 +4,7 @@ use crate::frame::{Frame, FrameError, Head, Kind, StreamId};
 
 const ACK_FLAG: u8 = 0x1;
 
-pub type Payload = [u8; 8];
+pub(super) type Payload = [u8; 8];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ping {

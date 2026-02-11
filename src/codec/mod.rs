@@ -76,6 +76,10 @@ impl Codec {
     /// words, if a frame is currently in process of being decoded with a frame
     /// size greater than `val` but less than the max frame size in effect
     /// before calling this function, then the frame will be allowed.
+    ///
+    /// # Panics
+    ///
+    /// Panics if size is greater than `16_777_215`.
     #[inline]
     pub fn set_recv_frame_size(&self, val: usize) {
         assert!(
@@ -105,6 +109,10 @@ impl Codec {
     }
 
     /// Set the peer's max frame size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if size is greater than `16_777_215`.
     pub fn set_send_frame_size(&self, val: usize) {
         assert!(val <= frame::MAX_MAX_FRAME_SIZE as usize);
         self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
@@ -125,15 +133,14 @@ impl Decoder for Codec {
     type Item = Frame;
     type Error = frame::FrameError;
 
+    #[allow(clippy::too_many_lines)]
     /// Decodes a frame.
     ///
     /// This method is intentionally de-generified and outlined because it is very large.
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::FrameError> {
         let mut inner = self.0.borrow_mut();
         loop {
-            let mut bytes = if let Some(bytes) = inner.decoder.decode(src)? {
-                bytes
-            } else {
+            let Some(mut bytes) = inner.decoder.decode(src)? else {
                 return Ok(None);
             };
 
@@ -203,7 +210,7 @@ impl Decoder for Codec {
                     if frame.is_end_headers() {
                         // Load the HPACK encoded headers
                         match frame.load_hpack(&mut bytes, &mut inner.decoder_hpack) {
-                            Ok(_) => {}
+                            Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();
                                 proto_err!(stream: "malformed header block; stream={:?}", id);
@@ -320,7 +327,7 @@ impl Decoder for Codec {
                             .frame
                             .load_hpack(&mut partial.buf, &mut inner.decoder_hpack)
                         {
-                            Ok(_) => {}
+                            Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();
                                 proto_err!(stream: "malformed CONTINUATION frame; stream={:?}", id);

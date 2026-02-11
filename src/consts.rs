@@ -1,13 +1,11 @@
 use ntex_bytes::ByteString;
 use ntex_util::time::Seconds;
 
-use crate::frame::WindowSize;
-
 // Constants
-pub(crate) const MAX_WINDOW_SIZE: WindowSize = (1 << 31) - 1;
+pub(crate) const MAX_WINDOW_SIZE: i32 = i32::MAX;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
-pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: WindowSize = 1_048_576;
+pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;
 pub(crate) const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 48 * 1024;
 pub(crate) const DEFAULT_MAX_COUNTINUATIONS: usize = 5;
 

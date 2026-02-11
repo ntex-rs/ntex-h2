@@ -77,9 +77,8 @@ impl Client {
 
             if let Some(client) = client {
                 return Ok(client);
-            } else {
-                self.connect(num).await?;
             }
+            self.connect(num).await?;
         }
     }
 
@@ -120,7 +119,7 @@ impl Client {
             } else if connections[idx].is_disconnecting() {
                 let con = connections.remove(idx);
                 let timeout = cfg.disconnect_timeout;
-                let _ = ntex_util::spawn(async move {
+                ntex_util::spawn(async move {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
             } else {
@@ -164,7 +163,7 @@ impl Client {
         let inner = self.inner.clone();
         let waiters = self.waiters.clone();
 
-        let _ = ntex_util::spawn(async move {
+        ntex_util::spawn(async move {
             let res = match timeout_checked(inner.config.conn_timeout, (*inner.connector)()).await {
                 Ok(Ok(io)) => {
                     // callbacks for end of stream
@@ -176,7 +175,7 @@ impl Client {
                     let client = SimpleClient::with_params(
                         io,
                         inner.cfg,
-                        inner.config.scheme.clone(),
+                        &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
                         storage,
@@ -190,7 +189,7 @@ impl Client {
                     Ok(())
                 }
                 Ok(Err(err)) => Err(ClientError::from(err)),
-                Err(_) => Err(ClientError::HandshakeTimeout),
+                Err(()) => Err(ClientError::HandshakeTimeout),
             };
             inner.config.connecting.set(false);
             for waiter in waiters.borrow_mut().drain(..) {
@@ -230,18 +229,17 @@ impl Client {
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) {
         loop {
-            if !self.is_ready() {
-                // add waiter
-                let (tx, rx) = self.inner.config.pool.channel();
-                self.waiters.borrow_mut().push_back(tx);
-                let _ = rx.await;
-                'inner: while let Some(tx) = self.waiters.borrow_mut().pop_front() {
-                    if tx.send(()).is_ok() {
-                        break 'inner;
-                    }
-                }
-            } else {
+            if self.is_ready() {
                 break;
+            }
+            // add waiter
+            let (tx, rx) = self.inner.config.pool.channel();
+            self.waiters.borrow_mut().push_back(tx);
+            let _ = rx.await;
+            'inner: while let Some(tx) = self.waiters.borrow_mut().pop_front() {
+                if tx.send(()).is_ok() {
+                    break 'inner;
+                }
             }
         }
     }
@@ -326,7 +324,7 @@ where
                 maxconn: 16,
                 scheme: Scheme::HTTP,
                 connecting: Cell::new(false),
-                connections: Default::default(),
+                connections: RefCell::default(),
                 total_connections: Cell::new(0),
                 connect_errors: Cell::new(0),
                 pool: pool::new(),
@@ -352,23 +350,26 @@ impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
 {
-    #[inline]
+    #[must_use]
     /// Set client's connection scheme
     pub fn scheme(mut self, scheme: Scheme) -> Self {
         self.inner.scheme = scheme;
         self
     }
 
+    #[must_use]
     /// Set total number of simultaneous streams per connection.
     ///
-    /// If limit is 0, the connector uses "MAX_CONCURRENT_STREAMS" config from connection
-    /// settings.
+    /// If limit is 0, the connector uses `MAX_CONCURRENT_STREAMS` config
+    /// from connection settings.
+    ///
     /// The default limit size is 100.
     pub fn max_streams(mut self, limit: u32) -> Self {
         self.inner.max_streams = limit;
         self
     }
 
+    #[must_use]
     /// Do not return error for frames for unknown streams.
     ///
     /// This includes pending resets, data and window update frames.
@@ -377,6 +378,7 @@ where
         self
     }
 
+    #[must_use]
     /// Set max lifetime period for connection.
     ///
     /// Connection lifetime is max lifetime of any opened connection
@@ -388,6 +390,7 @@ where
         self
     }
 
+    #[must_use]
     /// Sets the minimum concurrent connections.
     ///
     /// By default min connections is set to a 1.
@@ -396,6 +399,7 @@ where
         self
     }
 
+    #[must_use]
     /// Sets the maximum concurrent connections.
     ///
     /// By default max connections is set to a 16.
@@ -447,7 +451,7 @@ where
                 cfg: cfg.get(),
                 config: self.inner,
             }),
-            waiters: Default::default(),
+            waiters: Rc::default(),
         })
     }
 }

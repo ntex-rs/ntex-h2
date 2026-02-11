@@ -1,9 +1,9 @@
+use ntex_bytes::{BufMut, Bytes, BytesMut};
+
 mod table;
 
 use self::table::{DECODE_TABLE, ENCODE_TABLE};
 use crate::hpack::DecoderError;
-
-use ntex_bytes::{BufMut, Bytes, BytesMut};
 
 // Constructed in the generated `table.rs` file
 struct Decoder {
@@ -17,7 +17,7 @@ const MAYBE_EOS: u8 = 1;
 const DECODED: u8 = 2;
 const ERROR: u8 = 4;
 
-pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
+pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
     let mut decoder = Decoder::new();
 
     // Max compression ratio is >= 0.5
@@ -40,7 +40,7 @@ pub fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
     Ok(buf.take())
 }
 
-pub fn encode(src: &[u8], dst: &mut BytesMut) {
+pub(super) fn encode(src: &[u8], dst: &mut BytesMut) {
     let mut bits: u64 = 0;
     let mut bits_left = 40;
 
@@ -111,7 +111,7 @@ mod test {
 
     #[test]
     fn decode_single_byte() {
-        assert_eq!("o", decode(&[0b00111111]).unwrap());
+        assert_eq!("o", decode(&[0b0011_1111]).unwrap());
         assert_eq!("0", decode(&[7]).unwrap());
         assert_eq!("A", decode(&[(0x21 << 2) + 3]).unwrap());
     }
@@ -126,7 +126,7 @@ mod test {
     #[test]
     fn multi_char() {
         assert_eq!("!0", decode(&[254, 1]).unwrap());
-        assert_eq!(" !", decode(&[0b01010011, 0b11111000]).unwrap());
+        assert_eq!(" !", decode(&[0b0101_0011, 0b1111_1000]).unwrap());
     }
 
     #[test]
@@ -134,7 +134,7 @@ mod test {
         let mut dst = BytesMut::with_capacity(1);
 
         encode(b"o", &mut dst);
-        assert_eq!(&dst[..], &[0b00111111]);
+        assert_eq!(&dst[..], &[0b0011_1111]);
 
         dst.clear();
         encode(b"0", &mut dst);

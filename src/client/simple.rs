@@ -29,6 +29,7 @@ struct ClientRef {
 
 impl SimpleClient {
     /// Construct new `Client` instance.
+    #[allow(clippy::needless_pass_by_value)]
     pub fn new<T>(io: T, scheme: Scheme, authority: ByteString) -> Self
     where
         IoBoxed: From<T>,
@@ -38,7 +39,7 @@ impl SimpleClient {
         SimpleClient::with_params(
             io,
             cfg,
-            scheme,
+            &scheme,
             authority,
             false,
             InflightStorage::default(),
@@ -49,7 +50,7 @@ impl SimpleClient {
     pub(super) fn with_params(
         io: IoBoxed,
         cfg: Cfg<ServiceConfig>,
-        scheme: Scheme,
+        scheme: &Scheme,
         authority: ByteString,
         skip_unknown_streams: bool,
         storage: InflightStorage,
@@ -65,7 +66,7 @@ impl SimpleClient {
             skip_unknown_streams,
             pool,
         );
-        con.set_secure(scheme == Scheme::HTTPS);
+        con.set_secure(*scheme == Scheme::HTTPS);
 
         let disp = Dispatcher::new(
             con.clone(),
@@ -74,7 +75,7 @@ impl SimpleClient {
         );
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);
-        let _ = ntex_util::spawn(async move {
+        ntex_util::spawn(async move {
             let _ = fut.await;
         });
 
@@ -136,13 +137,13 @@ impl SimpleClient {
     /// Gracefully close connection
     pub fn close(&self) {
         log::debug!("Closing client");
-        self.0.con.disconnect_when_ready()
+        self.0.con.disconnect_when_ready();
     }
 
     #[inline]
     /// Close connection
     pub fn force_close(&self) {
-        self.0.con.close()
+        self.0.con.close();
     }
 
     #[inline]
@@ -209,8 +210,7 @@ impl SimpleClient {
 impl Drop for SimpleClient {
     fn drop(&mut self) {
         if Rc::strong_count(&self.0) == 1 {
-            log::debug!("Last h2 client has been dropped, disconnecting");
-            self.0.con.disconnect_when_ready()
+            self.0.con.disconnect_when_ready();
         }
     }
 }
@@ -284,7 +284,7 @@ fn gen_id() -> ByteString {
     let mut id = String::with_capacity(16);
     for _ in 0..16 {
         let idx = rng.generate_range::<usize, _>(..BASE.len());
-        id.push_str(&BASE[idx..idx + 1]);
+        id.push_str(&BASE[idx..=idx]);
     }
     ByteString::from(id)
 }
