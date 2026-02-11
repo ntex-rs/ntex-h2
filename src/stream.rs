@@ -38,6 +38,8 @@ impl Capacity {
 
     /// Consume specified amount of capacity.
     ///
+    /// # Panics
+    ///
     /// Panics if provided size larger than capacity.
     pub fn consume(&self, sz: u32) {
         let size = self.size.get();
@@ -100,7 +102,7 @@ impl Drop for Capacity {
 
 /// State related to a stream's content-length validation
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum ContentLength {
+pub(super) enum ContentLength {
     Omitted,
     Head,
     Remaining(u64),
@@ -147,7 +149,7 @@ pub(crate) enum HalfState {
 }
 
 impl HalfState {
-    pub(crate) fn is_closed(&self) -> bool {
+    pub(crate) fn is_closed(self) -> bool {
         matches!(self, HalfState::Closed(_))
     }
 }
@@ -313,11 +315,11 @@ impl StreamRef {
         // if peer has accepted settings, we can use local config window size
         // otherwise use default window size
         let recv_window = if con.settings_processed() {
-            Window::new(con.config().window_sz as i32)
+            Window::new(con.config().window_sz)
         } else {
-            Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32)
+            Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE)
         };
-        let send_window = Window::new(con.remote_window_size() as i32);
+        let send_window = Window::new(con.remote_window_size());
 
         StreamRef(Rc::new(StreamState {
             id,
@@ -425,13 +427,13 @@ impl StreamRef {
             .status
             .is_some_and(|status| status.is_informational())
         {
-            self.0.content_length.set(ContentLength::Head)
+            self.0.content_length.set(ContentLength::Head);
         }
         self.0.con.encode(hdrs);
     }
 
     pub(crate) fn set_go_away(&self, reason: Reason) {
-        self.0.remote_reset_stream(reason)
+        self.0.remote_reset_stream(reason);
     }
 
     pub(crate) fn set_failed_stream(&self, err: OperationError) {
@@ -472,11 +474,11 @@ impl StreamRef {
             }
             HalfState::Payload => {
                 // trailers
-                if !hdrs.is_end_stream() {
-                    Err(StreamError::TrailersWithoutEos)
-                } else {
+                if hdrs.is_end_stream() {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::trailers(hdrs.into_fields(), self)))
+                } else {
+                    Err(StreamError::TrailersWithoutEos)
                 }
             }
             HalfState::Closed(_) => Err(StreamError::Closed),
@@ -514,7 +516,7 @@ impl StreamRef {
                             return Err(StreamError::NonEmptyPayload);
                         }
                     }
-                    _ => (),
+                    ContentLength::Omitted => (),
                 }
 
                 if eof {
@@ -529,8 +531,8 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn recv_rst_stream(&self, frm: &Reset) {
-        self.0.remote_reset_stream(frm.reason())
+    pub(crate) fn recv_rst_stream(&self, frm: Reset) {
+        self.0.remote_reset_stream(frm.reason());
     }
 
     pub(crate) fn recv_window_update_connection(&self) {
@@ -550,7 +552,7 @@ impl StreamRef {
                 .send_window
                 .get()
                 .inc(frm.size_increment())
-                .map_err(|_| StreamError::WindowOverflowed)?;
+                .map_err(|()| StreamError::WindowOverflowed)?;
             self.0.send_window.set(window);
 
             if window.window_size() > 0 {
@@ -564,9 +566,7 @@ impl StreamRef {
         let orig = self.0.send_window.get();
         let window = match upd.cmp(&0) {
             cmp::Ordering::Less => orig.dec(upd.unsigned_abs()), // We must decrease the (remote) window
-            cmp::Ordering::Greater => orig
-                .inc(upd as u32)
-                .map_err(|_| StreamError::WindowOverflowed)?,
+            cmp::Ordering::Greater => orig.inc(upd).map_err(|()| StreamError::WindowOverflowed)?,
             cmp::Ordering::Equal => return Ok(()),
         };
         log::trace!(
@@ -586,8 +586,8 @@ impl StreamRef {
                 .0
                 .recv_window
                 .get()
-                .inc(upd as u32)
-                .map_err(|_| StreamError::WindowOverflowed)?,
+                .inc(upd)
+                .map_err(|()| StreamError::WindowOverflowed)?,
             cmp::Ordering::Equal => return Ok(None),
         };
         if let Some(val) = window.update(
@@ -809,7 +809,7 @@ impl fmt::Debug for StreamState {
     }
 }
 
-pub fn parse_u64(src: &[u8]) -> Option<u64> {
+pub(super) fn parse_u64(src: &[u8]) -> Option<u64> {
     if src.len() > 19 {
         // At danger for overflow...
         None
@@ -821,7 +821,7 @@ pub fn parse_u64(src: &[u8]) -> Option<u64> {
             }
 
             ret *= 10;
-            ret += (d - b'0') as u64;
+            ret += u64::from(d - b'0');
         }
 
         Some(ret)

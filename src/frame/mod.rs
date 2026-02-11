@@ -85,17 +85,15 @@ pub enum Frame {
 
 impl fmt::Debug for Frame {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::Frame::*;
-
-        match *self {
-            Data(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Headers(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Priority(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Settings(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Ping(ref frame) => fmt::Debug::fmt(frame, fmt),
-            GoAway(ref frame) => fmt::Debug::fmt(frame, fmt),
-            WindowUpdate(ref frame) => fmt::Debug::fmt(frame, fmt),
-            Reset(ref frame) => fmt::Debug::fmt(frame, fmt),
+        match self {
+            Frame::Data(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Headers(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Priority(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Settings(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Ping(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::GoAway(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::WindowUpdate(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Reset(frame) => fmt::Debug::fmt(frame, fmt),
         }
     }
 }

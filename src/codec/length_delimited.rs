@@ -6,7 +6,7 @@ use ntex_codec::{Decoder, Encoder};
 
 /// Configure length delimited `LengthDelimitedCodec`s.
 #[derive(Debug, Clone, Copy)]
-pub struct Builder {
+pub(super) struct Builder {
     // Maximum frame length
     max_frame_len: usize,
 
@@ -23,14 +23,14 @@ pub struct Builder {
 
 /// An error when the number of bytes read is more than max frame length.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum LengthDelimitedCodecError {
+pub(super) enum LengthDelimitedCodecError {
     MaxSize,
     Adjusted,
 }
 
 /// A codec for frames delimited by a frame head specifying their lengths.
 #[derive(Debug, Clone)]
-pub struct LengthDelimitedCodec {
+pub(super) struct LengthDelimitedCodec {
     // Configuration values
     builder: Builder,
 
@@ -49,7 +49,7 @@ enum DecodeState {
 
 impl LengthDelimitedCodec {
     /// Creates a new `LengthDelimitedCodec` with the default configuration values.
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             builder: Builder::new(),
             state: Cell::new(DecodeState::Head),
@@ -57,12 +57,12 @@ impl LengthDelimitedCodec {
     }
 
     /// max frame size setting.
-    pub fn max_frame_length(&self) -> usize {
+    pub(super) fn max_frame_length(&self) -> usize {
         self.builder.max_frame_len
     }
 
     /// Updates the max frame setting.
-    pub fn set_max_frame_length(&mut self, val: usize) {
+    pub(super) fn set_max_frame_length(&mut self, val: usize) {
         self.builder.max_frame_length(val);
     }
 
@@ -109,7 +109,7 @@ impl LengthDelimitedCodec {
         Ok(Some(n))
     }
 
-    fn decode_data(&self, n: usize, src: &mut BytesMut) -> Option<Bytes> {
+    fn decode_data(n: usize, src: &mut BytesMut) -> Option<Bytes> {
         // At this point, the buffer has already had the required capacity
         // reserved. All there is to do is read.
         if src.len() < n {
@@ -136,7 +136,7 @@ impl Decoder for LengthDelimitedCodec {
             DecodeState::Data(n) => n,
         };
 
-        match self.decode_data(n, src) {
+        match Self::decode_data(n, src) {
             Some(data) => {
                 // Update the decode state
                 self.state.set(DecodeState::Head);
@@ -192,7 +192,7 @@ impl Default for LengthDelimitedCodec {
 impl Builder {
     /// Creates a new length delimited codec builder with default configuration
     /// values.
-    pub fn new() -> Builder {
+    pub(super) fn new() -> Builder {
         Builder {
             // Default max frame length of 8MB
             max_frame_len: 8 * 1_024 * 1_024,
@@ -209,13 +209,13 @@ impl Builder {
     }
 
     /// Sets the max frame length in bytes
-    pub fn max_frame_length(&mut self, val: usize) -> &mut Self {
+    pub(super) fn max_frame_length(&mut self, val: usize) -> &mut Self {
         self.max_frame_len = val;
         self
     }
 
     /// Sets the number of bytes used to represent the length field
-    pub fn length_field_length(&mut self, val: usize) -> &mut Self {
+    pub(super) fn length_field_length(&mut self, val: usize) -> &mut Self {
         assert!(val > 0 && val <= 8, "invalid length field length");
         self.length_field_len = val;
         self
@@ -223,19 +223,19 @@ impl Builder {
 
     /// Delta between the payload length specified in the header and the real
     /// payload length
-    pub fn length_adjustment(&mut self, val: isize) -> &mut Self {
+    pub(super) fn length_adjustment(&mut self, val: isize) -> &mut Self {
         self.length_adjustment = val;
         self
     }
 
     /// Sets the number of bytes to skip before reading the payload
-    pub fn num_skip(&mut self, val: usize) -> &mut Self {
+    pub(super) fn num_skip(&mut self, val: usize) -> &mut Self {
         self.num_skip = Some(val);
         self
     }
 
     /// Create a configured length delimited `LengthDelimitedCodec`
-    pub fn new_codec(&self) -> LengthDelimitedCodec {
+    pub(super) fn new_codec(&self) -> LengthDelimitedCodec {
         LengthDelimitedCodec {
             builder: *self,
             state: Cell::new(DecodeState::Head),

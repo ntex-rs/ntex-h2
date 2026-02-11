@@ -1,5 +1,9 @@
 # Changes
 
+## [3.6.2] - 2026-02-11
+
+* Better clippy configuration
+
 ## [3.6.1] - 2026-02-02
 
 * Make control module public

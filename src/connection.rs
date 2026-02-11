@@ -54,7 +54,7 @@ struct ConnectionState {
     // Maximum number of locally initiated streams
     local_max_concurrent_streams: Cell<Option<u32>>,
     // Initial window size of remote initiated streams
-    remote_window_sz: Cell<WindowSize>,
+    remote_window_sz: Cell<i32>,
     // Max frame size
     remote_frame_size: Cell<u32>,
     // Locally reset streams
@@ -87,8 +87,8 @@ impl Connection {
         log::debug!("{}: Sending local settings {settings:?}", io.tag());
         io.encode(settings.into(), &codec).unwrap();
 
-        let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
-        let send_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
+        let mut recv_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE);
+        let send_window = Window::new(frame::DEFAULT_INITIAL_WINDOW_SIZE);
 
         // update connection window size
         if let Some(val) = recv_window.update(
@@ -99,7 +99,7 @@ impl Connection {
             log::debug!("{}: Sending connection window update to {val:?}", io.tag());
             io.encode(WindowUpdate::new(StreamId::CON, val).into(), &codec)
                 .unwrap();
-        };
+        }
 
         if let Some(max) = config.settings.max_header_list_size() {
             codec.set_recv_header_list_size(max as usize);
@@ -138,7 +138,7 @@ impl Connection {
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
-            local_pending_reset: Default::default(),
+            local_pending_reset: Pending::default(),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
             flags: Cell::new(flags),
@@ -147,7 +147,7 @@ impl Connection {
 
         // start ping/pong
         if con.0.local_config.ping_timeout.non_zero() {
-            let _ = spawn(ping(con.clone(), con.0.local_config.ping_timeout, io));
+            spawn(ping(con.clone(), con.0.local_config.ping_timeout, io));
         }
 
         con
@@ -174,7 +174,7 @@ impl Connection {
     }
 
     pub(crate) fn close(&self) {
-        self.0.io.close()
+        self.0.io.close();
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -182,21 +182,21 @@ impl Connection {
     }
 
     pub(crate) fn is_disconnecting(&self) -> bool {
-        if !self.is_closed() {
+        if self.is_closed() {
+            false
+        } else {
             self.0
                 .flags
                 .get()
                 .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
-        } else {
-            false
         }
     }
 
     pub(crate) fn set_secure(&self, secure: bool) {
         if secure {
-            self.set_flags(ConnectionFlags::SECURE)
+            self.set_flags(ConnectionFlags::SECURE);
         } else {
-            self.unset_flags(ConnectionFlags::SECURE)
+            self.unset_flags(ConnectionFlags::SECURE);
         }
     }
 
@@ -268,7 +268,7 @@ impl Connection {
         self.0.send_window.get().window_size()
     }
 
-    pub(crate) fn remote_window_size(&self) -> WindowSize {
+    pub(crate) fn remote_window_size(&self) -> i32 {
         self.0.remote_window_sz.get()
     }
 
@@ -310,7 +310,7 @@ impl Connection {
                     let (tx, rx) = self.0.pool.channel();
                     self.0.readiness.borrow_mut().push_back(tx);
                     match rx.await {
-                        Ok(_) => continue,
+                        Ok(()) => continue,
                         Err(_) => Err(OperationError::Disconnected),
                     }
                 }
@@ -348,7 +348,7 @@ impl Connection {
                 "{}: Cannot create new stream, waiting for available streams",
                 self.tag()
             );
-            self.ready().await?
+            self.ready().await?;
         }
 
         let stream = {
@@ -392,7 +392,7 @@ impl Connection {
                 if stream.is_remote() {
                     self.0
                         .active_remote_streams
-                        .set(self.0.active_remote_streams.get() - 1)
+                        .set(self.0.active_remote_streams.get() - 1);
                 } else {
                     let local = self.0.active_local_streams.get();
                     self.0.active_local_streams.set(local - 1);
@@ -548,23 +548,11 @@ impl RecvHalfConnection {
 
             // Pseudo-headers validation
             let pseudo = frm.pseudo();
-            if pseudo
-                .path
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("")
-                .is_empty()
-            {
+            if pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
                 Err(Either::Left(ConnectionError::MissingPseudo("path")))
             } else if pseudo.method.is_none() {
                 Err(Either::Left(ConnectionError::MissingPseudo("method")))
-            } else if pseudo
-                .scheme
-                .as_ref()
-                .map(|s| s.as_str())
-                .unwrap_or("")
-                .is_empty()
-            {
+            } else if pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
                 Err(Either::Left(ConnectionError::MissingPseudo("scheme")))
             } else if frm.pseudo().status.is_some() {
                 Err(Either::Left(ConnectionError::UnexpectedPseudo("scheme")))
@@ -615,35 +603,33 @@ impl RecvHalfConnection {
         log::trace!("processing incoming settings: {settings:#?}");
 
         if settings.is_ack() {
-            if !self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
-                self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
-                if let Some(max) = self.0.local_config.settings.max_frame_size() {
-                    self.0.codec.set_recv_frame_size(max as usize);
-                }
-
-                let upd = (self.0.local_config.window_sz as i32)
-                    - (frame::DEFAULT_INITIAL_WINDOW_SIZE as i32);
-
-                let mut stream_errors = Vec::new();
-                for stream in self.0.streams.borrow().values() {
-                    let val = match stream.update_recv_window(upd) {
-                        Ok(val) => val,
-                        Err(e) => {
-                            stream_errors.push(StreamErrorInner::new(stream.clone(), e));
-                            continue;
-                        }
-                    };
-                    if let Some(val) = val {
-                        // send window size update to the peer
-                        self.encode(WindowUpdate::new(stream.id(), val));
-                    }
-                }
-                if !stream_errors.is_empty() {
-                    return Err(Either::Right(stream_errors));
-                }
-            } else {
+            if self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
                 proto_err!(conn: "received unexpected settings ack");
                 return Err(Either::Left(ConnectionError::UnexpectedSettingsAck));
+            }
+            self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
+            if let Some(max) = self.0.local_config.settings.max_frame_size() {
+                self.0.codec.set_recv_frame_size(max as usize);
+            }
+
+            let upd = self.0.local_config.window_sz - frame::DEFAULT_INITIAL_WINDOW_SIZE;
+
+            let mut stream_errors = Vec::new();
+            for stream in self.0.streams.borrow().values() {
+                let val = match stream.update_recv_window(upd) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        stream_errors.push(StreamErrorInner::new(stream.clone(), e));
+                        continue;
+                    }
+                };
+                if let Some(val) = val {
+                    // send window size update to the peer
+                    self.encode(WindowUpdate::new(stream.id(), val));
+                }
+            }
+            if !stream_errors.is_empty() {
+                return Err(Either::Right(stream_errors));
             }
         } else {
             // Ack settings to the peer
@@ -685,11 +671,11 @@ impl RecvHalfConnection {
 
                 let mut stream_errors = Vec::new();
 
-                let upd = (val as i32) - (old_val as i32);
+                let upd = val - old_val;
                 if upd != 0 {
                     for stream in self.0.streams.borrow().values() {
                         if let Err(kind) = stream.update_send_window(upd) {
-                            stream_errors.push(StreamErrorInner::new(stream.clone(), kind))
+                            stream_errors.push(StreamErrorInner::new(stream.clone(), kind));
                         }
                     }
                 }
@@ -717,7 +703,7 @@ impl RecvHalfConnection {
                     .send_window
                     .get()
                     .inc(frm.size_increment())
-                    .map_err(|_| Either::Left(ConnectionError::WindowValueOverflow))?;
+                    .map_err(|()| Either::Left(ConnectionError::WindowValueOverflow))?;
                 self.0.send_window.set(window);
 
                 // wake up streams if needed
@@ -769,7 +755,7 @@ impl RecvHalfConnection {
                 "RST_STREAM-zero",
             )))
         } else if let Some(stream) = self.query(id) {
-            stream.recv_rst_stream(&frm);
+            stream.recv_rst_stream(frm);
             self.update_rst_count()?;
 
             Err(Either::Right(StreamErrorInner::new(
@@ -809,7 +795,7 @@ impl RecvHalfConnection {
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_go_away(reason)
+            stream.set_go_away(reason);
         }
         streams
     }
@@ -821,7 +807,7 @@ impl RecvHalfConnection {
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(ConnectionError::KeepaliveTimeout.into())
+            stream.set_failed_stream(ConnectionError::KeepaliveTimeout.into());
         }
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
@@ -834,7 +820,7 @@ impl RecvHalfConnection {
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(ConnectionError::ReadTimeout.into())
+            stream.set_failed_stream(ConnectionError::ReadTimeout.into());
         }
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
@@ -848,21 +834,21 @@ impl RecvHalfConnection {
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in &mut streams.values() {
-            stream.set_failed_stream((*err).into())
+            stream.set_failed_stream((*err).into());
         }
         streams
     }
 
     pub(crate) fn disconnect(&self) -> HashMap<StreamId, StreamRef> {
         if let Some(err) = self.0.error.take() {
-            self.0.error.set(Some(err))
+            self.0.error.set(Some(err));
         } else {
             self.0.error.set(Some(OperationError::Disconnected));
         }
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(OperationError::Disconnected)
+            stream.set_failed_stream(OperationError::Disconnected);
         }
         streams
     }
@@ -948,6 +934,7 @@ impl Pending {
         let current_time = now();
 
         // remove old ids
+        #[allow(clippy::unchecked_time_subtraction)]
         let max_time = current_time - config.reset_duration;
         while let Some(item) = inner.queue.front() {
             if item.1 < max_time {

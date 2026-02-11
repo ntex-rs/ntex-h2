@@ -39,7 +39,7 @@ pub struct PseudoHeaders {
     pub status: Option<StatusCode>,
 }
 
-pub struct Iter<'a> {
+pub(super) struct Iter<'a> {
     /// Pseudo headers
     pseudo: Option<PseudoHeaders>,
 
@@ -174,7 +174,7 @@ impl Headers {
     }
 
     pub fn set_end_stream(&mut self) {
-        self.flags.set_end_stream()
+        self.flags.set_end_stream();
     }
 
     pub fn into_parts(self) -> (PseudoHeaders, HeaderMap) {
@@ -200,7 +200,7 @@ impl Headers {
         // Get the HEADERS frame head
         let head = self.head();
 
-        self.header_block.encode(encoder, &head, dst, max_size);
+        self.header_block.encode(encoder, head, dst, max_size);
     }
 
     fn head(&self) -> Head {
@@ -239,8 +239,9 @@ impl PseudoHeaders {
 
         let mut path = parts
             .path_and_query
-            .map(|v| ByteString::from(v.as_str()))
-            .unwrap_or(ByteString::from_static(""));
+            .map_or(ByteString::from_static(""), |v| {
+                ByteString::from(v.as_str())
+            });
 
         match method {
             Method::OPTIONS | Method::CONNECT => {}
@@ -262,7 +263,7 @@ impl PseudoHeaders {
         // If the URI includes a scheme component, add it to the pseudo headers
         //
         // TODO: Scheme must be set...
-        if let Some(scheme) = parts.scheme {
+        if let Some(ref scheme) = parts.scheme {
             pseudo.set_scheme(scheme);
         }
 
@@ -290,7 +291,7 @@ impl PseudoHeaders {
         self.status = Some(value);
     }
 
-    pub fn set_scheme(&mut self, scheme: uri::Scheme) {
+    pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
         self.scheme = Some(match scheme.as_str() {
             "http" => ByteString::from_static("http"),
             "https" => ByteString::from_static("https"),
@@ -313,37 +314,37 @@ impl Iterator for Iter<'_> {
     type Item = hpack::Header<Option<HeaderName>>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        use crate::hpack::Header::*;
+        use crate::hpack::Header;
 
         if let Some(ref mut pseudo) = self.pseudo {
             if let Some(method) = pseudo.method.take() {
-                return Some(Method(method));
+                return Some(Header::Method(method));
             }
 
             if let Some(scheme) = pseudo.scheme.take() {
-                return Some(Scheme(scheme));
+                return Some(Header::Scheme(scheme));
             }
 
             if let Some(authority) = pseudo.authority.take() {
-                return Some(Authority(authority));
+                return Some(Header::Authority(authority));
             }
 
             if let Some(path) = pseudo.path.take() {
-                return Some(Path(path));
+                return Some(Header::Path(path));
             }
 
             if let Some(protocol) = pseudo.protocol.take() {
-                return Some(Protocol(protocol.into()));
+                return Some(Header::Protocol(protocol.into()));
             }
 
             if let Some(status) = pseudo.status.take() {
-                return Some(Status(status));
+                return Some(Header::Status(status));
             }
         }
 
         self.pseudo = None;
 
-        self.fields.next().map(|(name, value)| Field {
+        self.fields.next().map(|(name, value)| Header::Field {
             name: Some(name.clone()),
             value: value.clone(),
         })
@@ -361,7 +362,7 @@ impl HeadersFlag {
         HeadersFlag(bits & ALL)
     }
 
-    pub fn is_end_stream(&self) -> bool {
+    pub fn is_end_stream(self) -> bool {
         self.0 & END_STREAM == END_STREAM
     }
 
@@ -369,7 +370,7 @@ impl HeadersFlag {
         self.0 |= END_STREAM;
     }
 
-    pub fn is_end_headers(&self) -> bool {
+    pub fn is_end_headers(self) -> bool {
         self.0 & END_HEADERS == END_HEADERS
     }
 
@@ -377,11 +378,11 @@ impl HeadersFlag {
         self.0 |= END_HEADERS;
     }
 
-    pub fn is_padded(&self) -> bool {
+    pub fn is_padded(self) -> bool {
         self.0 & PADDED == PADDED
     }
 
-    pub fn is_priority(&self) -> bool {
+    pub fn is_priority(self) -> bool {
         self.0 & PRIORITY == PRIORITY
     }
 }
@@ -442,10 +443,10 @@ impl HeaderBlock {
         // the hpack state is connection level. In order to maintain correct
         // state for other streams, the hpack decoding process must complete.
         let res = decoder.decode(&mut cursor, |header| {
-            use crate::hpack::Header::*;
+            use crate::hpack::Header;
 
             match header {
-                Field { name, value } => {
+                Header::Field { name, value } => {
                     // Connection level header fields are not supported and must
                     // result in a protocol error.
 
@@ -465,23 +466,23 @@ impl HeaderBlock {
                         self.fields.append(name, value);
                     }
                 }
-                Authority(v) => {
-                    set_pseudo!(authority, v)
+                Header::Authority(v) => {
+                    set_pseudo!(authority, v);
                 }
-                Method(v) => {
-                    set_pseudo!(method, v)
+                Header::Method(v) => {
+                    set_pseudo!(method, v);
                 }
-                Scheme(v) => {
-                    set_pseudo!(scheme, v)
+                Header::Scheme(v) => {
+                    set_pseudo!(scheme, v);
                 }
-                Path(v) => {
-                    set_pseudo!(path, v)
+                Header::Path(v) => {
+                    set_pseudo!(path, v);
                 }
-                Protocol(v) => {
-                    set_pseudo!(protocol, v)
+                Header::Protocol(v) => {
+                    set_pseudo!(protocol, v);
                 }
-                Status(v) => {
-                    set_pseudo!(status, v)
+                Header::Status(v) => {
+                    set_pseudo!(status, v);
                 }
             }
         });
@@ -499,13 +500,7 @@ impl HeaderBlock {
         Ok(())
     }
 
-    fn encode(
-        self,
-        encoder: &mut hpack::Encoder,
-        head: &Head,
-        dst: &mut BytesMut,
-        max_size: usize,
-    ) {
+    fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytesMut, max_size: usize) {
         HDRS_BUF.with(|buf| {
             let mut b = buf.borrow_mut();
             let hpack = &mut b;
@@ -518,7 +513,7 @@ impl HeaderBlock {
             };
             encoder.encode(headers, hpack);
 
-            let mut head = *head;
+            let mut head = head;
             let mut start = 0;
             loop {
                 let end = cmp::min(start + max_size, hpack.len());

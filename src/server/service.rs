@@ -121,15 +121,15 @@ where
 #[derive(Debug)]
 /// Http2 connections handler
 pub struct ServerHandler<Pub, Ctl> {
-    inner: ServerInner<Pub, Ctl>,
     cfg: Cfg<ServiceConfig>,
+    inner: ServerInner<Pub, Ctl>,
     shared: SharedCfg,
 }
 
 impl<Pub, Ctl> ServerHandler<Pub, Ctl> {
     fn new(shared: SharedCfg, inner: ServerInner<Pub, Ctl>) -> Self {
         let cfg = shared.get();
-        Self { cfg, shared, inner }
+        Self { cfg, inner, shared }
     }
 }
 
@@ -173,7 +173,7 @@ where
             Ok::<_, ServerError<()>>((ctl_srv, pub_srv))
         })
         .await
-        .map_err(|_| ServerError::HandshakeTimeout)??;
+        .map_err(|()| ServerError::HandshakeTimeout)??;
 
         // create h2 codec
         let codec = Codec::default();
@@ -197,7 +197,7 @@ where
             Pin::new(&mut fut).poll(cx)
         })
         .await
-        .map_err(|_| ServerError::Dispatcher)
+        .map_err(|()| ServerError::Dispatcher)
     }
 }
 
@@ -263,11 +263,10 @@ async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
         if ready {
             log::debug!("Preface has been received");
             return Ok::<_, ServerError<_>>(());
-        } else {
-            io.read_ready()
-                .await?
-                .ok_or(ServerError::Disconnected(None))?;
         }
+        io.read_ready()
+            .await?
+            .ok_or(ServerError::Disconnected(None))?;
     }
 }
 
@@ -288,7 +287,7 @@ where
     // read preface
     timeout_checked(config.handshake_timeout, async { read_preface(&io).await })
         .await
-        .map_err(|_| ServerError::HandshakeTimeout)??;
+        .map_err(|()| ServerError::HandshakeTimeout)??;
 
     // create h2 codec
     let codec = Codec::default();
@@ -313,5 +312,5 @@ where
         Pin::new(&mut fut).poll(cx)
     })
     .await
-    .map_err(|_| ServerError::Dispatcher)
+    .map_err(|()| ServerError::Dispatcher)
 }

@@ -22,8 +22,9 @@ impl WindowUpdate {
         self.stream_id
     }
 
-    pub fn size_increment(&self) -> u32 {
-        self.size_increment
+    #[allow(clippy::cast_possible_wrap)]
+    pub fn size_increment(&self) -> i32 {
+        self.size_increment as i32
     }
 
     /// Builds a `WindowUpdate` frame from a raw frame.

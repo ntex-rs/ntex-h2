@@ -16,15 +16,18 @@ impl Reset {
         }
     }
 
+    #[must_use]
     pub fn set_reason(mut self, error_code: Reason) -> Self {
         self.error_code = error_code;
         self
     }
 
+    #[must_use]
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
+    #[must_use]
     pub fn reason(&self) -> Reason {
         self.error_code
     }

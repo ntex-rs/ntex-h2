@@ -164,7 +164,7 @@ impl Mock<frame::Headers> {
         let (id, mut pseudo, fields) = self.into_parts();
         let value = value.parse().unwrap();
 
-        pseudo.set_scheme(value);
+        pseudo.set_scheme(&value);
 
         Mock(frame::Headers::new(id, pseudo, fields, false))
     }

@@ -20,11 +20,13 @@ impl GoAway {
         }
     }
 
+    #[must_use]
     pub fn set_last_stream_id(mut self, id: StreamId) -> Self {
         self.last_stream_id = id;
         self
     }
 
+    #[must_use]
     pub fn set_data<T>(mut self, data: T) -> Self
     where
         Bytes: From<T>,
@@ -33,6 +35,7 @@ impl GoAway {
         self
     }
 
+    #[must_use]
     pub fn set_reason(mut self, error_code: Reason) -> Self {
         self.error_code = error_code;
         self

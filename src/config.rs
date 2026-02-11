@@ -1,3 +1,9 @@
+#![allow(
+    clippy::new_without_default,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::missing_panics_doc
+)]
 use std::{cell::Cell, time::Duration};
 
 use ntex_service::cfg::{CfgContext, Configuration};
@@ -10,14 +16,14 @@ use crate::{consts, frame, frame::Settings, frame::WindowSize};
 pub struct ServiceConfig {
     pub(crate) settings: Settings,
     /// Initial window size of locally initiated streams
-    pub(crate) window_sz: WindowSize,
+    pub(crate) window_sz: i32,
     pub(crate) window_sz_threshold: WindowSize,
     /// How long a locally reset stream should ignore frames
     pub(crate) reset_duration: Duration,
     /// Maximum number of locally reset streams to keep at a time
     pub(crate) reset_max: usize,
     /// Initial window size for new connections.
-    pub(crate) connection_window_sz: WindowSize,
+    pub(crate) connection_window_sz: i32,
     pub(crate) connection_window_sz_threshold: WindowSize,
     /// Maximum number of remote initiated streams
     pub(crate) remote_max_concurrent_streams: Option<u32>,
@@ -50,7 +56,6 @@ impl Configuration for ServiceConfig {
     }
 }
 
-#[allow(clippy::new_without_default)]
 impl ServiceConfig {
     /// Create configuration
     pub fn new() -> Self {
@@ -83,6 +88,7 @@ impl ServiceConfig {
 }
 
 impl ServiceConfig {
+    #[must_use]
     /// Indicates the initial window size (in octets) for stream-level
     /// flow control for received data.
     ///
@@ -90,13 +96,17 @@ impl ServiceConfig {
     /// details, see [`FlowControl`].
     ///
     /// The default value is 65,535.
-    pub fn set_initial_window_size(mut self, size: u32) -> Self {
+    pub fn set_initial_window_size(mut self, size: i32) -> Self {
+        assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
+
         self.window_sz = size;
         self.window_sz_threshold = ((size as f32) / 3.0) as u32;
-        self.settings.set_initial_window_size(Some(size));
+        self.settings.set_initial_window_size(Some(size as u32));
         self
     }
 
+    #[must_use]
+    #[allow(clippy::missing_panics_doc)]
     /// Indicates the initial window size (in octets) for connection-level flow control
     /// for received data.
     ///
@@ -106,13 +116,14 @@ impl ServiceConfig {
     /// The default value is 1Mb.
     ///
     /// [`FlowControl`]: ../struct.FlowControl.html
-    pub fn set_initial_connection_window_size(mut self, size: u32) -> Self {
-        assert!(size <= consts::MAX_WINDOW_SIZE);
+    pub fn set_initial_connection_window_size(mut self, size: i32) -> Self {
+        assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
         self.connection_window_sz = size;
         self.connection_window_sz_threshold = ((size as f32) / 4.0) as u32;
         self
     }
 
+    #[must_use]
     /// Indicates the size (in octets) of the largest HTTP/2 frame payload that the
     /// configured server is able to accept.
     ///
@@ -131,6 +142,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Sets the max size of received header frames.
     ///
     /// This advisory setting informs a peer of the maximum size of header list
@@ -147,6 +159,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Sets the max number of continuation frames for HEADERS
     ///
     /// By default value is set to 5
@@ -155,6 +168,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Sets the maximum number of concurrent streams.
     ///
     /// The maximum concurrent streams setting only controls the maximum number
@@ -184,6 +198,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Sets the maximum number of concurrent locally reset streams.
     ///
     /// When a stream is explicitly reset by either calling
@@ -210,6 +225,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Sets the maximum number of concurrent locally reset streams.
     ///
     /// When a stream is explicitly reset by either calling
@@ -246,6 +262,7 @@ impl ServiceConfig {
     //     self
     // }
 
+    #[must_use]
     /// Set handshake timeout.
     ///
     /// Hadnshake includes receiving preface and completing connection preparation.
@@ -256,6 +273,7 @@ impl ServiceConfig {
         self
     }
 
+    #[must_use]
     /// Set ping timeout.
     ///
     /// By default ping time-out is set to 60 seconds.
@@ -273,7 +291,7 @@ thread_local! {
 impl ServiceConfig {
     /// Check if service is shutting down.
     pub fn is_shutdown(&self) -> bool {
-        SHUTDOWN.with(|v| v.get())
+        SHUTDOWN.with(Cell::get)
     }
 
     /// Set service shutdown.

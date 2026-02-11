@@ -55,7 +55,7 @@ impl Inflight {
                 self.response = Some(Either::Right(messages));
             }
             None => self.response = Some(Either::Left(item)),
-        };
+        }
         self.waker.wake();
     }
 }
@@ -115,7 +115,7 @@ impl SendStream {
     #[inline]
     /// Send trailers
     pub fn send_trailers(&self, map: HeaderMap) {
-        self.0.send_trailers(map)
+        self.0.send_trailers(map);
     }
 
     /// Reset stream
@@ -130,7 +130,7 @@ impl SendStream {
     #[inline]
     /// Disconnect connection on stream drop
     pub fn disconnect_on_drop(&self) {
-        self.0.disconnect_on_drop()
+        self.0.disconnect_on_drop();
     }
 
     #[inline]
@@ -171,7 +171,7 @@ impl RecvStream {
     #[inline]
     /// Disconnect connection on stream drop
     pub fn disconnect_on_drop(&self) {
-        self.0.disconnect_on_drop()
+        self.0.disconnect_on_drop();
     }
 
     /// Attempt to pull out the next value of http/2 stream
@@ -242,7 +242,7 @@ impl Service<Message> for HandleService {
             let eof = match msg.kind() {
                 MessageKind::Headers { eof, .. } => *eof,
                 MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
-                _ => false,
+                MessageKind::Data(..) => false,
             };
             inflight.push(msg);
 
@@ -266,14 +266,14 @@ impl InflightStorage {
         F: Fn(StreamId) + 'static,
     {
         InflightStorage(Rc::new(InflightStorageInner {
-            inflight: Default::default(),
+            inflight: RefCell::default(),
             cb: Some(Box::new(f)),
         }))
     }
 
     pub(super) fn notify(&self, id: StreamId) {
         if let Some(ref cb) = self.0.cb {
-            (*cb)(id)
+            (*cb)(id);
         }
     }
 

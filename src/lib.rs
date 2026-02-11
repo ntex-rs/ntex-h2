@@ -69,10 +69,22 @@
 //! [futures]: https://docs.rs/futures/
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
-
-//#![cfg_attr(test, deny(warnings))]
-#![deny(rust_2018_idioms, missing_debug_implementations)]
-#![allow(clippy::let_underscore_future)]
+// #![allow(clippy::let_underscore_future)]
+#![deny(
+    rust_2018_idioms,
+    warnings,
+    unreachable_pub,
+    missing_debug_implementations,
+    clippy::pedantic
+)]
+#![allow(
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    clippy::missing_fields_in_debug,
+    clippy::must_use_candidate,
+    clippy::missing_errors_doc,
+    clippy::too_many_lines
+)]
 
 macro_rules! proto_err {
     (conn: $($msg:tt)+) => {

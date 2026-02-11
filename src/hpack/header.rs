@@ -1,5 +1,3 @@
-#![allow(clippy::len_without_is_empty)]
-
 use ntex_bytes::{ByteString, Bytes};
 use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
 
@@ -30,33 +28,31 @@ pub enum Name<'a> {
     Status,
 }
 
-pub fn len(name: &HeaderName, value: &HeaderValue) -> usize {
+pub(super) fn len(name: &HeaderName, value: &HeaderValue) -> usize {
     let n: &str = name.as_ref();
     32 + n.len() + value.len()
 }
 
 impl Header<Option<HeaderName>> {
     pub fn reify(self) -> Result<Header, HeaderValue> {
-        use self::Header::*;
-
         Ok(match self {
-            Field {
+            Header::Field {
                 name: Some(n),
                 value,
-            } => Field { name: n, value },
-            Field { name: None, value } => return Err(value),
-            Authority(v) => Authority(v),
-            Method(v) => Method(v),
-            Scheme(v) => Scheme(v),
-            Path(v) => Path(v),
-            Protocol(v) => Protocol(v),
-            Status(v) => Status(v),
+            } => Header::Field { name: n, value },
+            Header::Field { name: None, value } => return Err(value),
+            Header::Authority(v) => Header::Authority(v),
+            Header::Method(v) => Header::Method(v),
+            Header::Scheme(v) => Header::Scheme(v),
+            Header::Path(v) => Header::Path(v),
+            Header::Protocol(v) => Header::Protocol(v),
+            Header::Status(v) => Header::Status(v),
         })
     }
 }
 
 impl Header {
-    pub fn new(name: Bytes, value: Bytes) -> Result<Header, DecoderError> {
+    pub fn new(name: &Bytes, value: Bytes) -> Result<Header, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
@@ -90,13 +86,14 @@ impl Header {
             }
         } else {
             // HTTP/2 requires lower case header names
-            let name = HeaderName::from_lowercase(&name)?;
+            let name = HeaderName::from_lowercase(name)?;
             let value = HeaderValue::from_bytes(&value)?;
 
             Ok(Header::Field { name, value })
         }
     }
 
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match *self {
             Header::Field {
@@ -128,11 +125,11 @@ impl Header {
     pub fn value_slice(&self) -> &[u8] {
         match *self {
             Header::Field { ref value, .. } => value.as_ref(),
-            Header::Authority(ref v) => v.as_bytes(),
+            Header::Authority(ref v)
+            | Header::Scheme(ref v)
+            | Header::Path(ref v)
+            | Header::Protocol(ref v) => v.as_bytes(),
             Header::Method(ref v) => v.as_ref().as_ref(),
-            Header::Scheme(ref v) => v.as_bytes(),
-            Header::Path(ref v) => v.as_bytes(),
-            Header::Protocol(ref v) => v.as_bytes(),
             Header::Status(ref v) => v.as_str().as_ref(),
         }
     }

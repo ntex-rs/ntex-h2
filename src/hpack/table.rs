@@ -6,7 +6,7 @@ use super::Header;
 
 /// HPACK encoder table
 #[derive(Debug)]
-pub struct Table {
+pub(super) struct Table {
     mask: usize,
     indices: Vec<Option<Pos>>,
     slots: VecDeque<Slot>,
@@ -17,7 +17,7 @@ pub struct Table {
 }
 
 #[derive(Debug)]
-pub enum Index {
+pub(super) enum Index {
     // The header is already fully indexed
     Indexed(usize, Header),
 
@@ -68,7 +68,7 @@ macro_rules! probe_loop {
 }
 
 impl Table {
-    pub fn new(max_size: usize, capacity: usize) -> Table {
+    pub(super) fn new(max_size: usize, capacity: usize) -> Table {
         if capacity == 0 {
             Table {
                 mask: 0,
@@ -92,42 +92,33 @@ impl Table {
         }
     }
 
-    #[inline]
-    pub fn capacity(&self) -> usize {
+    pub(super) fn capacity(&self) -> usize {
         usable_capacity(self.indices.len())
     }
 
-    pub fn max_size(&self) -> usize {
+    pub(super) fn max_size(&self) -> usize {
         self.max_size
     }
 
     /// Gets the header stored in the table
-    pub fn resolve<'a>(&'a self, index: &'a Index) -> &'a Header {
-        use self::Index::*;
-
+    pub(super) fn resolve<'a>(&'a self, index: &'a Index) -> &'a Header {
         match *index {
-            Indexed(_, ref h) => h,
-            Name(_, ref h) => h,
-            Inserted(idx) => &self.slots[idx].header,
-            InsertedValue(_, idx) => &self.slots[idx].header,
-            NotIndexed(ref h) => h,
+            Index::Indexed(_, ref h) | Index::Name(_, ref h) | Index::NotIndexed(ref h) => h,
+            Index::Inserted(idx) | Index::InsertedValue(_, idx) => &self.slots[idx].header,
         }
     }
 
-    pub fn resolve_idx(&self, index: &Index) -> usize {
-        use self::Index::*;
-
+    pub(super) fn resolve_idx(index: &Index) -> usize {
         match *index {
-            Indexed(idx, ..) => idx,
-            Name(idx, ..) => idx,
-            Inserted(idx) => idx + DYN_OFFSET,
-            InsertedValue(_name_idx, slot_idx) => slot_idx + DYN_OFFSET,
-            NotIndexed(_) => panic!("cannot resolve index"),
+            Index::Indexed(idx, ..) | Index::Name(idx, ..) => idx,
+            Index::Inserted(idx) => idx + DYN_OFFSET,
+            Index::InsertedValue(_name_idx, slot_idx) => slot_idx + DYN_OFFSET,
+            Index::NotIndexed(_) => panic!("cannot resolve index"),
         }
     }
 
     /// Index the header in the HPACK table.
-    pub fn index(&mut self, header: Header) -> Index {
+    pub(super) fn index(&mut self, header: Header) -> Index {
         // Check the static table
         let statik = index_static(&header);
 
@@ -154,7 +145,7 @@ impl Table {
     }
 
     fn index_dynamic(&mut self, header: Header, statik: Option<(usize, bool)>) -> Index {
-        debug_assert!(self.assert_valid_state("one"));
+        debug_assert!(Self::assert_valid_state("one"));
 
         if header.len() + self.size < self.max_size || !header.is_sensitive() {
             // Only grow internal storage if needed
@@ -205,7 +196,7 @@ impl Table {
         mut index: usize,
         statik: Option<usize>,
     ) -> Index {
-        debug_assert!(self.assert_valid_state("top"));
+        debug_assert!(Self::assert_valid_state("top"));
 
         // There already is a match for the given header name. Check if a value
         // matches. The header will also only be inserted if the table is not at
@@ -246,7 +237,7 @@ impl Table {
                 self.slots[new_real_idx].next = Some(idx);
             }
 
-            debug_assert!(self.assert_valid_state("bottom"));
+            debug_assert!(Self::assert_valid_state("bottom"));
 
             // Even if the previous header was evicted, we can still reference
             // it when inserting the new one...
@@ -271,7 +262,7 @@ impl Table {
             return Index::new(statik, header);
         }
 
-        debug_assert!(self.assert_valid_state("top"));
+        debug_assert!(Self::assert_valid_state("top"));
         debug_assert!(dist == 0 || self.indices[probe.wrapping_sub(1) & self.mask].is_some());
 
         // Passing in `usize::MAX` for prev_idx since there is no previous
@@ -296,7 +287,7 @@ impl Table {
             }
         }
 
-        debug_assert!(self.assert_valid_state("after update"));
+        debug_assert!(Self::assert_valid_state("after update"));
 
         self.insert(header, hash);
 
@@ -321,7 +312,7 @@ impl Table {
             });
         }
 
-        debug_assert!(self.assert_valid_state("bottom"));
+        debug_assert!(Self::assert_valid_state("bottom"));
 
         if let Some((n, _)) = statik {
             Index::InsertedValue(n, 0)
@@ -340,7 +331,7 @@ impl Table {
         });
     }
 
-    pub fn resize(&mut self, size: usize) {
+    pub(super) fn resize(&mut self, size: usize) {
         self.max_size = size;
 
         if size == 0 {
@@ -377,7 +368,7 @@ impl Table {
         let pos_idx = (self.slots.len() - 1).wrapping_sub(self.inserted);
 
         debug_assert!(!self.slots.is_empty());
-        debug_assert!(self.assert_valid_state("one"));
+        debug_assert!(Self::assert_valid_state("one"));
 
         // Remove the header
         let slot = self.slots.pop_back().unwrap();
@@ -417,7 +408,7 @@ impl Table {
             }
         });
 
-        debug_assert!(self.assert_valid_state("two"));
+        debug_assert!(Self::assert_valid_state("two"));
     }
 
     // Shifts all indices that were displaced by the header that has just been
@@ -440,7 +431,7 @@ impl Table {
             last_probe = probe;
         });
 
-        debug_assert!(self.assert_valid_state("two"));
+        debug_assert!(Self::assert_valid_state("two"));
     }
 
     fn reserve_one(&mut self) {
@@ -463,7 +454,7 @@ impl Table {
         // This path can never be reached when handling the first allocation in
         // the map.
 
-        debug_assert!(self.assert_valid_state("top"));
+        debug_assert!(Self::assert_valid_state("top"));
 
         // find first ideally placed element -- start of cluster
         let mut first_ideal = 0;
@@ -490,7 +481,7 @@ impl Table {
             self.reinsert_entry_in_order(pos);
         }
 
-        debug_assert!(self.assert_valid_state("bottom"));
+        debug_assert!(Self::assert_valid_state("bottom"));
     }
 
     fn reinsert_entry_in_order(&mut self, pos: Option<Pos>) {
@@ -517,12 +508,12 @@ impl Table {
     }
 
     #[cfg(not(test))]
-    fn assert_valid_state(&self, _: &'static str) -> bool {
+    fn assert_valid_state(_: &'static str) -> bool {
         true
     }
 
     #[cfg(test)]
-    fn assert_valid_state(&self, _msg: &'static str) -> bool {
+    fn assert_valid_state(_msg: &'static str) -> bool {
         /*
             // Checks that the internal map structure is valid
             //
@@ -617,12 +608,12 @@ impl Table {
 #[cfg(test)]
 impl Table {
     /// Returns the number of headers in the table
-    pub fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         self.slots.len()
     }
 
     /// Returns the table size
-    pub fn size(&self) -> usize {
+    pub(super) fn size(&self) -> usize {
         self.size
     }
 }

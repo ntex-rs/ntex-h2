@@ -18,7 +18,7 @@ pub enum Reason<E> {
     Error(Error<E>),
     /// Protocol level error
     ProtocolError(ConnectionError),
-    /// Remote GoAway is received
+    /// Remote `GoAway` is received
     GoAway(GoAway),
     /// Peer is gone
     PeerGone(PeerGone),
@@ -31,7 +31,7 @@ pub struct ControlAck {
 
 impl<E> Control<E> {
     /// Create a new `Control` message for app level errors
-    pub(super) fn error(err: E, stream: Option<StreamRef>) -> Self {
+    pub(super) fn error(err: E, stream: Option<&StreamRef>) -> Self {
         Control::Disconnect(Reason::Error(Error::new(err, stream)))
     }
 
@@ -83,8 +83,8 @@ pub struct Error<E> {
 }
 
 impl<E> Error<E> {
-    fn new(err: E, stream: Option<StreamRef>) -> Self {
-        let goaway = if let Some(ref stream) = stream {
+    fn new(err: E, stream: Option<&StreamRef>) -> Self {
+        let goaway = if let Some(stream) = stream {
             frame::GoAway::new(frame::Reason::INTERNAL_ERROR).set_last_stream_id(stream.id())
         } else {
             frame::GoAway::new(frame::Reason::INTERNAL_ERROR)
@@ -100,6 +100,7 @@ impl<E> Error<E> {
     }
 
     #[inline]
+    #[must_use]
     /// Set reason code for go away packet
     pub fn reason(mut self, reason: frame::Reason) -> Self {
         self.goaway = self.goaway.set_reason(reason);
@@ -149,6 +150,7 @@ impl ConnectionError {
     }
 
     #[inline]
+    #[must_use]
     /// Set reason code for go away packet
     pub fn reason(mut self, reason: frame::Reason) -> Self {
         self.frm = self.frm.set_reason(reason);
