@@ -321,7 +321,7 @@ mod test {
         let mut encoder = Encoder::default();
         let res = encode(&mut encoder, vec![method("PATCH")]);
 
-        assert_eq!(res[0], 0b01000000 | 2); // Incremental indexing w/ name pulled from table
+        assert_eq!(res[0], 0b0100_0000 | 2); // Incremental indexing w/ name pulled from table
         assert_eq!(res[1], 0x80 | 5); // header value w/ huffman coding
 
         assert_eq!("PATCH", huff_decode(&res[2..7]));
@@ -338,14 +338,14 @@ mod test {
         let mut encoder = Encoder::default();
         let res = encode(&mut encoder, vec![header("content-language", "foo")]);
 
-        assert_eq!(res[0], 0b01000000 | 27); // Indexed name
+        assert_eq!(res[0], 0b0100_0000 | 27); // Indexed name
         assert_eq!(res[1], 0x80 | 2); // header value w/ huffman coding
 
         assert_eq!("foo", huff_decode(&res[2..4]));
 
         // Same name, new value should still use incremental
         let res = encode(&mut encoder, vec![header("content-language", "bar")]);
-        assert_eq!(res[0], 0b01000000 | 27); // Indexed name
+        assert_eq!(res[0], 0b0100_0000 | 27); // Indexed name
         assert_eq!(res[1], 0x80 | 3); // header value w/ huffman coding
         assert_eq!("bar", huff_decode(&res[2..5]));
     }
@@ -355,7 +355,7 @@ mod test {
         let mut encoder = Encoder::default();
         let res = encode(&mut encoder, vec![header("foo", "hello")]);
 
-        assert_eq!(&[0b01000000, 0x80 | 2], &res[0..2]);
+        assert_eq!(&[0b0100_0000, 0x80 | 2], &res[0..2]);
         assert_eq!("foo", huff_decode(&res[2..4]));
         assert_eq!(0x80 | 4, res[4]);
         assert_eq!("hello", huff_decode(&res[5..]));
@@ -375,10 +375,10 @@ mod test {
 
         // Fill the table
         for i in 0..64 {
-            let key = format!("x-hello-world-{:02}", i);
+            let key = format!("x-hello-world-{i:02}");
             let res = encode(&mut encoder, vec![header(&key, &key)]);
 
-            assert_eq!(&[0b01000000, 0x80 | 12], &res[0..2]);
+            assert_eq!(&[0b0100_0000, 0x80 | 12], &res[0..2]);
             assert_eq!(key, huff_decode(&res[2..14]));
             assert_eq!(0x80 | 12, res[14]);
             assert_eq!(key, huff_decode(&res[15..]));
@@ -396,7 +396,7 @@ mod test {
 
         // Find existing headers
         for i in 0..64 {
-            let key = format!("x-hello-world-{:02}", i);
+            let key = format!("x-hello-world-{i:02}");
             let res = encode(&mut encoder, vec![header(&key, &key)]);
             assert_eq!(0x80, res[0] & 0x80);
         }
@@ -405,7 +405,7 @@ mod test {
         let key = "x-hello-world-64";
         let res = encode(&mut encoder, vec![header(key, key)]);
 
-        assert_eq!(&[0b01000000, 0x80 | 12], &res[0..2]);
+        assert_eq!(&[0b0100_0000, 0x80 | 12], &res[0..2]);
         assert_eq!(key, huff_decode(&res[2..14]));
         assert_eq!(0x80 | 12, res[14]);
         assert_eq!(key, huff_decode(&res[15..]));
@@ -415,7 +415,7 @@ mod test {
 
         // Now try encoding entries that should exist in the table
         for i in 1..65 {
-            let key = format!("x-hello-world-{:02}", i);
+            let key = format!("x-hello-world-{i:02}");
             let res = encode(&mut encoder, vec![header(&key, &key)]);
             assert_eq!(0x80 | (61 + (65 - i)), res[0]);
         }
@@ -678,18 +678,12 @@ mod test {
     fn test_large_size_update() {
         let mut encoder = Encoder::default();
 
-        encoder.update_max_size(1912930560);
-        assert_eq!(Some(SizeUpdate::One(1912930560)), encoder.size_update);
+        encoder.update_max_size(1_912_930_560);
+        assert_eq!(Some(SizeUpdate::One(1_912_930_560)), encoder.size_update);
 
         let mut dst = BytesMut::with_capacity(6);
         encoder.encode_size_updates(&mut dst);
         assert_eq!([63, 225, 129, 148, 144, 7], &dst[..]);
-    }
-
-    #[test]
-    #[ignore]
-    fn test_evicted_overflow() {
-        // Not sure what the best way to do this is.
     }
 
     fn encode(e: &mut Encoder, hdrs: Vec<Header<Option<HeaderName>>>) -> BytesMut {

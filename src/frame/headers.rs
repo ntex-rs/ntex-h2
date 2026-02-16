@@ -561,7 +561,7 @@ mod test {
             HeaderValue::from_static("sup"),
         );
 
-        let mut headers = Headers::new(StreamId::CON, Default::default(), hdrs, false);
+        let mut headers = Headers::new(StreamId::CON, PseudoHeaders::default(), hdrs, false);
         headers.set_end_headers();
         headers.encode(&mut encoder, &mut dst, 8);
         assert_eq!(48, dst.len());

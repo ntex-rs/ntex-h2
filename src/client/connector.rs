@@ -90,11 +90,12 @@ where
     type Service = ConnectorService<A, T::Service>;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+        let config = cfg.get();
         let svc = self.svc.create(cfg).await?;
         Ok(ConnectorService {
             svc,
+            config,
             scheme: self.scheme.clone(),
-            config: cfg.get(),
             pool: self.pool.clone(),
             _t: PhantomData,
         })
@@ -126,7 +127,7 @@ where
         let fut = async {
             Ok::<_, ClientError>(SimpleClient::with_params(
                 ctx.call(&self.svc, Connect::new(req)).await?.into(),
-                self.config,
+                self.config.clone(),
                 &self.scheme,
                 authority,
                 false,

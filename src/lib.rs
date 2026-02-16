@@ -78,6 +78,7 @@
     clippy::pedantic
 )]
 #![allow(
+    clippy::clone_on_copy,
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,

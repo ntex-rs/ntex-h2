@@ -11,15 +11,16 @@ const MAX_CHUNK: usize = 2 * 1024;
 
 #[test]
 fn hpack_fuzz() {
-    let _ = env_logger::try_init();
     fn prop(fuzz: FuzzHpack) -> TestResult {
         fuzz.run();
         TestResult::from_bool(true)
     }
 
+    let _ = env_logger::try_init();
+
     QuickCheck::new()
         .tests(100)
-        .quickcheck(prop as fn(FuzzHpack) -> TestResult)
+        .quickcheck(prop as fn(FuzzHpack) -> TestResult);
 }
 
 /*
@@ -45,6 +46,7 @@ struct HeaderFrame {
 }
 
 impl FuzzHpack {
+    #[allow(clippy::cast_precision_loss)]
     fn new(seed: [u8; 32]) -> FuzzHpack {
         // Seed the RNG
         let mut rng = StdRng::from_seed(seed);
@@ -142,7 +144,7 @@ impl FuzzHpack {
                     }
                     Err(value) => {
                         expect.push(Header::Field {
-                            name: prev_name.as_ref().cloned().expect("previous header name"),
+                            name: prev_name.clone().expect("previous header name"),
                             value,
                         });
                     }

@@ -851,7 +851,7 @@ mod test {
         let mut de = Decoder::new(0);
 
         let mut buf = BytesMut::new();
-        buf.extend(&[0b01000000, 0x80 | 2]);
+        buf.extend(&[0b0100_0000, 0x80 | 2]);
         buf.extend(huff_encode(b"foo"));
         buf.extend(&[0x80 | 3]);
         buf.extend(huff_encode(b"bar"));
@@ -890,7 +890,7 @@ mod test {
         let value = huff_encode(b"bar");
         let mut buf = BytesMut::new();
         // header name is non_huff encoded
-        buf.extend(&[0b01000000, 3]);
+        buf.extend(&[0b0100_0000, 3]);
         buf.extend(b"foo");
         // header value is partial
         buf.extend(&[0x80 | 3]);

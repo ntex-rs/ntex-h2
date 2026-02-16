@@ -11,7 +11,7 @@ use ntex_util::time::Seconds;
 
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 /// Http2 connection configuration
 pub struct ServiceConfig {
     pub(crate) settings: Settings,
