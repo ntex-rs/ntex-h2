@@ -174,7 +174,7 @@ impl Client {
                     // construct client
                     let client = SimpleClient::with_params(
                         io,
-                        inner.cfg,
+                        inner.cfg.clone(),
                         &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
@@ -433,14 +433,12 @@ where
     /// Finish configuration process and create connections pool.
     pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
         let connect = self.connect;
+        let tag = cfg.tag();
+        let client_cfg = cfg.get();
         let svc = Pipeline::new(self.connector.create(cfg).await?);
 
         let connector = Box::new(move || {
-            log::trace!(
-                "{}: Opening http/2 connection to {}",
-                cfg.tag(),
-                connect.host()
-            );
+            log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
             let fut = svc.call_static(connect.clone());
             Box::pin(async move { fut.await.map(IoBoxed::from) }) as Fut
         });
@@ -448,7 +446,7 @@ where
         Ok(Client {
             inner: Rc::new(Inner {
                 connector,
-                cfg: cfg.get(),
+                cfg: client_cfg,
                 config: self.inner,
             }),
             waiters: Rc::default(),

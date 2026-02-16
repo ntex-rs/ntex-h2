@@ -1,5 +1,9 @@
 # Changes
 
+## [3.7.0] - 2026-02-16
+
+* SharedCfg is not Copy
+
 ## [3.6.2] - 2026-02-11
 
 * Better clippy configuration

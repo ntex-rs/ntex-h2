@@ -16,10 +16,10 @@ fn test_fixture(path: &Path) {
     file.read_to_string(&mut data).unwrap();
 
     let story: Value = serde_json::from_str(&data).unwrap();
-    test_story(story);
+    test_story(&story);
 }
 
-fn test_story(story: Value) {
+fn test_story(story: &Value) {
     let story = story.as_object().unwrap();
 
     if let Some(cases) = story.get("cases") {
@@ -144,10 +144,8 @@ fn key_str(e: &Header) -> &str {
 fn value_str(e: &Header) -> &str {
     match *e {
         Header::Field { ref value, .. } => value.to_str().unwrap(),
-        Header::Authority(ref v) => v,
+        Header::Authority(ref v) | Header::Scheme(ref v) | Header::Path(ref v) => v,
         Header::Method(ref m) => m.as_str(),
-        Header::Scheme(ref v) => v,
-        Header::Path(ref v) => v,
         Header::Protocol(ref v) => v.as_str(),
         Header::Status(ref v) => v.as_str(),
     }

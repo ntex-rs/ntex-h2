@@ -990,17 +990,18 @@ mod tests {
 
     const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+    #[allow(clippy::needless_pass_by_value)]
     fn get_reset(frm: frame::Frame) -> frame::Reset {
         match frm {
             frame::Frame::Reset(rst) => rst,
-            _ => panic!("Expect Reset frame: {:?}", frm),
+            _ => panic!("Expect Reset frame: {frm:?}"),
         }
     }
 
     fn goaway(frm: frame::Frame) -> frame::GoAway {
         match frm {
             frame::Frame::GoAway(f) => f,
-            _ => panic!("Expect Reset frame: {:?}", frm),
+            _ => panic!("Expect Reset frame: {frm:?}"),
         }
     }
 

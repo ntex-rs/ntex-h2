@@ -137,8 +137,8 @@ impl<Pub, Ctl> Clone for ServerHandler<Pub, Ctl> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            cfg: self.cfg,
-            shared: self.shared,
+            cfg: self.cfg.clone(),
+            shared: self.shared.clone(),
         }
     }
 }
@@ -159,16 +159,24 @@ where
             read_preface(&io).await?;
 
             // create publish service
-            let pub_srv = inner.publish.create(self.shared).await.map_err(|e| {
-                log::error!("Publish service init error: {e:?}");
-                ServerError::PublishServiceError
-            })?;
+            let pub_srv = inner
+                .publish
+                .create(self.shared.clone())
+                .await
+                .map_err(|e| {
+                    log::error!("Publish service init error: {e:?}");
+                    ServerError::PublishServiceError
+                })?;
 
             // create control service
-            let ctl_srv = inner.control.create(self.shared).await.map_err(|e| {
-                log::error!("Control service init error: {e:?}");
-                ServerError::ControlServiceError
-            })?;
+            let ctl_srv = inner
+                .control
+                .create(self.shared.clone())
+                .await
+                .map_err(|e| {
+                    log::error!("Control service init error: {e:?}");
+                    ServerError::ControlServiceError
+                })?;
 
             Ok::<_, ServerError<()>>((ctl_srv, pub_srv))
         })
@@ -181,7 +189,7 @@ where
             true,
             io.get_ref(),
             codec.clone(),
-            self.cfg,
+            self.cfg.clone(),
             true,
             false,
             self.inner.pool.clone(),
