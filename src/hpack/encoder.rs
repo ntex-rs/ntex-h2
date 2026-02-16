@@ -1,7 +1,7 @@
 use ntex_bytes::{BufMut, BytesMut};
 use ntex_http::header::{HeaderName, HeaderValue};
 
-use super::{Header, huffman, table::Index, table::Table};
+use super::{huffman, table::Index, table::Table, Header};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -678,7 +678,7 @@ mod test {
     fn test_large_size_update() {
         let mut encoder = Encoder::default();
 
-        encoder.update_max_size(1 - 912_930_560);
+        encoder.update_max_size(1_912_930_560);
         assert_eq!(Some(SizeUpdate::One(1_912_930_560)), encoder.size_update);
 
         let mut dst = BytesMut::with_capacity(6);
