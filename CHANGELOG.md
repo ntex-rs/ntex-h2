@@ -1,5 +1,9 @@
 # Changes
 
+## [3.7.1] - 2026-02-16
+
+* ServiceConfig is not Clone
+
 ## [3.7.0] - 2026-02-16
 
 * SharedCfg is not Copy
