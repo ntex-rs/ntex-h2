@@ -1,6 +1,7 @@
 use std::marker::PhantomData;
 
 use ntex_bytes::ByteString;
+use ntex_error::Error;
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
@@ -24,7 +25,7 @@ pub struct Connector<A: Address, T> {
 impl<A, T> Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     /// Create new http2 connector
@@ -66,7 +67,7 @@ where
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
+        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
         IoBoxed: From<U::Response>,
     {
         Connector {
@@ -81,7 +82,7 @@ where
 impl<A, T> ServiceFactory<A, SharedCfg> for Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     type Response = SimpleClient;
@@ -114,7 +115,7 @@ pub struct ConnectorService<A, T> {
 impl<A, T> Service<A> for ConnectorService<A, T>
 where
     A: Address,
-    T: Service<Connect<A>, Error = ConnectError>,
+    T: Service<Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     type Response = SimpleClient;

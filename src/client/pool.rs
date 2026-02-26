@@ -3,6 +3,7 @@ use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Dur
 
 use nanorand::{Rng, WyRand};
 use ntex_bytes::ByteString;
+use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
@@ -15,8 +16,8 @@ use super::stream::{InflightStorage, RecvStream, SendStream};
 use super::{ClientError, simple::SimpleClient};
 use crate::ServiceConfig;
 
-type Fut = BoxFuture<'static, Result<IoBoxed, ConnectError>>;
-type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, ConnectError>>>;
+type Fut = BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>;
+type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>>;
 
 #[derive(Clone)]
 /// Manages http client network connectivity.
@@ -48,7 +49,7 @@ impl Client {
     where
         A: Address + Clone,
         F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
-        T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
+        T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
         IoBoxed: From<T::Response>,
         Connect<A>: From<U>,
     {
@@ -298,7 +299,7 @@ struct InnerConfig {
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
@@ -412,7 +413,7 @@ where
     pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
+        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
         IoBoxed: From<U::Response>,
     {
         ClientBuilder {
@@ -427,7 +428,7 @@ where
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = ConnectError> + 'static,
+    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
     IoBoxed: From<T::Response>,
 {
     /// Finish configuration process and create connections pool.

@@ -1,6 +1,8 @@
 //! Http2 client
 use std::rc::Rc;
 
+use ntex_error::Error;
+
 mod connector;
 mod pool;
 mod simple;
@@ -30,7 +32,7 @@ pub enum ClientError {
     HandshakeTimeout,
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(Rc<ntex_net::connect::ConnectError>),
+    Connect(#[from] Error<ntex_net::connect::ConnectError>),
     /// Peer disconnected
     #[error("Peer disconnected err: {0}")]
     Disconnected(#[from] std::io::Error),
@@ -48,11 +50,11 @@ impl From<ntex_util::channel::Canceled> for ClientError {
     }
 }
 
-impl From<ntex_net::connect::ConnectError> for ClientError {
-    fn from(err: ntex_net::connect::ConnectError) -> Self {
-        Self::Connect(Rc::new(err))
-    }
-}
+// impl From<ntex_net::connect::ConnectError> for ClientError {
+//     fn from(err: ntex_net::connect::ConnectError) -> Self {
+//         Self::Connect(Rc::new(err))
+//     }
+// }
 
 impl Clone for ClientError {
     fn clone(&self) -> Self {
