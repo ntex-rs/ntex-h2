@@ -1,4 +1,5 @@
 use ntex_bytes::Bytes;
+use ntex_error::Error;
 use ntex_http::HeaderMap;
 
 use crate::error::{OperationError, StreamError};
@@ -20,14 +21,14 @@ pub enum MessageKind {
     },
     Data(Bytes, Capacity),
     Eof(StreamEof),
-    Disconnect(OperationError),
+    Disconnect(Error<OperationError>),
 }
 
 #[derive(Debug, Clone)]
 pub enum StreamEof {
     Data(Bytes),
     Trailers(HeaderMap),
-    Error(StreamError),
+    Error(Error<StreamError>),
 }
 
 impl Message {
@@ -68,14 +69,14 @@ impl Message {
         }
     }
 
-    pub(crate) fn error(err: StreamError, stream: &StreamRef) -> Self {
+    pub(crate) fn error(err: Error<StreamError>, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Eof(StreamEof::Error(err)),
+            kind: MessageKind::Eof(StreamEof::Error(err.clone())),
         }
     }
 
-    pub(crate) fn disconnect(err: OperationError, stream: StreamRef) -> Self {
+    pub(crate) fn disconnect(err: Error<OperationError>, stream: StreamRef) -> Self {
         Message {
             stream,
             kind: MessageKind::Disconnect(err),

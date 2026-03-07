@@ -6,7 +6,7 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
-use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
 use ntex_util::time::{Millis, Seconds, timeout_checked};
@@ -63,16 +63,16 @@ impl Client {
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<(SendStream, RecvStream), ClientError> {
+    ) -> Result<(SendStream, RecvStream), Error<ClientError>> {
         self.client()
             .await?
             .send(method, path, headers, eof)
             .await
-            .map_err(From::from)
+            .map_err(|e| e.map(ClientError::from))
     }
 
     /// Get client from the pool
-    pub async fn client(&self) -> Result<SimpleClient, ClientError> {
+    pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
 
@@ -83,7 +83,7 @@ impl Client {
         }
     }
 
-    async fn connect(&self, num: usize) -> Result<(), ClientError> {
+    async fn connect(&self, num: usize) -> Result<(), Error<ClientError>> {
         let cfg = &self.inner.config;
 
         // can create new connection
@@ -103,7 +103,8 @@ impl Client {
             // wait for available connection
             let (tx, rx) = cfg.pool.channel();
             self.waiters.borrow_mut().push_back(tx);
-            rx.await?;
+            rx.await
+                .map_err(|e| Error::new(e, self.inner.cfg.service()))?;
         }
         Ok(())
     }
@@ -158,7 +159,7 @@ impl Client {
         }
     }
 
-    async fn create_connection(&self) -> Result<(), ClientError> {
+    async fn create_connection(&self) -> Result<(), Error<ClientError>> {
         let (tx, rx) = oneshot::channel();
 
         let inner = self.inner.clone();
@@ -189,8 +190,8 @@ impl Client {
                         .set(inner.config.total_connections.get() + 1);
                     Ok(())
                 }
-                Ok(Err(err)) => Err(ClientError::from(err)),
-                Err(()) => Err(ClientError::HandshakeTimeout),
+                Ok(Err(err)) => Err(err.map(ClientError::from)),
+                Err(()) => Err(Error::from(ClientError::HandshakeTimeout)),
             };
             inner.config.connecting.set(false);
             for waiter in waiters.borrow_mut().drain(..) {
@@ -206,7 +207,8 @@ impl Client {
             let _ = tx.send(res);
         });
 
-        rx.await?
+        rx.await
+            .map_err(|e| Error::new(e, self.inner.cfg.service()))?
     }
 
     #[inline]

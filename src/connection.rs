@@ -2,6 +2,7 @@ use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
 use std::{collections::VecDeque, time::Instant};
 
 use ntex_bytes::{ByteString, Bytes};
+use ntex_error::Error;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_service::cfg::Cfg;
@@ -60,7 +61,7 @@ struct ConnectionState {
     // Locally reset streams
     local_pending_reset: Pending,
     // protocol level error
-    error: Cell<Option<OperationError>>,
+    error: Cell<Option<Error<OperationError>>>,
     // connection state flags
     flags: Cell<ConnectionFlags>,
 
@@ -169,6 +170,10 @@ impl Connection {
         &self.0.local_config
     }
 
+    pub(crate) fn service(&self) -> &'static str {
+        self.0.local_config.service()
+    }
+
     pub(crate) fn flags(&self) -> ConnectionFlags {
         self.0.flags.get()
     }
@@ -219,7 +224,7 @@ impl Connection {
         let _ = self.0.io.encode(item.into(), &self.0.codec);
     }
 
-    pub(crate) fn check_error(&self) -> Result<(), OperationError> {
+    pub(crate) fn check_error(&self) -> Result<(), Error<OperationError>> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Err(err)
@@ -228,7 +233,7 @@ impl Connection {
         }
     }
 
-    pub(crate) fn check_error_with_disconnect(&self) -> Result<(), OperationError> {
+    pub(crate) fn check_error_with_disconnect(&self) -> Result<(), Error<OperationError>> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Err(err)
@@ -238,7 +243,7 @@ impl Connection {
             .get()
             .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
         {
-            Err(OperationError::Disconnecting)
+            Err(Error::new(OperationError::Disconnecting, self.service()))
         } else {
             Ok(())
         }
@@ -300,7 +305,7 @@ impl Connection {
         }
     }
 
-    pub(crate) async fn ready(&self) -> Result<(), OperationError> {
+    pub(crate) async fn ready(&self) -> Result<(), Error<OperationError>> {
         loop {
             self.check_error_with_disconnect()?;
             return if let Some(max) = self.0.local_max_concurrent_streams.get() {
@@ -311,7 +316,7 @@ impl Connection {
                     self.0.readiness.borrow_mut().push_back(tx);
                     match rx.await {
                         Ok(()) => continue,
-                        Err(_) => Err(OperationError::Disconnected),
+                        Err(_) => Err(Error::new(OperationError::Disconnected, self.service())),
                     }
                 }
             } else {
@@ -340,7 +345,7 @@ impl Connection {
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<Stream, OperationError> {
+    ) -> Result<Stream, Error<OperationError>> {
         self.check_error_with_disconnect()?;
 
         if !self.can_create_new_stream() {
@@ -459,6 +464,10 @@ impl RecvHalfConnection {
         self.0.flags.set(flags);
     }
 
+    pub(crate) fn service(&self) -> &'static str {
+        self.0.local_config.service()
+    }
+
     pub(crate) fn connection(&self) -> Connection {
         Connection(self.0.clone())
     }
@@ -473,14 +482,16 @@ impl RecvHalfConnection {
     pub(crate) fn recv_headers(
         &self,
         frm: Headers,
-    ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
+    ) -> Result<Option<(StreamRef, Message)>, Either<Error<ConnectionError>, StreamErrorInner>>
+    {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
 
         // 1. Check if ID parity is correct (Client must send odd, Server even)
         if is_server && !id.is_client_initiated() {
-            return Err(Either::Left(ConnectionError::InvalidStreamId(
-                "Invalid id in received headers frame",
+            return Err(Either::Left(Error::new(
+                ConnectionError::InvalidStreamId("Invalid id in received headers frame"),
+                self.service(),
             )));
         }
 
@@ -501,8 +512,11 @@ impl RecvHalfConnection {
         let last_id = self.0.last_id.get();
         if last_id >= id {
             // If the ID is old and the stream was not found above, it's an error (Stream Closed or ID Reuse).
-            return Err(Either::Left(ConnectionError::InvalidStreamId(
-                "Invalid id in received headers frame (stream closed or ID reused)",
+            return Err(Either::Left(Error::new(
+                ConnectionError::InvalidStreamId(
+                    "Invalid id in received headers frame (stream closed or ID reused)",
+                ),
+                self.service(),
             )));
         }
 
@@ -538,7 +552,10 @@ impl RecvHalfConnection {
                 // check if client opened more streams than allowed
                 // in that case close connection
                 return if self.flags().contains(ConnectionFlags::STREAM_REFUSED) {
-                    Err(Either::Left(ConnectionError::ConcurrencyOverflow))
+                    Err(Either::Left(Error::new(
+                        ConnectionError::ConcurrencyOverflow,
+                        self.service(),
+                    )))
                 } else {
                     self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
                     self.set_flags(ConnectionFlags::STREAM_REFUSED);
@@ -549,13 +566,25 @@ impl RecvHalfConnection {
             // Pseudo-headers validation
             let pseudo = frm.pseudo();
             if pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Err(Either::Left(ConnectionError::MissingPseudo("path")))
+                Err(Either::Left(Error::new(
+                    ConnectionError::MissingPseudo("path"),
+                    self.service(),
+                )))
             } else if pseudo.method.is_none() {
-                Err(Either::Left(ConnectionError::MissingPseudo("method")))
+                Err(Either::Left(Error::new(
+                    ConnectionError::MissingPseudo("method"),
+                    self.service(),
+                )))
             } else if pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Err(Either::Left(ConnectionError::MissingPseudo("scheme")))
+                Err(Either::Left(Error::new(
+                    ConnectionError::MissingPseudo("scheme"),
+                    self.service(),
+                )))
             } else if frm.pseudo().status.is_some() {
-                Err(Either::Left(ConnectionError::UnexpectedPseudo("scheme")))
+                Err(Either::Left(Error::new(
+                    ConnectionError::UnexpectedPseudo("scheme"),
+                    self.service(),
+                )))
             } else {
                 // Create the new stream
                 let stream = StreamRef::new(id, true, Connection(self.0.clone()));
@@ -575,7 +604,8 @@ impl RecvHalfConnection {
     pub(crate) fn recv_data(
         &self,
         frm: frame::Data,
-    ) -> Result<Option<(StreamRef, Message)>, Either<ConnectionError, StreamErrorInner>> {
+    ) -> Result<Option<(StreamRef, Message)>, Either<Error<ConnectionError>, StreamErrorInner>>
+    {
         if let Some(stream) = self.query(frm.stream_id()) {
             match stream.recv_data(frm) {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
@@ -590,8 +620,9 @@ impl RecvHalfConnection {
             ));
             Ok(None)
         } else {
-            Err(Either::Left(ConnectionError::UnknownStream(
-                "Received data",
+            Err(Either::Left(Error::new(
+                ConnectionError::UnknownStream("Received data"),
+                self.service(),
             )))
         }
     }
@@ -599,13 +630,16 @@ impl RecvHalfConnection {
     pub(crate) fn recv_settings(
         &self,
         settings: frame::Settings,
-    ) -> Result<(), Either<ConnectionError, Vec<StreamErrorInner>>> {
+    ) -> Result<(), Either<Error<ConnectionError>, Vec<StreamErrorInner>>> {
         log::trace!("processing incoming settings: {settings:#?}");
 
         if settings.is_ack() {
             if self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
                 proto_err!(conn: "received unexpected settings ack");
-                return Err(Either::Left(ConnectionError::UnexpectedSettingsAck));
+                return Err(Either::Left(Error::new(
+                    ConnectionError::UnexpectedSettingsAck,
+                    self.service(),
+                )));
             }
             self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
             if let Some(max) = self.0.local_config.settings.max_frame_size() {
@@ -691,19 +725,27 @@ impl RecvHalfConnection {
     pub(crate) fn recv_window_update(
         &self,
         frm: frame::WindowUpdate,
-    ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
+    ) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
         log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         if frm.stream_id().is_zero() {
             if frm.size_increment() == 0 {
-                Err(Either::Left(ConnectionError::ZeroWindowUpdateValue))
+                Err(Either::Left(Error::new(
+                    ConnectionError::ZeroWindowUpdateValue,
+                    self.service(),
+                )))
             } else {
                 let window = self
                     .0
                     .send_window
                     .get()
                     .inc(frm.size_increment())
-                    .map_err(|()| Either::Left(ConnectionError::WindowValueOverflow))?;
+                    .map_err(|()| {
+                        Either::Left(Error::new(
+                            ConnectionError::WindowValueOverflow,
+                            self.service(),
+                        ))
+                    })?;
                 self.0.send_window.set(window);
 
                 // wake up streams if needed
@@ -720,8 +762,9 @@ impl RecvHalfConnection {
             Ok(())
         } else if self.0.err_unknown_streams() {
             log::trace!("Unknown WINDOW_UPDATE {frm:?}");
-            Err(Either::Left(ConnectionError::UnknownStream(
-                "WINDOW_UPDATE",
+            Err(Either::Left(Error::new(
+                ConnectionError::UnknownStream("WINDOW_UPDATE"),
+                self.service(),
             )))
         } else {
             self.encode(frame::Reset::new(
@@ -732,11 +775,14 @@ impl RecvHalfConnection {
         }
     }
 
-    fn update_rst_count(&self) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
+    fn update_rst_count(&self) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
         let count = self.0.rst_count.get() + 1;
         let streams_count = self.0.streams_count.get();
         if streams_count >= 10 && count >= streams_count >> 1 {
-            Err(Either::Left(ConnectionError::StreamResetsLimit))
+            Err(Either::Left(Error::new(
+                ConnectionError::StreamResetsLimit,
+                self.service(),
+            )))
         } else {
             self.0.rst_count.set(count);
             Ok(())
@@ -746,13 +792,14 @@ impl RecvHalfConnection {
     pub(crate) fn recv_rst_stream(
         &self,
         frm: frame::Reset,
-    ) -> Result<(), Either<ConnectionError, StreamErrorInner>> {
+    ) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
         log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         let id = frm.stream_id();
         if id.is_zero() {
-            Err(Either::Left(ConnectionError::UnknownStream(
-                "RST_STREAM-zero",
+            Err(Either::Left(Error::new(
+                ConnectionError::UnknownStream("RST_STREAM-zero"),
+                self.service(),
             )))
         } else if let Some(stream) = self.query(id) {
             stream.recv_rst_stream(frm);
@@ -760,13 +807,16 @@ impl RecvHalfConnection {
 
             Err(Either::Right(StreamErrorInner::new(
                 stream,
-                StreamError::Reset(frm.reason()),
+                Error::new(StreamError::Reset(frm.reason()), self.service()),
             )))
         } else if self.0.local_pending_reset.remove(id) {
             self.update_rst_count()
         } else if self.0.err_unknown_streams() {
             self.update_rst_count()?;
-            Err(Either::Left(ConnectionError::UnknownStream("RST_STREAM")))
+            Err(Either::Left(Error::new(
+                ConnectionError::UnknownStream("RST_STREAM"),
+                self.service(),
+            )))
         } else {
             Ok(())
         }
@@ -788,9 +838,10 @@ impl RecvHalfConnection {
             data.slice(..std::cmp::min(data.len(), 20))
         );
 
-        self.0
-            .error
-            .set(Some(ConnectionError::GoAway(reason).into()));
+        self.0.error.set(Some(Error::new(
+            ConnectionError::GoAway(reason),
+            self.service(),
+        )));
         self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -801,13 +852,13 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn ping_timeout(&self) -> HashMap<StreamId, StreamRef> {
-        self.0
-            .error
-            .set(Some(ConnectionError::KeepaliveTimeout.into()));
+        let err: Error<OperationError> =
+            Error::new(ConnectionError::KeepaliveTimeout, self.service());
+        self.0.error.set(Some(err.clone()));
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(ConnectionError::KeepaliveTimeout.into());
+            stream.set_failed_stream(err.clone());
         }
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
@@ -816,11 +867,12 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn read_timeout(&self) -> HashMap<StreamId, StreamRef> {
-        self.0.error.set(Some(ConnectionError::ReadTimeout.into()));
+        let err: Error<OperationError> = Error::new(ConnectionError::ReadTimeout, self.service());
+        self.0.error.set(Some(err.clone()));
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(ConnectionError::ReadTimeout.into());
+            stream.set_failed_stream(err.clone());
         }
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
@@ -828,13 +880,14 @@ impl RecvHalfConnection {
         streams
     }
 
-    pub(crate) fn proto_error(&self, err: &ConnectionError) -> HashMap<StreamId, StreamRef> {
-        self.0.error.set(Some((*err).into()));
+    pub(crate) fn proto_error(&self, err: &Error<ConnectionError>) -> HashMap<StreamId, StreamRef> {
+        let err = err.clone().map(OperationError::from);
+        self.0.error.set(Some(err.clone()));
         self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in &mut streams.values() {
-            stream.set_failed_stream((*err).into());
+            stream.set_failed_stream(err.clone());
         }
         streams
     }
@@ -843,12 +896,15 @@ impl RecvHalfConnection {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err));
         } else {
-            self.0.error.set(Some(OperationError::Disconnected));
+            self.0.error.set(Some(Error::new(
+                OperationError::Disconnected,
+                self.service(),
+            )));
         }
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
-            stream.set_failed_stream(OperationError::Disconnected);
+            stream.set_failed_stream(Error::new(OperationError::Disconnected, self.service()));
         }
         streams
     }

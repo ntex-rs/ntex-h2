@@ -3,6 +3,7 @@ use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 use nanorand::Rng;
 use ntex_bytes::ByteString;
 use ntex_dispatcher::Dispatcher as IoDispatcher;
+use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::{IoBoxed, IoRef, OnDisconnect};
 use ntex_service::cfg::Cfg;
@@ -107,7 +108,7 @@ impl SimpleClient {
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<(SendStream, RecvStream), OperationError> {
+    ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
         let stream = self
             .0
             .con
@@ -129,7 +130,7 @@ impl SimpleClient {
     /// Check client readiness
     ///
     /// Client is ready when it is possible to start new stream
-    pub async fn ready(&self) -> Result<(), OperationError> {
+    pub async fn ready(&self) -> Result<(), Error<OperationError>> {
         self.0.con.ready().await
     }
 
@@ -259,7 +260,7 @@ impl Drop for ClientDisconnect {
 }
 
 impl Future for ClientDisconnect {
-    type Output = Result<(), OperationError>;
+    type Output = Result<(), Error<OperationError>>;
 
     #[inline]
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -271,7 +272,10 @@ impl Future for ClientDisconnect {
             && sleep.poll_elapsed(cx).is_ready()
         {
             this.client.0.con.close();
-            return Poll::Ready(Err(OperationError::Disconnected));
+            return Poll::Ready(Err(Error::new(
+                OperationError::Disconnected,
+                self.client.0.con.service(),
+            )));
         }
         Poll::Pending
     }

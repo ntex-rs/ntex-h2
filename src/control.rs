@@ -46,7 +46,7 @@ impl<E> Control<E> {
     }
 
     /// Create a new `Control` message for protocol level errors
-    pub(super) fn proto_error(err: error::ConnectionError) -> Self {
+    pub(super) fn proto_error(err: ntex_error::Error<error::ConnectionError>) -> Self {
         Control::Disconnect(Reason::ProtocolError(ConnectionError::new(err)))
     }
 
@@ -131,12 +131,12 @@ impl Terminated {
 /// Protocol level error
 #[derive(Debug)]
 pub struct ConnectionError {
-    err: error::ConnectionError,
+    err: ntex_error::Error<error::ConnectionError>,
     frm: frame::GoAway,
 }
 
 impl ConnectionError {
-    pub fn new(err: error::ConnectionError) -> Self {
+    pub fn new(err: ntex_error::Error<error::ConnectionError>) -> Self {
         Self {
             frm: err.to_goaway(),
             err,
@@ -145,7 +145,7 @@ impl ConnectionError {
 
     #[inline]
     /// Returns reference to a protocol error
-    pub fn get_ref(&self) -> &error::ConnectionError {
+    pub fn get_ref(&self) -> &ntex_error::Error<error::ConnectionError> {
         &self.err
     }
 

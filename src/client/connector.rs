@@ -4,7 +4,7 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
-use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};
@@ -86,7 +86,7 @@ where
     IoBoxed: From<T::Response>,
 {
     type Response = SimpleClient;
-    type Error = ClientError;
+    type Error = Error<ClientError>;
     type InitError = T::InitError;
     type Service = ConnectorService<A, T::Service>;
 
@@ -119,15 +119,20 @@ where
     IoBoxed: From<T::Response>,
 {
     type Response = SimpleClient;
-    type Error = ClientError;
+    type Error = Error<ClientError>;
 
     /// Connect to http2 server
-    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<SimpleClient, ClientError> {
+    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<SimpleClient, Self::Error> {
         let authority = ByteString::from(req.host());
 
         let fut = async {
-            Ok::<_, ClientError>(SimpleClient::with_params(
-                ctx.call(&self.svc, Connect::new(req)).await?.into(),
+            let io = ctx
+                .call(&self.svc, Connect::new(req))
+                .await
+                .map_err(|e| e.map(ClientError::from))?;
+
+            Ok::<_, Error<ClientError>>(SimpleClient::with_params(
+                io.into(),
                 self.config.clone(),
                 &self.scheme,
                 authority,
@@ -139,11 +144,13 @@ where
 
         timeout_checked(self.config.handshake_timeout, fut)
             .await
-            .map_err(|()| ClientError::HandshakeTimeout)
+            .map_err(|()| {
+                Error::from(ClientError::HandshakeTimeout).set_service(self.config.service())
+            })
             .and_then(|item| item)
     }
 
-    ntex_service::forward_ready!(svc);
-    ntex_service::forward_poll!(svc);
+    ntex_service::forward_ready!(svc, |e| e.map(ClientError::from));
+    ntex_service::forward_poll!(svc, |e| e.map(ClientError::from));
     ntex_service::forward_shutdown!(svc);
 }

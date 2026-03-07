@@ -1,6 +1,7 @@
 use std::{cell::Cell, cmp, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::Bytes;
+use ntex_error::Error;
 use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
 use ntex_util::task::LocalWaker;
 
@@ -138,7 +139,7 @@ pub(crate) struct StreamState {
     /// Connection config
     pub(crate) con: Connection,
     /// error state
-    error: Cell<Option<OperationError>>,
+    error: Cell<Option<Error<OperationError>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,7 +190,10 @@ impl StreamState {
         self.recv.set(HalfState::Closed(reason));
         self.send.set(HalfState::Closed(None));
         if let Some(reason) = reason {
-            self.error.set(Some(OperationError::LocalReset(reason)));
+            self.error.set(Some(Error::new(
+                OperationError::LocalReset(reason),
+                self.con.service(),
+            )));
         }
         self.review_state();
     }
@@ -197,11 +201,14 @@ impl StreamState {
     fn remote_reset_stream(&self, reason: Reason) {
         self.recv.set(HalfState::Closed(None));
         self.send.set(HalfState::Closed(Some(reason)));
-        self.error.set(Some(OperationError::RemoteReset(reason)));
+        self.error.set(Some(Error::new(
+            OperationError::RemoteReset(reason),
+            self.con.service(),
+        )));
         self.review_state();
     }
 
-    fn failed(&self, err: OperationError) {
+    fn failed(&self, err: Error<OperationError>) {
         if !self.recv.get().is_closed() {
             self.recv.set(HalfState::Closed(None));
         }
@@ -225,7 +232,7 @@ impl StreamState {
         self.flags.set(flags);
     }
 
-    fn check_error(&self) -> Result<(), OperationError> {
+    fn check_error(&self) -> Result<(), Error<OperationError>> {
         if let Some(err) = self.error.take() {
             self.error.set(Some(err.clone()));
             Err(err)
@@ -363,6 +370,10 @@ impl StreamRef {
         self.0.flags.get().contains(StreamFlags::FAILED)
     }
 
+    pub(crate) fn service(&self) -> &'static str {
+        self.0.con.service()
+    }
+
     pub(crate) fn send_state(&self) -> HalfState {
         self.0.send.get()
     }
@@ -436,11 +447,14 @@ impl StreamRef {
         self.0.remote_reset_stream(reason);
     }
 
-    pub(crate) fn set_failed_stream(&self, err: OperationError) {
+    pub(crate) fn set_failed_stream(&self, err: Error<OperationError>) {
         self.0.failed(err);
     }
 
-    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, StreamError> {
+    pub(crate) fn recv_headers(
+        &self,
+        hdrs: Headers,
+    ) -> Result<Option<Message>, Error<StreamError>> {
         log::trace!(
             "{}: processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.tag(),
@@ -467,7 +481,10 @@ impl StreamRef {
                         self.0.content_length.set(ContentLength::Remaining(v));
                     } else {
                         proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
-                        return Err(StreamError::InvalidContentLength);
+                        return Err(Error::new(
+                            StreamError::InvalidContentLength,
+                            self.service(),
+                        ));
                     }
                 }
                 Ok(Some(Message::new(pseudo, headers, eof, self)))
@@ -478,14 +495,14 @@ impl StreamRef {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::trailers(hdrs.into_fields(), self)))
                 } else {
-                    Err(StreamError::TrailersWithoutEos)
+                    Err(Error::new(StreamError::TrailersWithoutEos, self.service()))
                 }
             }
-            HalfState::Closed(_) => Err(StreamError::Closed),
+            HalfState::Closed(_) => Err(Error::new(StreamError::Closed, self.service())),
         }
     }
 
-    pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, StreamError> {
+    pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, Error<StreamError>> {
         let cap = Capacity::new(data.payload().len() as u32, &self.0);
         log::trace!(
             "{}: processing DATA frame for {:?}, len: {:?}",
@@ -505,15 +522,23 @@ impl StreamRef {
                             Some(val) => {
                                 self.0.content_length.set(ContentLength::Remaining(val));
                                 if eof && val != 0 {
-                                    return Err(StreamError::WrongPayloadLength);
+                                    return Err(Error::new(
+                                        StreamError::WrongPayloadLength,
+                                        self.service(),
+                                    ));
                                 }
                             }
-                            None => return Err(StreamError::WrongPayloadLength),
+                            None => {
+                                return Err(Error::new(
+                                    StreamError::WrongPayloadLength,
+                                    self.service(),
+                                ));
+                            }
                         }
                     }
                     ContentLength::Head => {
                         if !data.payload().is_empty() {
-                            return Err(StreamError::NonEmptyPayload);
+                            return Err(Error::new(StreamError::NonEmptyPayload, self.service()));
                         }
                     }
                     ContentLength::Omitted => (),
@@ -526,8 +551,11 @@ impl StreamRef {
                     Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
             }
-            HalfState::Idle => Err(StreamError::Idle("DATA framed received")),
-            HalfState::Closed(_) => Err(StreamError::Closed),
+            HalfState::Idle => Err(Error::new(
+                StreamError::Idle("DATA framed received"),
+                self.service(),
+            )),
+            HalfState::Closed(_) => Err(Error::new(StreamError::Closed, self.service())),
         }
     }
 
@@ -543,16 +571,19 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), StreamError> {
+    pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), Error<StreamError>> {
         if frm.size_increment() == 0 {
-            Err(StreamError::WindowZeroUpdateValue)
+            Err(Error::new(
+                StreamError::WindowZeroUpdateValue,
+                self.service(),
+            ))
         } else {
             let window = self
                 .0
                 .send_window
                 .get()
                 .inc(frm.size_increment())
-                .map_err(|()| StreamError::WindowOverflowed)?;
+                .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?;
             self.0.send_window.set(window);
 
             if window.window_size() > 0 {
@@ -562,11 +593,13 @@ impl StreamRef {
         }
     }
 
-    pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), StreamError> {
+    pub(crate) fn update_send_window(&self, upd: i32) -> Result<(), Error<StreamError>> {
         let orig = self.0.send_window.get();
         let window = match upd.cmp(&0) {
             cmp::Ordering::Less => orig.dec(upd.unsigned_abs()), // We must decrease the (remote) window
-            cmp::Ordering::Greater => orig.inc(upd).map_err(|()| StreamError::WindowOverflowed)?,
+            cmp::Ordering::Greater => orig
+                .inc(upd)
+                .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?,
             cmp::Ordering::Equal => return Ok(()),
         };
         log::trace!(
@@ -579,7 +612,10 @@ impl StreamRef {
         Ok(())
     }
 
-    pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, StreamError> {
+    pub(crate) fn update_recv_window(
+        &self,
+        upd: i32,
+    ) -> Result<Option<WindowSize>, Error<StreamError>> {
         let mut window = match upd.cmp(&0) {
             cmp::Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
             cmp::Ordering::Greater => self
@@ -587,7 +623,7 @@ impl StreamRef {
                 .recv_window
                 .get()
                 .inc(upd)
-                .map_err(|()| StreamError::WindowOverflowed)?,
+                .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?,
             cmp::Ordering::Equal => return Ok(None),
         };
         if let Some(val) = window.update(
@@ -609,7 +645,7 @@ impl StreamRef {
         status: StatusCode,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<(), OperationError> {
+    ) -> Result<(), Error<OperationError>> {
         self.0.check_error()?;
 
         match self.0.send.get() {
@@ -626,13 +662,19 @@ impl StreamRef {
                 self.0.con.encode(hdrs);
                 Ok(())
             }
-            HalfState::Payload => Err(OperationError::Payload),
-            HalfState::Closed(r) => Err(OperationError::Closed(r)),
+            HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),
+            HalfState::Closed(r) => {
+                Err(Error::new(OperationError::Closed(r), self.0.con.service()))
+            }
         }
     }
 
     /// Send payload
-    pub async fn send_payload(&self, mut res: Bytes, eof: bool) -> Result<(), OperationError> {
+    pub async fn send_payload(
+        &self,
+        mut res: Bytes,
+        eof: bool,
+    ) -> Result<(), Error<OperationError>> {
         match self.0.send.get() {
             HalfState::Payload => {
                 // check if stream is disconnected
@@ -706,8 +748,11 @@ impl StreamRef {
                     }
                 }
             }
-            HalfState::Idle => Err(OperationError::Idle),
-            HalfState::Closed(reason) => Err(OperationError::Closed(reason)),
+            HalfState::Idle => Err(Error::new(OperationError::Idle, self.0.con.service())),
+            HalfState::Closed(reason) => Err(Error::new(
+                OperationError::Closed(reason),
+                self.0.con.service(),
+            )),
         }
     }
 
@@ -729,12 +774,15 @@ impl StreamRef {
         )
     }
 
-    pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
+    pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
     /// Check for available send capacity
-    pub fn poll_send_capacity(&self, cx: &Context<'_>) -> Poll<Result<WindowSize, OperationError>> {
+    pub fn poll_send_capacity(
+        &self,
+        cx: &Context<'_>,
+    ) -> Poll<Result<WindowSize, Error<OperationError>>> {
         self.0.check_error()?;
         self.0.con.check_error()?;
 
@@ -750,7 +798,7 @@ impl StreamRef {
     }
 
     /// Check if send part of stream get reset
-    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), OperationError>> {
+    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
         if self.0.send.get().is_closed() {
             Poll::Ready(Ok(()))
         } else {

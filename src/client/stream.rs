@@ -2,6 +2,7 @@ use std::task::{Context, Poll};
 use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, rc::Rc};
 
 use ntex_bytes::Bytes;
+use ntex_error::Error;
 use ntex_http::HeaderMap;
 use ntex_service::{Service, ServiceCtx};
 use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
@@ -102,13 +103,13 @@ impl SendStream {
 
     #[inline]
     /// Wait for available capacity
-    pub async fn send_capacity(&self) -> Result<WindowSize, OperationError> {
+    pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         self.0.send_capacity().await
     }
 
     #[inline]
     /// Send payload
-    pub async fn send_payload(&self, res: Bytes, eof: bool) -> Result<(), OperationError> {
+    pub async fn send_payload(&self, res: Bytes, eof: bool) -> Result<(), Error<OperationError>> {
         self.0.send_payload(res, eof).await
     }
 
@@ -135,13 +136,16 @@ impl SendStream {
 
     #[inline]
     /// Check for available send capacity
-    pub fn poll_send_capacity(&self, cx: &Context<'_>) -> Poll<Result<WindowSize, OperationError>> {
+    pub fn poll_send_capacity(
+        &self,
+        cx: &Context<'_>,
+    ) -> Poll<Result<WindowSize, Error<OperationError>>> {
         self.0.poll_send_capacity(cx)
     }
 
     #[inline]
     /// Check if send part of stream get reset
-    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), OperationError>> {
+    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
         self.0.poll_send_reset(cx)
     }
 }
