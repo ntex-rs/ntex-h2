@@ -15,6 +15,8 @@ use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpd
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, consts, message::Message, window::Window};
 
+pub(crate) type EitherError = Either<Error<ConnectionError>, StreamErrorInner>;
+
 #[derive(Clone)]
 pub struct Connection(Rc<ConnectionState>);
 
@@ -482,8 +484,7 @@ impl RecvHalfConnection {
     pub(crate) fn recv_headers(
         &self,
         frm: Headers,
-    ) -> Result<Option<(StreamRef, Message)>, Either<Error<ConnectionError>, StreamErrorInner>>
-    {
+    ) -> Result<Option<(StreamRef, Message)>, EitherError> {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
 
@@ -604,8 +605,7 @@ impl RecvHalfConnection {
     pub(crate) fn recv_data(
         &self,
         frm: frame::Data,
-    ) -> Result<Option<(StreamRef, Message)>, Either<Error<ConnectionError>, StreamErrorInner>>
-    {
+    ) -> Result<Option<(StreamRef, Message)>, EitherError> {
         if let Some(stream) = self.query(frm.stream_id()) {
             match stream.recv_data(frm) {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),

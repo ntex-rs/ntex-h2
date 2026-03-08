@@ -72,7 +72,7 @@ impl Message {
     pub(crate) fn error(err: Error<StreamError>, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Eof(StreamEof::Error(err.clone())),
+            kind: MessageKind::Eof(StreamEof::Error(err)),
         }
     }
 

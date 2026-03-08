@@ -5,9 +5,9 @@ use ntex_error::Error;
 use ntex_service::{Pipeline, Service, ServiceCtx};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
-use crate::connection::{Connection, RecvHalfConnection};
+use crate::connection::{Connection, EitherError, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
-use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
+use crate::error::{ConnectionError, OperationError, StreamError};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
@@ -55,10 +55,7 @@ where
 
     async fn handle_message<'f>(
         &'f self,
-        result: Result<
-            Option<(StreamRef, Message)>,
-            Either<Error<ConnectionError>, StreamErrorInner>,
-        >,
+        result: Result<Option<(StreamRef, Message)>, EitherError>,
         ctx: ServiceCtx<'f, Self>,
     ) -> Result<Option<Frame>, ()> {
         match result {
