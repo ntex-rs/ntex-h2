@@ -101,6 +101,12 @@ impl SimpleClient {
     }
 
     #[inline]
+    /// Get io service
+    pub fn service(&self) -> &'static str {
+        self.0.con.service()
+    }
+
+    #[inline]
     /// Send request to the peer
     pub async fn send(
         &self,
