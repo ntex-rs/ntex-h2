@@ -1,4 +1,5 @@
 use ntex::service::{cfg::SharedCfg, fn_service};
+use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, server};
 use ntex_http::{HeaderMap, StatusCode, header};
 use ntex_util::time::{Millis, sleep};
@@ -49,7 +50,7 @@ async fn main() -> std::io::Result<()> {
                         log::trace!("Disconnect: {:?}", err);
                     }
                 }
-                Ok::<_, OperationError>(())
+                Ok::<_, Error<OperationError>>(())
             }))
             .control(|msg: Control<_>| async move {
                 log::trace!("Control message: {:?}", msg);

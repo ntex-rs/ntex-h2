@@ -1,4 +1,5 @@
 use ntex::service::{ServiceFactory, fn_service};
+use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, server};
 use ntex_http::{HeaderMap, StatusCode, header};
 use ntex_tls::openssl::SslAcceptor;
@@ -71,7 +72,7 @@ async fn main() -> std::io::Result<()> {
                                 log::trace!("Disconnect: {:?}", err);
                             }
                         }
-                        Ok::<_, OperationError>(())
+                        Ok::<_, Error<OperationError>>(())
                     }))
                     .control(|msg: Control<_>| async move {
                         println!("Control message: {:?}", msg);
