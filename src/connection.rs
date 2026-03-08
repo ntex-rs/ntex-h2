@@ -1094,15 +1094,13 @@ mod tests {
             .send(Method::GET, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
-        sleep(Millis(150)).await;
+        let msg = recv_stream.recv().await.unwrap();
+        assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
 
         let res = stream
             .send_payload(Bytes::from_static(b"hello"), false)
             .await;
         assert!(res.is_err());
-
-        let msg = recv_stream.recv().await.unwrap();
-        assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
 
         let con = &recv_stream.stream().0.con.0;
         assert!(con.streams.borrow().is_empty());
