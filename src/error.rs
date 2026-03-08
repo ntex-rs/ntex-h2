@@ -1,3 +1,5 @@
+use ntex_error::{Error, ErrorDiagnostic, ErrorType};
+
 pub use crate::codec::EncoderError;
 
 use crate::frame::{self, GoAway, Reason, StreamId};
@@ -87,19 +89,27 @@ impl ConnectionError {
     }
 }
 
+impl ErrorDiagnostic for ConnectionError {
+    type Kind = ErrorType;
+
+    fn kind(&self) -> ErrorType {
+        ErrorType::Service
+    }
+}
+
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("Stream error: {kind:?}")]
 pub(crate) struct StreamErrorInner {
-    kind: StreamError,
+    kind: Error<StreamError>,
     stream: StreamRef,
 }
 
 impl StreamErrorInner {
-    pub(crate) fn new(stream: StreamRef, kind: StreamError) -> Self {
+    pub(crate) fn new(stream: StreamRef, kind: Error<StreamError>) -> Self {
         Self { kind, stream }
     }
 
-    pub(crate) fn into_inner(self) -> (StreamRef, StreamError) {
+    pub(crate) fn into_inner(self) -> (StreamRef, Error<StreamError>) {
         (self.stream, self.kind)
     }
 }
@@ -140,6 +150,14 @@ impl StreamError {
             | StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
             StreamError::Reset(r) => *r,
         }
+    }
+}
+
+impl ErrorDiagnostic for StreamError {
+    type Kind = ErrorType;
+
+    fn kind(&self) -> ErrorType {
+        ErrorType::Service
     }
 }
 
@@ -185,4 +203,12 @@ pub enum OperationError {
     /// Disconnected
     #[error("Connection is closed")]
     Disconnected,
+}
+
+impl ErrorDiagnostic for OperationError {
+    type Kind = ErrorType;
+
+    fn kind(&self) -> ErrorType {
+        ErrorType::Service
+    }
 }

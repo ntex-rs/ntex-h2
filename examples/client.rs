@@ -17,7 +17,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     let pool = client::Client::builder(
         "127.0.0.1:5928",
-        ntex_tls::openssl::SslConnector::new(builder.build()),
+        ntex_tls::openssl::SslConnector2::new(builder.build()),
     )
     .scheme(Scheme::HTTPS)
     .build(SharedCfg::default())

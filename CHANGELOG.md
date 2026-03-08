@@ -1,5 +1,9 @@
 # Changes
 
+## [3.8.0] - 2026-03-07
+
+* Use ntex-error::Error
+
 ## [3.7.1] - 2026-02-16
 
 * ServiceConfig is not Clone

@@ -1,5 +1,9 @@
 //! Http2 client
-use std::rc::Rc;
+use std::io;
+
+use ntex_error::{ErrorDiagnostic, ErrorType};
+use ntex_net::connect::ConnectError;
+use ntex_util::channel::Canceled;
 
 mod connector;
 mod pool;
@@ -18,7 +22,7 @@ pub use self::stream::{RecvStream, SendStream};
 pub enum ClientError {
     /// Protocol error
     #[error("Protocol error: {0}")]
-    Protocol(Rc<ConnectionError>),
+    Protocol(ConnectionError),
     /// Operation error
     #[error("Operation error: {0}")]
     Operation(#[from] OperationError),
@@ -30,27 +34,21 @@ pub enum ClientError {
     HandshakeTimeout,
     /// Connect error
     #[error("Connect error: {0}")]
-    Connect(Rc<ntex_net::connect::ConnectError>),
+    Connect(#[from] ConnectError),
     /// Peer disconnected
     #[error("Peer disconnected err: {0}")]
-    Disconnected(#[from] std::io::Error),
+    Disconnected(#[from] io::Error),
 }
 
 impl From<ConnectionError> for ClientError {
     fn from(err: ConnectionError) -> Self {
-        Self::Protocol(Rc::new(err))
+        Self::Protocol(err)
     }
 }
 
-impl From<ntex_util::channel::Canceled> for ClientError {
-    fn from(err: ntex_util::channel::Canceled) -> Self {
-        Self::Disconnected(std::io::Error::other(err))
-    }
-}
-
-impl From<ntex_net::connect::ConnectError> for ClientError {
-    fn from(err: ntex_net::connect::ConnectError) -> Self {
-        Self::Connect(Rc::new(err))
+impl From<Canceled> for ClientError {
+    fn from(err: Canceled) -> Self {
+        Self::Disconnected(io::Error::other(err))
     }
 }
 
@@ -63,9 +61,17 @@ impl Clone for ClientError {
             Self::HandshakeTimeout => Self::HandshakeTimeout,
             Self::Connect(err) => Self::Connect(err.clone()),
             Self::Disconnected(err) => {
-                Self::Disconnected(std::io::Error::new(err.kind(), format!("{err}")))
+                Self::Disconnected(io::Error::new(err.kind(), format!("{err}")))
             }
         }
+    }
+}
+
+impl ErrorDiagnostic for ClientError {
+    type Kind = ErrorType;
+
+    fn kind(&self) -> Self::Kind {
+        ErrorType::Service
     }
 }
 
