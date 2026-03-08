@@ -61,5 +61,3 @@ env_logger = "0.11"
 
 [patch.crates-io]
 ntex-h2 = { path = "." }
-
-ntex = { git = "https://github.com/ntex-rs/ntex.git", branch = "h2-error" }
