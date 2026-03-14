@@ -1,7 +1,7 @@
 //! Http2 client
 use std::io;
 
-use ntex_error::{ErrorDiagnostic, ErrorType};
+use ntex_error::{ErrorDiagnostic, ResultType};
 use ntex_net::connect::ConnectError;
 use ntex_util::channel::Canceled;
 
@@ -68,10 +68,10 @@ impl Clone for ClientError {
 }
 
 impl ErrorDiagnostic for ClientError {
-    type Kind = ErrorType;
+    type Kind = ResultType;
 
     fn kind(&self) -> Self::Kind {
-        ErrorType::Service
+        ResultType::ServiceError
     }
 }
 
