@@ -1,4 +1,4 @@
-use ntex_error::{Error, ErrorDiagnostic, ErrorType};
+use ntex_error::{Error, ErrorDiagnostic, ResultType};
 
 pub use crate::codec::EncoderError;
 
@@ -90,10 +90,10 @@ impl ConnectionError {
 }
 
 impl ErrorDiagnostic for ConnectionError {
-    type Kind = ErrorType;
+    type Kind = ResultType;
 
-    fn kind(&self) -> ErrorType {
-        ErrorType::Service
+    fn kind(&self) -> ResultType {
+        ResultType::ServiceError
     }
 }
 
@@ -154,10 +154,10 @@ impl StreamError {
 }
 
 impl ErrorDiagnostic for StreamError {
-    type Kind = ErrorType;
+    type Kind = ResultType;
 
-    fn kind(&self) -> ErrorType {
-        ErrorType::Service
+    fn kind(&self) -> ResultType {
+        ResultType::ServiceError
     }
 }
 
@@ -206,9 +206,9 @@ pub enum OperationError {
 }
 
 impl ErrorDiagnostic for OperationError {
-    type Kind = ErrorType;
+    type Kind = ResultType;
 
-    fn kind(&self) -> ErrorType {
-        ErrorType::Service
+    fn kind(&self) -> ResultType {
+        ResultType::ServiceError
     }
 }

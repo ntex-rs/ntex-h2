@@ -2,6 +2,10 @@
 
 ## [3.8.1] - 2026-03-08
 
+* Update ntex-error
+
+## [3.8.1] - 2026-03-08
+
 * Service name for simple client
 
 ## [3.8.0] - 2026-03-07
