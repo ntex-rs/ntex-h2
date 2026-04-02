@@ -1,5 +1,9 @@
 # Changes
 
+## [3.9.0] - 2026-04-02
+
+* Update to ntex-error 2.0
+
 ## [3.8.1] - 2026-03-08
 
 * Update ntex-error
