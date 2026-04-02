@@ -21,11 +21,15 @@ pub use self::stream::{RecvStream, SendStream};
 #[derive(thiserror::Error, Debug)]
 pub enum ClientError {
     /// Protocol error
-    #[error("Protocol error: {0}")]
-    Protocol(ConnectionError),
+    #[error("Protocol error")]
+    Protocol(#[source] ConnectionError),
     /// Operation error
-    #[error("Operation error: {0}")]
-    Operation(#[from] OperationError),
+    #[error("Operation error")]
+    Operation(
+        #[from]
+        #[source]
+        OperationError,
+    ),
     /// Http/2 frame codec error
     #[error("Http/2 codec error: {0}")]
     Frame(#[from] frame::FrameError),
@@ -33,11 +37,19 @@ pub enum ClientError {
     #[error("Handshake timeout")]
     HandshakeTimeout,
     /// Connect error
-    #[error("Connect error: {0}")]
-    Connect(#[from] ConnectError),
+    #[error("Connect error")]
+    Connect(
+        #[from]
+        #[source]
+        ConnectError,
+    ),
     /// Peer disconnected
-    #[error("Peer disconnected err: {0}")]
-    Disconnected(#[from] io::Error),
+    #[error("Peer disconnected")]
+    Disconnected(
+        #[from]
+        #[source]
+        io::Error,
+    ),
 }
 
 impl From<ConnectionError> for ClientError {
@@ -68,10 +80,19 @@ impl Clone for ClientError {
 }
 
 impl ErrorDiagnostic for ClientError {
-    type Kind = ResultType;
-
-    fn kind(&self) -> Self::Kind {
+    fn typ(&self) -> ResultType {
         ResultType::ServiceError
+    }
+
+    fn signature(&self) -> &'static str {
+        match self {
+            ClientError::Protocol(err) => err.signature(),
+            ClientError::Operation(err) => err.signature(),
+            ClientError::Connect(err) => err.signature(),
+            ClientError::Disconnected(err) => err.signature(),
+            ClientError::Frame(_) => "h2-client-Frame",
+            ClientError::HandshakeTimeout => "h2-client-HandshakeTimeout",
+        }
     }
 }
 

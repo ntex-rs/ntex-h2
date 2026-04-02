@@ -90,10 +90,28 @@ impl ConnectionError {
 }
 
 impl ErrorDiagnostic for ConnectionError {
-    type Kind = ResultType;
-
-    fn kind(&self) -> ResultType {
+    fn typ(&self) -> ResultType {
         ResultType::ServiceError
+    }
+
+    fn signature(&self) -> &'static str {
+        match self {
+            ConnectionError::GoAway(_) => "h2-conn-GoAway",
+            ConnectionError::UnknownStream(_) => "h2-conn-UnknownStream",
+            ConnectionError::Encoder(_) => "h2-conn-Encoder",
+            ConnectionError::Decoder(_) => "h2-conn-Decoder",
+            ConnectionError::StreamClosed(..) => "h2-conn-StreamClosed",
+            ConnectionError::InvalidStreamId(_) => "h2-conn-InvalidStreamId",
+            ConnectionError::UnexpectedSettingsAck => "h2-conn-UnexpectedSettingsAck",
+            ConnectionError::MissingPseudo(_) => "h2-conn-MissingPseudo",
+            ConnectionError::UnexpectedPseudo(_) => "h2-conn-UnexpectedPseudo",
+            ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
+            ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
+            ConnectionError::ConcurrencyOverflow => "h2-conn-ConcurrencyOverflow",
+            ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
+            ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
+            ConnectionError::ReadTimeout => "h2-conn-ReadTimeout",
+        }
     }
 }
 
@@ -154,10 +172,22 @@ impl StreamError {
 }
 
 impl ErrorDiagnostic for StreamError {
-    type Kind = ResultType;
-
-    fn kind(&self) -> ResultType {
+    fn typ(&self) -> ResultType {
         ResultType::ServiceError
+    }
+
+    fn signature(&self) -> &'static str {
+        match self {
+            StreamError::Idle(_) => "h2-stream-Idle",
+            StreamError::Closed => "h2-stream-Closed",
+            StreamError::WindowOverflowed => "h2-stream-WindowOverflowed",
+            StreamError::WindowZeroUpdateValue => "h2-stream-WindowZeroUpdateValue",
+            StreamError::TrailersWithoutEos => "h2-stream-TrailersWithoutEos",
+            StreamError::InvalidContentLength => "h2-stream-InvalidContentLength",
+            StreamError::WrongPayloadLength => "h2-stream-WrongPayloadLength",
+            StreamError::NonEmptyPayload => "h2-stream-NonEmptyPayload",
+            StreamError::Reset(_) => "h2-stream-Reset",
+        }
     }
 }
 
@@ -206,9 +236,22 @@ pub enum OperationError {
 }
 
 impl ErrorDiagnostic for OperationError {
-    type Kind = ResultType;
-
-    fn kind(&self) -> ResultType {
+    fn typ(&self) -> ResultType {
         ResultType::ServiceError
+    }
+
+    fn signature(&self) -> &'static str {
+        match self {
+            OperationError::Stream(err) => err.signature(),
+            OperationError::Connection(err) => err.signature(),
+            OperationError::Idle => "h2-oper-Idle",
+            OperationError::Payload => "h2-oper-Payload",
+            OperationError::Closed(_) => "h2-oper-Closed",
+            OperationError::RemoteReset(_) => "h2-oper-RemoteReset",
+            OperationError::LocalReset(_) => "h2-oper-LocalReset",
+            OperationError::OverflowedStreamId => "h2-oper-OverflowedStreamId",
+            OperationError::Disconnecting => "h2-oper-Disconnecting",
+            OperationError::Disconnected => "h2-oper-Disconnected",
+        }
     }
 }
