@@ -95,24 +95,21 @@ impl Header {
 
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
-        match *self {
-            Header::Field {
-                ref name,
-                ref value,
-            } => len(name, value),
-            Header::Authority(ref v) => 32 + 10 + v.len(),
-            Header::Method(ref v) => 32 + 7 + v.as_ref().len(),
-            Header::Scheme(ref v) => 32 + 7 + v.len(),
-            Header::Path(ref v) => 32 + 5 + v.len(),
-            Header::Protocol(ref v) => 32 + 9 + v.len(),
+        match self {
+            Header::Field { name, value } => len(name, value),
+            Header::Authority(v) => 32 + 10 + v.len(),
+            Header::Method(v) => 32 + 7 + v.as_ref().len(),
+            Header::Scheme(v) => 32 + 7 + v.len(),
+            Header::Path(v) => 32 + 5 + v.len(),
+            Header::Protocol(v) => 32 + 9 + v.len(),
             Header::Status(_) => 32 + 7 + 3,
         }
     }
 
     /// Returns the header name
     pub fn name(&self) -> Name<'_> {
-        match *self {
-            Header::Field { ref name, .. } => Name::Field(name),
+        match self {
+            Header::Field { name, .. } => Name::Field(name),
             Header::Authority(..) => Name::Authority,
             Header::Method(..) => Name::Method,
             Header::Scheme(..) => Name::Scheme,
@@ -123,66 +120,43 @@ impl Header {
     }
 
     pub fn value_slice(&self) -> &[u8] {
-        match *self {
-            Header::Field { ref value, .. } => value.as_ref(),
-            Header::Authority(ref v)
-            | Header::Scheme(ref v)
-            | Header::Path(ref v)
-            | Header::Protocol(ref v) => v.as_bytes(),
-            Header::Method(ref v) => v.as_ref().as_ref(),
-            Header::Status(ref v) => v.as_str().as_ref(),
+        match self {
+            Header::Field { value, .. } => value.as_ref(),
+            Header::Authority(v) | Header::Scheme(v) | Header::Path(v) | Header::Protocol(v) => {
+                v.as_bytes()
+            }
+            Header::Method(v) => v.as_ref().as_ref(),
+            Header::Status(v) => v.as_str().as_ref(),
         }
     }
 
     pub fn value_eq(&self, other: &Header) -> bool {
-        match *self {
-            Header::Field { ref value, .. } => {
-                let a = value;
-                match *other {
-                    Header::Field { ref value, .. } => a == value,
-                    _ => false,
-                }
-            }
-            Header::Authority(ref a) => match *other {
-                Header::Authority(ref b) => a == b,
-                _ => false,
-            },
-            Header::Method(ref a) => match *other {
-                Header::Method(ref b) => a == b,
-                _ => false,
-            },
-            Header::Scheme(ref a) => match *other {
-                Header::Scheme(ref b) => a == b,
-                _ => false,
-            },
-            Header::Path(ref a) => match *other {
-                Header::Path(ref b) => a == b,
-                _ => false,
-            },
-            Header::Protocol(ref a) => match *other {
-                Header::Protocol(ref b) => a == b,
-                _ => false,
-            },
-            Header::Status(ref a) => match *other {
-                Header::Status(ref b) => a == b,
-                _ => false,
-            },
+        match (self, other) {
+            (Header::Field { value: a, .. }, Header::Field { value: b, .. }) => a == b,
+            (Header::Authority(a), Header::Authority(b)) => a == b,
+            (Header::Method(a), Header::Method(b)) => a == b,
+            (Header::Scheme(a), Header::Scheme(b)) => a == b,
+            (Header::Path(a), Header::Path(b)) => a == b,
+            (Header::Protocol(a), Header::Protocol(b)) => a == b,
+            (Header::Status(a), Header::Status(b)) => a == b,
+            _ => false,
         }
     }
 
     pub fn is_sensitive(&self) -> bool {
-        match *self {
-            Header::Field { ref value, .. } => value.is_sensitive(),
+        if let Header::Field { value, .. } = self {
+            value.is_sensitive()
+        } else {
             // TODO: Technically these other header values can be sensitive too.
-            _ => false,
+            false
         }
     }
 
     pub fn skip_value_index(&self) -> bool {
         use ntex_http::header;
 
-        match *self {
-            Header::Field { ref name, .. } => matches!(
+        match self {
+            Header::Field { name, .. } => matches!(
                 *name,
                 header::AGE
                     | header::AUTHORIZATION

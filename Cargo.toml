@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "3.9.0"
+version = "3.9.1"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -23,15 +23,15 @@ unstable = []
 features = []
 
 [dependencies]
-ntex-bytes = "1.5"
+ntex-bytes = "1.5.3"
 ntex-codec = "1.1"
 ntex-dispatcher = "3.1"
-ntex-error = "2.0"
+ntex-error = "2.1"
 ntex-http = "1"
-ntex-io = "3.9"
-ntex-net = "3.9"
+ntex-io = "3.9.2"
+ntex-net = "3.9.1"
 ntex-service = "4.6"
-ntex-util = "3.5"
+ntex-util = "3.5.1"
 ntex-server = "3.9"
 
 bitflags = "2"
