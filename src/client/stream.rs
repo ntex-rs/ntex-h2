@@ -252,6 +252,7 @@ impl Service<Message> for HandleService {
 
             if eof {
                 self.0.notify(id);
+                #[cfg(feature = "extra-trace")]
                 log::debug!("Stream {id:?} is closed, notify");
             }
         } else if !matches!(msg.kind(), MessageKind::Disconnect(_)) {

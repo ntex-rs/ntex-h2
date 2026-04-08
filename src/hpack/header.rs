@@ -58,36 +58,18 @@ impl Header {
         }
         if name[0] == b':' {
             match &name[1..] {
-                b"authority" => {
-                    let value = ByteString::try_from(value)?;
-                    Ok(Header::Authority(value))
-                }
-                b"method" => {
-                    let method = Method::from_bytes(&value)?;
-                    Ok(Header::Method(method))
-                }
-                b"scheme" => {
-                    let value = ByteString::try_from(value)?;
-                    Ok(Header::Scheme(value))
-                }
-                b"path" => {
-                    let value = ByteString::try_from(value)?;
-                    Ok(Header::Path(value))
-                }
-                b"protocol" => {
-                    let value = ByteString::try_from(value)?;
-                    Ok(Header::Protocol(value))
-                }
-                b"status" => {
-                    let status = StatusCode::from_bytes(&value)?;
-                    Ok(Header::Status(status))
-                }
+                b"authority" => Ok(Header::Authority(ByteString::try_from(value)?)),
+                b"method" => Ok(Header::Method(Method::from_bytes(&value)?)),
+                b"scheme" => Ok(Header::Scheme(ByteString::try_from(value)?)),
+                b"path" => Ok(Header::Path(ByteString::try_from(value)?)),
+                b"protocol" => Ok(Header::Protocol(ByteString::try_from(value)?)),
+                b"status" => Ok(Header::Status(StatusCode::from_bytes(&value)?)),
                 _ => Err(DecoderError::InvalidPseudoheader),
             }
         } else {
             // HTTP/2 requires lower case header names
             let name = HeaderName::from_lowercase(name)?;
-            let value = HeaderValue::from_bytes(&value)?;
+            let value = HeaderValue::from_shared(value)?;
 
             Ok(Header::Field { name, value })
         }
@@ -133,12 +115,11 @@ impl Header {
     pub fn value_eq(&self, other: &Header) -> bool {
         match (self, other) {
             (Header::Field { value: a, .. }, Header::Field { value: b, .. }) => a == b,
-            (Header::Authority(a), Header::Authority(b)) => a == b,
+            (Header::Authority(a), Header::Authority(b))
+            | (Header::Scheme(a), Header::Scheme(b))
+            | (Header::Path(a), Header::Path(b))
+            | (Header::Protocol(a), Header::Protocol(b)) => a == b,
             (Header::Method(a), Header::Method(b)) => a == b,
-            (Header::Scheme(a), Header::Scheme(b)) => a == b,
-            (Header::Path(a), Header::Path(b)) => a == b,
-            (Header::Protocol(a), Header::Protocol(b)) => a == b,
-            (Header::Status(a), Header::Status(b)) => a == b,
             _ => false,
         }
     }
@@ -179,8 +160,8 @@ impl From<Header> for Header<Option<HeaderName>> {
     fn from(src: Header) -> Self {
         match src {
             Header::Field { name, value } => Header::Field {
-                name: Some(name),
                 value,
+                name: Some(name),
             },
             Header::Authority(v) => Header::Authority(v),
             Header::Method(v) => Header::Method(v),
@@ -197,7 +178,7 @@ impl Name<'_> {
         match self {
             Name::Field(name) => Ok(Header::Field {
                 name: name.clone(),
-                value: HeaderValue::from_bytes(&value)?,
+                value: HeaderValue::from_shared(value)?,
             }),
             Name::Authority => Ok(Header::Authority(ByteString::try_from(value)?)),
             Name::Method => Ok(Header::Method(Method::from_bytes(&value)?)),

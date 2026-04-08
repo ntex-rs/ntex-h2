@@ -34,6 +34,7 @@ struct Inner {
 
 /// Notify one active waiter
 fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
+    #[cfg(feature = "extra-trace")]
     log::debug!("Notify waiter, total {:?}", waiters.len());
     while let Some(waiter) = waiters.pop_front() {
         if waiter.send(()).is_ok() {
@@ -93,10 +94,10 @@ impl Client {
 
             self.create_connection().await?;
         } else {
+            #[cfg(feature = "extra-trace")]
             log::debug!(
-                "New connection is being established {:?} or number of existing cons {} greater than allowed {}",
+                "New connection is being established {:?} or number of existing cons {num} greater than allowed {}",
                 cfg.connecting.get(),
-                num,
                 cfg.maxconn
             );
 
@@ -239,6 +240,7 @@ impl Client {
             let (tx, rx) = self.inner.config.pool.channel();
             self.waiters.borrow_mut().push_back(tx);
             let _ = rx.await;
+
             'inner: while let Some(tx) = self.waiters.borrow_mut().pop_front() {
                 if tx.send(()).is_ok() {
                     break 'inner;

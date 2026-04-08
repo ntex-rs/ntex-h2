@@ -45,12 +45,11 @@ impl Capacity {
     pub fn consume(&self, sz: u32) {
         let size = self.size.get();
         if let Some(sz) = size.checked_sub(sz) {
+            #[cfg(feature = "extra-trace")]
             log::trace!(
-                "{}: {:?} capacity consumed from {} to {}",
+                "{}: {:?} capacity consumed from {size} to {sz}",
                 self.stream.tag(),
                 self.stream.id,
-                size,
-                sz
             );
             self.size.set(sz);
             self.stream.consume_capacity(size - sz);
@@ -156,6 +155,7 @@ impl HalfState {
 }
 
 impl StreamState {
+    #[allow(dead_code)]
     fn tag(&self) -> &'static str {
         self.con.tag()
     }
@@ -165,11 +165,11 @@ impl StreamState {
     }
 
     fn state_send_close(&self, reason: Option<Reason>) {
+        #[cfg(feature = "extra-trace")]
         log::trace!(
-            "{}: {:?} send side is closed with reason {:?}",
+            "{}: {:?} send side is closed with reason {reason:?}",
             self.tag(),
-            self.id,
-            reason
+            self.id
         );
         self.send.set(HalfState::Closed(reason));
         self.send_cap.wake();
@@ -181,6 +181,7 @@ impl StreamState {
     }
 
     fn state_recv_close(&self, reason: Option<Reason>) {
+        #[cfg(feature = "extra-trace")]
         log::trace!("{}: {:?} receive side is closed", self.tag(), self.id);
         self.recv.set(HalfState::Closed(reason));
         self.review_state();
@@ -241,18 +242,19 @@ impl StreamState {
         }
     }
 
+    #[allow(clippy::used_underscore_binding)]
     fn review_state(&self) {
         if self.recv.get().is_closed() {
             self.send_reset.wake();
 
-            if let HalfState::Closed(reason) = self.send.get() {
+            if let HalfState::Closed(_reason) = self.send.get() {
                 // stream is closed
-                if let Some(reason) = reason {
+                #[cfg(feature = "extra-trace")]
+                if let Some(reason) = _reason {
                     log::trace!(
-                        "{}: {:?} is closed with remote reset {:?}, dropping stream",
+                        "{}: {:?} is closed with remote reset {reason:?}, dropping stream",
                         self.tag(),
-                        self.id,
-                        reason
+                        self.id
                     );
                 } else {
                     log::trace!(
@@ -272,11 +274,12 @@ impl StreamState {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
         self.recv_window.set(self.recv_window.get().dec(size));
+
+        #[cfg(feature = "extra-trace")]
         log::trace!(
-            "{}: {:?} capacity incresed from {} to {}",
+            "{}: {:?} capacity incresed from {cap} to {}",
             self.tag(),
             self.id,
-            cap,
             cap + size
         );
 
@@ -288,12 +291,12 @@ impl StreamState {
     fn consume_capacity(&self, size: u32) {
         let cap = self.recv_size.get();
         let size = cap - size;
+
+        #[cfg(feature = "extra-trace")]
         log::trace!(
-            "{}: {:?} capacity decresed from {} to {}",
+            "{}: {:?} capacity decresed from {cap} to {size}",
             self.tag(),
             self.id,
-            cap,
-            size
         );
 
         self.recv_size.set(size);
@@ -303,12 +306,12 @@ impl StreamState {
             self.con.config().window_sz,
             self.con.config().window_sz_threshold,
         ) {
+            #[cfg(feature = "extra-trace")]
             log::trace!(
-                "{}: {:?} capacity decresed below threshold {} increase by {} ({})",
+                "{}: {:?} capacity decresed below threshold {} increase by {val} ({})",
                 self.tag(),
                 self.id,
                 self.con.config().window_sz_threshold,
-                val,
                 self.con.config().window_sz,
             );
             self.recv_window.set(window);
@@ -426,10 +429,10 @@ impl StreamRef {
         } else {
             self.0.state_send_payload();
         }
+        #[cfg(feature = "extra-trace")]
         log::trace!(
-            "{}: send headers {:#?} eos: {:?}",
+            "{}: send headers {hdrs:#?} eos: {:?}",
             self.tag(),
-            hdrs,
             hdrs.is_end_stream()
         );
 
@@ -455,11 +458,11 @@ impl StreamRef {
         &self,
         hdrs: Headers,
     ) -> Result<Option<Message>, Error<StreamError>> {
+        #[cfg(feature = "extra-trace")]
         log::trace!(
-            "{}: processing HEADERS for {:?}:\n{:#?}\nrecv_state:{:?}, send_state: {:?}",
+            "{}: processing HEADERS for {:?}:\n{hdrs:#?}\nrecv_state:{:?}, send_state: {:?}",
             self.tag(),
             self.0.id,
-            hdrs,
             self.0.recv.get(),
             self.0.send.get(),
         );
@@ -504,6 +507,7 @@ impl StreamRef {
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, Error<StreamError>> {
         let cap = Capacity::new(data.payload().len() as u32, &self.0);
+        #[cfg(feature = "extra-trace")]
         log::trace!(
             "{}: processing DATA frame for {:?}, len: {:?}",
             self.tag(),
@@ -602,6 +606,7 @@ impl StreamRef {
                 .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?,
             cmp::Ordering::Equal => return Ok(()),
         };
+        #[cfg(feature = "extra-trace")]
         log::trace!(
             "{}: Updating send window size from {} to {}",
             self.tag(),
@@ -680,12 +685,12 @@ impl StreamRef {
                 // check if stream is disconnected
                 self.0.check_error()?;
 
+                #[cfg(feature = "extra-trace")]
                 log::trace!(
-                    "{}: {:?} sending {} bytes, eof: {}, send: {:?}",
+                    "{}: {:?} sending {} bytes, eof: {eof}, send: {:?}",
                     self.0.tag(),
                     self.0.id,
                     res.len(),
-                    eof,
                     self.0.send.get()
                 );
 
@@ -709,11 +714,11 @@ impl StreamRef {
                         let mut data = if size >= res.len() {
                             Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
                         } else {
+                            #[cfg(feature = "extra-trace")]
                             log::trace!(
-                                "{}: {:?} sending {} out of {} bytes",
+                                "{}: {:?} sending {size} out of {} bytes",
                                 self.0.tag(),
                                 self.0.id,
-                                size,
                                 res.len()
                             );
                             Data::new(self.0.id, res.split_to(size))
@@ -737,6 +742,7 @@ impl StreamRef {
                             return Ok(());
                         }
                     } else {
+                        #[cfg(feature = "extra-trace")]
                         log::trace!(
                             "{}: Not enough sending capacity for {:?} remaining {:?}",
                             self.0.tag(),

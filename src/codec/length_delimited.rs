@@ -102,16 +102,10 @@ impl LengthDelimitedCodec {
             src.advance_to(num_skip);
         }
 
-        // Ensure that the buffer has enough space to read the incoming
-        // payload
-        src.reserve(n);
-
         Ok(Some(n))
     }
 
     fn decode_data(n: usize, src: &mut BytesMut) -> Option<Bytes> {
-        // At this point, the buffer has already had the required capacity
-        // reserved. All there is to do is read.
         if src.len() < n {
             return None;
         }

@@ -11,7 +11,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ntex-h2 = "0.1"
+//! ntex-h2 = "3"
 //! ```
 //!
 //! # Layout
@@ -69,7 +69,6 @@
 //! [futures]: https://docs.rs/futures/
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
-// #![allow(clippy::let_underscore_future)]
 #![deny(
     rust_2018_idioms,
     warnings,
@@ -78,12 +77,11 @@
     clippy::pedantic
 )]
 #![allow(
-    clippy::clone_on_copy,
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,
-    clippy::must_use_candidate,
     clippy::missing_errors_doc,
+    clippy::must_use_candidate,
     clippy::too_many_lines
 )]
 
