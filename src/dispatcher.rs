@@ -63,9 +63,8 @@ where
             Ok(None) => Ok(None),
             Err(Either::Left(err)) => {
                 log::error!(
-                    "{}: Connection failed during message handling: {:?}",
-                    self.connection.tag(),
-                    err
+                    "{}: Connection failed during message handling: {err:?}",
+                    self.connection.tag()
                 );
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
@@ -78,10 +77,8 @@ where
                     stream.set_failed_stream(kind.clone().map(OperationError::from));
                 } else {
                     log::error!(
-                        "{}: Failed to handle frame, err: {:?} stream: {:?}",
+                        "{}: Failed to handle frame, err: {kind:?} stream: {stream:?}",
                         stream.tag(),
-                        kind,
-                        stream
                     );
                 }
 
@@ -235,6 +232,7 @@ where
                         .await
                 }
                 Frame::Ping(ping) => {
+                    #[cfg(feature = "extra-trace")]
                     log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
                     if ping.is_ack() {
                         self.connection.recv_pong(ping);

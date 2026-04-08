@@ -1,7 +1,7 @@
 use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
 
 use nanorand::Rng;
-use ntex_bytes::ByteString;
+use ntex_bytes::{BufMut, ByteString, BytesMut};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
@@ -288,13 +288,13 @@ impl Future for ClientDisconnect {
 }
 
 fn gen_id() -> ByteString {
-    const BASE: &str = "abcdefghijklmnopqrstuvwxyz234567";
+    const BASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
 
     let mut rng = nanorand::tls_rng();
-    let mut id = String::with_capacity(16);
+    let mut id = BytesMut::with_capacity(16);
     for _ in 0..16 {
         let idx = rng.generate_range::<usize, _>(..BASE.len());
-        id.push_str(&BASE[idx..=idx]);
+        id.put_u8(BASE[idx]);
     }
-    ByteString::from(id)
+    ByteString::try_from(id).unwrap()
 }
