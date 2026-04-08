@@ -391,6 +391,7 @@ impl Connection {
         let empty = {
             let mut streams = self.0.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
+                #[cfg(feature = "extra-trace")]
                 log::trace!(
                     "{}: Dropping stream {id:?} remote: {:?}",
                     self.tag(),
@@ -631,7 +632,10 @@ impl RecvHalfConnection {
         &self,
         settings: frame::Settings,
     ) -> Result<(), Either<Error<ConnectionError>, Vec<StreamErrorInner>>> {
-        log::trace!("processing incoming settings: {settings:#?}");
+        log::trace!(
+            "{}: Processing incoming settings: {settings:#?}",
+            self.tag()
+        );
 
         if settings.is_ack() {
             if self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
@@ -761,7 +765,7 @@ impl RecvHalfConnection {
         } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
             Ok(())
         } else if self.0.err_unknown_streams() {
-            log::trace!("Unknown WINDOW_UPDATE {frm:?}");
+            log::trace!("{}: Unknown WINDOW_UPDATE {frm:?}", self.tag());
             Err(Either::Left(Error::new(
                 ConnectionError::UnknownStream("WINDOW_UPDATE"),
                 self.service(),

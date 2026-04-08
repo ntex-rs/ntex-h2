@@ -3,7 +3,7 @@ use std::io::Cursor;
 use ntex_bytes::{ByteString, BytesMut};
 use ntex_http::{HeaderName, HeaderValue};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
-use rand::{Rng, SeedableRng, distr::slice::Choose as Slice, rngs::StdRng};
+use rand::{RngExt, SeedableRng, distr::slice::Choose as Slice, rngs::StdRng};
 
 use crate::hpack::{Decoder, Encoder, Header};
 
@@ -59,12 +59,12 @@ impl FuzzHpack {
         }
 
         // Actual test run headers
-        let num: usize = rng.random_range(40..500);
+        let num: usize = rand::random_range(40..500);
 
         let mut frames: Vec<HeaderFrame> = vec![];
         let mut added = 0;
 
-        let skew: i32 = rng.random_range(1..5);
+        let skew: i32 = rand::random_range(1..5);
 
         // Rough number of headers to add
         while added < num {
@@ -73,24 +73,24 @@ impl FuzzHpack {
                 headers: vec![],
             };
 
-            match rng.random_range(0..20) {
+            match rand::random_range(0..20) {
                 0 => {
                     // Two resizes
-                    let high = rng.random_range(128..MAX_CHUNK * 2);
-                    let low = rng.random_range(0..high);
+                    let high = rand::random_range(128..MAX_CHUNK * 2);
+                    let low = rand::random_range(0..high);
 
                     frame.resizes.extend(&[low, high]);
                 }
                 1..=3 => {
-                    frame.resizes.push(rng.random_range(128..MAX_CHUNK * 2));
+                    frame.resizes.push(rand::random_range(128..MAX_CHUNK * 2));
                 }
                 _ => {}
             }
 
             let mut is_name_required = true;
 
-            for _ in 0..rng.random_range(1..(num - added) + 1) {
-                let x: f64 = rng.random_range(0.0..1.0);
+            for _ in 0..rand::random_range(1..(num - added) + 1) {
+                let x: f64 = rand::random_range(0.0..1.0);
                 let x = x.powi(skew);
 
                 let i = (x * source.len() as f64) as usize;

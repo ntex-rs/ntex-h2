@@ -294,6 +294,7 @@ fn position(buf: &BytesMut) -> usize {
 }
 
 #[cfg(test)]
+#[allow(clippy::decimal_bitwise_operands)]
 mod test {
     use ntex_bytes::Bytes;
     use ntex_http::*;

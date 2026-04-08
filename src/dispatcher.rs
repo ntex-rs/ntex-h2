@@ -175,16 +175,14 @@ where
         self.connection.disconnect();
     }
 
+    #[allow(clippy::used_underscore_binding)]
     async fn call(
         &self,
         request: DispatchItem<Codec>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        log::debug!(
-            "{}: Handle h2 message: {:?}",
-            self.connection.tag(),
-            request
-        );
+        #[cfg(feature = "extra-trace")]
+        log::debug!("{}: Handle h2 message: {request:?}", self.connection.tag());
 
         match request {
             DispatchItem::Item(frame) => match frame {
@@ -255,11 +253,11 @@ where
                     );
                     control(Control::go_away(frm), &self.inner, ctx).await
                 }
-                Frame::Priority(prio) => {
+                Frame::Priority(_prio) => {
+                    #[cfg(feature = "extra-trace")]
                     log::debug!(
-                        "{}: PRIORITY frame is not supported: {:#?}",
+                        "{}: PRIORITY frame is not supported: {_prio:#?}",
                         self.connection.tag(),
-                        prio
                     );
                     Ok(None)
                 }
@@ -380,9 +378,8 @@ where
             }
             Err(err) => {
                 log::error!(
-                    "{}: control service has failed with {:?}",
-                    inner.connection.tag(),
-                    err
+                    "{}: control service has failed with {err:?}",
+                    inner.connection.tag()
                 );
                 // we cannot handle control service errors, close connection
                 inner.connection.encode(
