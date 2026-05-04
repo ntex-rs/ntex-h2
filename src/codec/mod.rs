@@ -1,6 +1,6 @@
 use std::{cell::RefCell, rc::Rc};
 
-use ntex_bytes::{Bytes, BytesMut};
+use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 mod error;
@@ -32,7 +32,6 @@ struct Partial {
 struct CodecInner {
     // encoder state
     encoder_hpack: hpack::Encoder,
-    encoder_last_data_frame: Option<frame::Data>,
     encoder_max_frame_size: frame::FrameSize, // Max frame size, this is specified by the peer
 
     // decoder state
@@ -63,7 +62,6 @@ impl Default for Codec {
             partial: None,
 
             encoder_hpack: hpack::Encoder::default(),
-            encoder_last_data_frame: None,
             encoder_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
         })))
     }
@@ -360,7 +358,7 @@ impl Encoder for Codec {
     type Item = Frame;
     type Error = error::EncoderError;
 
-    fn encode(&self, item: Frame, buf: &mut BytesMut) -> Result<(), error::EncoderError> {
+    fn encodev(&self, item: Frame, buf: &mut BytePages) -> Result<(), error::EncoderError> {
         // Ensure that we have enough capacity to accept the write.
         // log::debug!(frame = ?item, "send");
 
@@ -374,9 +372,6 @@ impl Encoder for Codec {
                     return Err(error::EncoderError::MaxSizeExceeded);
                 }
                 v.encode(buf);
-
-                // Save off the last frame...
-                inner.encoder_last_data_frame = Some(v);
             }
             Frame::Headers(v) => {
                 let max_size = inner.encoder_max_frame_size as usize;

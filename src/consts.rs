@@ -1,4 +1,4 @@
-use ntex_bytes::ByteString;
+use ntex_bytes::{ByteString, Bytes};
 use ntex_util::time::Seconds;
 
 // Constants
@@ -9,7 +9,8 @@ pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;
 pub(crate) const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 48 * 1024;
 pub(crate) const DEFAULT_MAX_COUNTINUATIONS: usize = 5;
 
-pub(crate) const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+pub(crate) const PREFACE_LEN: usize = 24;
+pub(crate) const PREFACE: Bytes = Bytes::from_static(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
 
 pub(crate) const HTTP_SCHEME: ByteString = ByteString::from_static("http");
 pub(crate) const HTTPS_SCHEME: ByteString = ByteString::from_static("https");

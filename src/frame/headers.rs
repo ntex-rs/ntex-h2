@@ -1,6 +1,6 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
-use ntex_bytes::{ByteString, Bytes, BytesMut};
+use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header, uri};
 
 use crate::hpack;
@@ -193,7 +193,7 @@ impl Headers {
         self.header_block.fields
     }
 
-    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytesMut, max_size: usize) {
+    pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytePages, max_size: usize) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
 
@@ -500,7 +500,13 @@ impl HeaderBlock {
         Ok(())
     }
 
-    fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytesMut, max_size: usize) {
+    fn encode(
+        self,
+        encoder: &mut hpack::Encoder,
+        head: Head,
+        dst: &mut BytePages,
+        max_size: usize,
+    ) {
         HDRS_BUF.with(|buf| {
             let mut b = buf.borrow_mut();
             let hpack = &mut b;
@@ -545,7 +551,7 @@ mod test {
     #[test]
     fn test_nameless_header_at_resume() {
         let mut encoder = Encoder::default();
-        let mut dst = BytesMut::new();
+        let mut dst = BytePages::default();
 
         let mut hdrs = HeaderMap::default();
         hdrs.append(
@@ -564,6 +570,8 @@ mod test {
         let mut headers = Headers::new(StreamId::CON, PseudoHeaders::default(), hdrs, false);
         headers.set_end_headers();
         headers.encode(&mut encoder, &mut dst, 8);
+
+        let dst = dst.take().unwrap().freeze();
         assert_eq!(48, dst.len());
         assert_eq!([0, 0, 8, 1, 0, 0, 0, 0, 0], &dst[0..9]);
         assert_eq!(&[0x40, 0x80 | 4], &dst[9..11]);

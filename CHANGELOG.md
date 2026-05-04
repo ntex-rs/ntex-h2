@@ -1,5 +1,9 @@
 # Changes
 
+## [3.10.0] - 2026-05-05
+
+* Use new codec api with BytePages support
+
 ## [3.9.1] - 2026-04-07
 
 * Cleanups

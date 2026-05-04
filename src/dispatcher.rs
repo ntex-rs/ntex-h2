@@ -178,7 +178,7 @@ where
         request: DispatchItem<Codec>,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        #[cfg(feature = "extra-trace")]
+        #[cfg(feature = "trace")]
         log::debug!("{}: Handle h2 message: {request:?}", self.connection.tag());
 
         match request {
@@ -232,7 +232,7 @@ where
                         .await
                 }
                 Frame::Ping(ping) => {
-                    #[cfg(feature = "extra-trace")]
+                    #[cfg(feature = "trace")]
                     log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
                     if ping.is_ack() {
                         self.connection.recv_pong(ping);
@@ -252,7 +252,7 @@ where
                     control(Control::go_away(frm), &self.inner, ctx).await
                 }
                 Frame::Priority(_prio) => {
-                    #[cfg(feature = "extra-trace")]
+                    #[cfg(feature = "trace")]
                     log::debug!(
                         "{}: PRIORITY frame is not supported: {_prio:#?}",
                         self.connection.tag(),

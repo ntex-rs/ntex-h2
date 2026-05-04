@@ -108,7 +108,7 @@ fn test_story(story: &Value) {
                 })
                 .collect();
 
-            encoder.encode(input.clone().into_iter(), &mut buf);
+            encoder.encode(input.clone(), &mut buf);
 
             let mut buf = buf.freeze();
             decoder

@@ -127,7 +127,7 @@ impl Table {
             // Right now, if this is true, the header name is always in the
             // static table. At some point in the future, this might not be true
             // and this logic will need to be updated.
-            debug_assert!(statik.is_some(), "skip_value_index requires a static name",);
+            debug_assert!(statik.is_some(), "skip_value_index requires a static name");
             return Index::new(statik, header);
         }
 
