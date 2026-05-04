@@ -1,4 +1,4 @@
-use ntex_bytes::{Bytes, BytesMut};
+use ntex_bytes::{BytePages, Bytes};
 
 use crate::frame::{Frame, FrameError, Head, Kind, StreamId, util};
 
@@ -118,11 +118,11 @@ impl Data {
     }
 
     /// Encode the data frame into the `dst` buffer.
-    pub(crate) fn encode(&self, dst: &mut BytesMut) {
+    pub(crate) fn encode(self, dst: &mut BytePages) {
         // Encode the frame head to the buffer
         self.head().encode(self.payload.len(), dst);
         // Encode payload
-        dst.extend_from_slice(&self.payload);
+        dst.append(self.payload);
     }
 }
 

@@ -1,6 +1,6 @@
 use std::fmt;
 
-use ntex_bytes::{BufMut, Bytes, BytesMut};
+use ntex_bytes::{BufMut, BytePages, Bytes};
 
 use crate::frame::{self, FrameError, Head, Kind, Reason, StreamId};
 
@@ -69,13 +69,13 @@ impl GoAway {
         })
     }
 
-    pub fn encode(&self, dst: &mut BytesMut) {
+    pub fn encode(self, dst: &mut BytePages) {
         log::trace!("encoding GO_AWAY; code={:?}", self.error_code);
         let head = Head::new(Kind::GoAway, 0, StreamId::zero());
         head.encode(8 + self.data.len(), dst);
         dst.put_u32(self.last_stream_id.into());
         dst.put_u32(self.error_code.into());
-        dst.extend_from_slice(&self.data);
+        dst.append(self.data);
     }
 }
 

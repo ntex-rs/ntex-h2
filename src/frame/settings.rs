@@ -1,6 +1,6 @@
 use std::fmt;
 
-use ntex_bytes::{BufMut, BytesMut};
+use ntex_bytes::{BufMut, BytePages};
 
 use crate::frame::{Frame, FrameError, FrameSize, Head, Kind, StreamId, util};
 
@@ -214,7 +214,7 @@ impl Settings {
         len
     }
 
-    pub fn encode(&self, dst: &mut BytesMut) {
+    pub fn encode(self, dst: &mut BytePages) {
         log::trace!("encoding SETTINGS; len={self:?}");
 
         // Create & encode an appropriate frame head
@@ -335,7 +335,7 @@ impl Setting {
         Setting::from_id(id, val)
     }
 
-    fn encode(self, dst: &mut BytesMut) {
+    fn encode(self, dst: &mut BytePages) {
         let (kind, val) = match self {
             Setting::HeaderTableSize(v) => (1, v),
             Setting::EnablePush(v) => (2, v),

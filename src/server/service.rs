@@ -253,28 +253,15 @@ where
 }
 
 async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
-    loop {
-        let ready = io.with_read_buf(|buf| {
-            if buf.len() >= consts::PREFACE.len() {
-                if buf[..consts::PREFACE.len()] == consts::PREFACE {
-                    buf.advance_to(consts::PREFACE.len());
-                    Ok(true)
-                } else {
-                    log::trace!("read_preface: invalid preface {buf:?}");
-                    Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
-                }
-            } else {
-                Ok(false)
-            }
-        })?;
+    let mut buf = [0; consts::PREFACE_LEN];
+    io.read(&mut buf).await?;
 
-        if ready {
-            log::debug!("Preface has been received");
-            return Ok::<_, ServerError<_>>(());
-        }
-        io.read_ready()
-            .await?
-            .ok_or(ServerError::Disconnected(None))?;
+    if buf == consts::PREFACE {
+        log::debug!("Preface has been received");
+        Ok(())
+    } else {
+        log::trace!("read_preface: invalid preface {buf:?}");
+        Err(ServerError::<()>::Frame(frame::FrameError::InvalidPreface))
     }
 }
 

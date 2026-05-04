@@ -82,7 +82,7 @@ impl Connection {
     ) -> Self {
         // send preface
         if !server {
-            let _ = io.with_write_buf(|buf| buf.extend_from_slice(&consts::PREFACE));
+            let _ = io.encode_bytes(consts::PREFACE);
         }
 
         // send setting to the peer
@@ -391,7 +391,7 @@ impl Connection {
         let empty = {
             let mut streams = self.0.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
-                #[cfg(feature = "extra-trace")]
+                #[cfg(feature = "trace")]
                 log::trace!(
                     "{}: Dropping stream {id:?} remote: {:?}",
                     self.tag(),
