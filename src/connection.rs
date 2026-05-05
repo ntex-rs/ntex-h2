@@ -1,7 +1,7 @@
-use std::{cell::Cell, cell::RefCell, fmt, mem, rc::Rc};
+use std::{cell::Cell, cell::RefCell, fmt, io, mem, rc::Rc};
 use std::{collections::VecDeque, time::Instant};
 
-use ntex_bytes::{ByteString, Bytes};
+use ntex_bytes::{BytePages, ByteString, Bytes};
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
@@ -224,6 +224,13 @@ impl Connection {
         frame::Frame: From<T>,
     {
         let _ = self.0.io.encode(item.into(), &self.0.codec);
+    }
+
+    pub(crate) fn encode_data_frame<F, R>(&self, f: F) -> io::Result<R>
+    where
+        F: FnOnce(&mut BytePages) -> R,
+    {
+        self.0.io.with_write_buf(f)
     }
 
     pub(crate) fn check_error(&self) -> Result<(), Error<OperationError>> {

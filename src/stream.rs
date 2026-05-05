@@ -1,13 +1,13 @@
-use std::{cell::Cell, cmp, fmt, future::poll_fn, mem, ops, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, cmp, fmt, future::poll_fn, ops, rc::Rc, task::Context, task::Poll};
 
-use ntex_bytes::Bytes;
-use ntex_error::Error;
+use ntex_bytes::{BytePages, Bytes};
+use ntex_error::{Error, ErrorMapping};
 use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
-use ntex_util::task::LocalWaker;
+use ntex_util::{future::Either, task::LocalWaker};
 
 use crate::error::{OperationError, StreamError};
 use crate::frame::{
-    Data, Headers, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
+    Data, Head, Headers, Kind, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
 use crate::{connection::Connection, frame, message::Message, window::Window};
 
@@ -678,11 +678,20 @@ impl StreamRef {
     }
 
     /// Send payload
-    pub async fn send_payload(
-        &self,
-        mut res: Bytes,
-        eof: bool,
-    ) -> Result<(), Error<OperationError>> {
+    pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    where
+        Bytes: From<D>,
+    {
+        self.send_pages(Bytes::from(data), eof).await
+    }
+
+    /// Send payload
+    pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    where
+        StreamData: From<D>,
+    {
+        let mut data = StreamData::from(data);
+
         match self.0.send.get() {
             HalfState::Payload => {
                 // check if stream is disconnected
@@ -698,7 +707,7 @@ impl StreamRef {
                 );
 
                 // eof and empty data
-                if eof && res.is_empty() {
+                if eof && data.is_empty() {
                     let mut data = Data::new(self.0.id, Bytes::new());
                     data.set_end_stream();
                     self.0.state_send_close(None);
@@ -713,21 +722,19 @@ impl StreamRef {
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
                         let size =
-                            cmp::min(win, cmp::min(res.len(), self.0.con.remote_frame_size()));
-                        let mut data = if size >= res.len() {
-                            Data::new(self.0.id, mem::replace(&mut res, Bytes::new()))
-                        } else {
-                            #[cfg(feature = "trace")]
-                            log::trace!(
-                                "{}: {:?} sending {size} out of {} bytes",
-                                self.0.tag(),
-                                self.0.id,
-                                res.len()
-                            );
-                            Data::new(self.0.id, res.split_to(size))
-                        };
-                        if eof && res.is_empty() {
-                            data.set_end_stream();
+                            cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
+
+                        // write to io buffer
+                        let empty = self
+                            .0
+                            .con
+                            .encode_data_frame(|buf| {
+                                data.encode(self.0.tag(), self.0.id, size, eof, buf)
+                            })
+                            .map_err(|_| OperationError::Disconnected)
+                            .into_error()?;
+
+                        if eof && empty {
                             self.0.state_send_close(None);
                         }
 
@@ -739,9 +746,7 @@ impl StreamRef {
                         // update connection send window
                         self.0.con.consume_send_window(size as u32);
 
-                        // write to io buffer
-                        self.0.con.encode(data);
-                        if res.is_empty() {
+                        if empty {
                             return Ok(());
                         }
                     } else {
@@ -750,7 +755,7 @@ impl StreamRef {
                             "{}: Not enough sending capacity for {:?} remaining {:?}",
                             self.0.tag(),
                             self.0.id,
-                            res.len()
+                            data.len()
                         );
                         // wait for available send window
                         self.send_capacity().await?;
@@ -882,5 +887,80 @@ pub(super) fn parse_u64(src: &[u8]) -> Option<u64> {
         }
 
         Some(ret)
+    }
+}
+
+#[derive(Debug)]
+pub struct StreamData(Either<Bytes, BytePages>);
+
+impl From<Bytes> for StreamData {
+    fn from(bytes: Bytes) -> Self {
+        Self(Either::Left(bytes))
+    }
+}
+
+impl From<BytePages> for StreamData {
+    fn from(bytes: BytePages) -> Self {
+        Self(Either::Right(bytes))
+    }
+}
+
+impl StreamData {
+    fn len(&self) -> usize {
+        match &self.0 {
+            Either::Left(b) => b.len(),
+            Either::Right(b) => b.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match &self.0 {
+            Either::Left(b) => b.is_empty(),
+            Either::Right(b) => b.is_empty(),
+        }
+    }
+
+    fn encode(
+        &mut self,
+        _tag: &'static str,
+        id: StreamId,
+        mut size: usize,
+        eof: bool,
+        dst: &mut BytePages,
+    ) -> bool {
+        #[cfg(feature = "trace")]
+        log::trace!("{_tag}: {id:?} sending {size} out of {} bytes", self.len());
+
+        if size >= self.len() {
+            Head::new(Kind::Data, if eof { 0x1 } else { 0 }, id).encode(size, dst);
+            match &mut self.0 {
+                Either::Left(b) => {
+                    dst.append(b.clone());
+                    *b = Bytes::new();
+                }
+                Either::Right(pages) => pages.move_to(dst),
+            }
+            true
+        } else {
+            Head::new(Kind::Data, 0, id).encode(size, dst);
+
+            match &mut self.0 {
+                Either::Left(b) => dst.append(b.split_to(size)),
+                Either::Right(pages) => {
+                    while let Some(mut page) = pages.take() {
+                        let len = cmp::min(size, page.len());
+                        size -= len;
+                        if page.len() == len {
+                            dst.append(page);
+                        } else {
+                            dst.append(page.split_to(len));
+                            pages.prepend(page);
+                            break;
+                        }
+                    }
+                }
+            }
+            false
+        }
     }
 }

@@ -36,7 +36,7 @@ async fn main() -> std::io::Result<()> {
                         if eof {
                             sleep(Millis(150)).await;
                             log::trace!("Sending payload for {:?}", stream.id(),);
-                            stream.send_payload("hello world".into(), true).await?;
+                            stream.send_payload("hello world", true).await?;
                         }
                     }
                     MessageKind::Data(data, _cap) => {
@@ -44,7 +44,7 @@ async fn main() -> std::io::Result<()> {
                     }
                     MessageKind::Eof(data) => {
                         log::trace!("Got eof: {:?}", data);
-                        stream.send_payload("hello world".into(), true).await?;
+                        stream.send_payload("hello world", true).await?;
                     }
                     MessageKind::Disconnect(err) => {
                         log::trace!("Disconnect: {:?}", err);

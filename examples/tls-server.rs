@@ -53,7 +53,7 @@ async fn main() -> std::io::Result<()> {
                                     header::HeaderValue::try_from("text/plain").unwrap(),
                                 );
                                 stream.send_response(StatusCode::OK, hdrs, false)?;
-                                stream.send_payload("hello world".into(), false).await?;
+                                stream.send_payload("hello world", false).await?;
 
                                 let mut hdrs = HeaderMap::default();
                                 hdrs.insert(
