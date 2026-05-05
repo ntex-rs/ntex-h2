@@ -1,5 +1,9 @@
 # Changes
 
+## [3.11.1] - 2026-05-05
+
+* Add SendStream::send_pages() method
+
 ## [3.11.0] - 2026-05-05
 
 * Add StreamRef::send_pages() method

@@ -276,7 +276,7 @@ async fn test_max_concurrent_streams_reset() {
     });
     sleep(Millis(50)).await;
 
-    stream.send_payload("chunk".into(), false).await.unwrap();
+    stream.send_payload("chunk", false).await.unwrap();
     sleep(Millis(25)).await;
     stream.reset(Reason::NO_ERROR);
     let _ = rx.await;

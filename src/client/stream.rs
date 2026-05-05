@@ -10,7 +10,7 @@ use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
 use crate::error::OperationError;
 use crate::frame::{Reason, StreamId, WindowSize};
 use crate::message::{Message, MessageKind};
-use crate::{Stream, StreamRef};
+use crate::{Stream, StreamData, StreamRef};
 
 #[derive(Clone, Default)]
 pub(super) struct InflightStorage(Rc<InflightStorageInner>);
@@ -109,8 +109,20 @@ impl SendStream {
 
     #[inline]
     /// Send payload
-    pub async fn send_payload(&self, res: Bytes, eof: bool) -> Result<(), Error<OperationError>> {
-        self.0.send_payload(res, eof).await
+    pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    where
+        Bytes: From<D>,
+    {
+        self.send_pages(Bytes::from(data), eof).await
+    }
+
+    #[inline]
+    /// Send payload
+    pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    where
+        StreamData: From<D>,
+    {
+        self.0.send_pages(data, eof).await
     }
 
     #[inline]
