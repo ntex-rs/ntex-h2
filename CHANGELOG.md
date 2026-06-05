@@ -1,5 +1,9 @@
 # Changes
 
+## [3.12.0] - 2026-06-06
+
+* Add "max headers" check
+
 ## [3.11.1] - 2026-05-05
 
 * Add SendStream::send_pages() method

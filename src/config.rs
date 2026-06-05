@@ -29,6 +29,8 @@ pub struct ServiceConfig {
     pub(crate) remote_max_concurrent_streams: Option<u32>,
     /// Limit number of continuation frames for headers
     pub(crate) max_header_continuations: usize,
+    /// Maximum number of headers
+    pub(crate) max_headers: usize,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
@@ -79,6 +81,7 @@ impl ServiceConfig {
             reset_max: consts::DEFAULT_RESET_STREAM_MAX,
             reset_duration: consts::DEFAULT_RESET_STREAM_SECS.into(),
             remote_max_concurrent_streams: Some(256),
+            max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
@@ -139,6 +142,21 @@ impl ServiceConfig {
     /// above.
     pub fn set_max_frame_size(mut self, max: u32) -> Self {
         self.settings.set_max_frame_size(max);
+        self
+    }
+
+    #[must_use]
+    /// Set the maximum number of headers.
+    ///
+    /// When a request is received, the parser will reserve a buffer
+    /// to store headers for optimal performance.
+    ///
+    /// If server receives more headers than the buffer size, it responds
+    /// to the client with “431 Request Header Fields Too Large”.
+    ///
+    /// Default is set to 96
+    pub fn set_max_headers(mut self, val: usize) -> Self {
+        self.max_headers = val;
         self
     }
 

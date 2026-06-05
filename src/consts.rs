@@ -3,6 +3,7 @@ use ntex_util::time::Seconds;
 
 // Constants
 pub(crate) const MAX_WINDOW_SIZE: i32 = i32::MAX;
+pub(crate) const DEFAULT_MAX_HEADERS: usize = 96;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
 pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;
