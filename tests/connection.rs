@@ -5,9 +5,8 @@ use ntex::http::{self, HeaderMap, HttpService, Method, Response, test, uri::Sche
 use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::{
-    Codec, ServiceConfig, client, client::Client, client::SimpleClient, frame, frame::Reason,
-};
+use ntex_h2::client::{self, Client, SimpleClient};
+use ntex_h2::{Codec, MessageKind, OperationError, ServiceConfig, frame, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -478,7 +477,7 @@ async fn test_goaway_on_reset2() {
 async fn test_ping_timeout_on_idle() {
     let srv = test::server_with_config(
         async move || {
-            HttpService::h2(|mut req: ntex::http::Request| async move {
+            HttpService::h2(|mut req: http::Request| async move {
                 let mut pl = req.take_payload();
                 pl.recv().await;
                 Ok::<_, io::Error>(Response::Ok().body("test body"))
@@ -513,4 +512,50 @@ async fn test_ping_timeout_on_idle() {
 
     sleep(Millis(1000)).await;
     assert!(io.is_closed());
+}
+
+#[ntex::test]
+async fn test_max_headers() {
+    let srv = test::server_with_config(
+        async move || {
+            HttpService::h2(|req: http::Request| async move {
+                println!("000000000 {req:?}");
+                Ok::<_, io::Error>(Response::Ok().body("test body"))
+            })
+            .openssl(ssl_acceptor())
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new().set_max_headers(5)),
+    )
+    .await;
+
+    let addr = srv.addr();
+    let client = Client::builder(
+        "localhost",
+        fn_service(move |_| async move { Ok(connect(addr).await) }),
+    )
+    .scheme(Scheme::HTTPS)
+    .build(SharedCfg::default())
+    .await
+    .unwrap();
+    assert!(client.is_ready());
+
+    let mut hdrs = HeaderMap::new();
+    for n in ["h1", "h2", "h3", "h4", "h5", "h6"] {
+        hdrs.append(n.try_into().unwrap(), "123".try_into().unwrap());
+    }
+
+    let (_, rstream) = client
+        .send(Method::GET, "/".into(), hdrs, true)
+        .await
+        .unwrap();
+
+    let r = rstream.recv().await.unwrap();
+    let MessageKind::Disconnect(err) = r.kind else {
+        panic!()
+    };
+    assert_eq!(
+        err,
+        OperationError::Connection(ntex_h2::ConnectionError::GoAway(Reason::PROTOCOL_ERROR))
+    );
 }

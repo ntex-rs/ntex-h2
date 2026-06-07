@@ -80,7 +80,7 @@ impl ServiceConfig {
             settings,
             reset_max: consts::DEFAULT_RESET_STREAM_MAX,
             reset_duration: consts::DEFAULT_RESET_STREAM_SECS.into(),
-            remote_max_concurrent_streams: Some(256),
+            remote_max_concurrent_streams: Some(consts::DEFAULT_MAX_CONCURRENT_STREAMS),
             max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             handshake_timeout: Seconds(5),
@@ -204,7 +204,7 @@ impl ServiceConfig {
     /// setting.
     ///
     /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `h2` library will immediately reset
+    /// a protocol level error. Instead, the `ntex-h2` library will immediately reset
     /// the stream.
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.

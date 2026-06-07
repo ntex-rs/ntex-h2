@@ -192,7 +192,7 @@ impl ErrorDiagnostic for StreamError {
 }
 
 /// Operation errors
-#[derive(Debug, Clone, thiserror::Error)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationError {
     #[error("{0:?}")]
     Stream(#[from] StreamError),

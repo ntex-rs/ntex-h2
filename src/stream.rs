@@ -702,7 +702,7 @@ impl StreamRef {
                     "{}: {:?} sending {} bytes, eof: {eof}, send: {:?}",
                     self.0.tag(),
                     self.0.id,
-                    res.len(),
+                    data.len(),
                     self.0.send.get()
                 );
 
