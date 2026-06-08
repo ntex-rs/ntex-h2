@@ -116,7 +116,7 @@ pub enum FrameError {
 
     /// Headers frame contains too many headers
     #[error("Headers frame contains too many headers")]
-    TooManyHeaders,
+    TooManyHeaders(StreamId),
 
     /// An invalid setting value was provided
     #[error("An invalid setting value was provided")]

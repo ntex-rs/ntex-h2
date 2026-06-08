@@ -155,7 +155,8 @@ impl Headers {
         decoder: &mut hpack::Decoder,
         max_headers: usize,
     ) -> Result<(), FrameError> {
-        self.header_block.load(src, decoder, max_headers)
+        self.header_block
+            .load(self.stream_id, src, decoder, max_headers)
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -421,6 +422,7 @@ thread_local! {
 impl HeaderBlock {
     fn load(
         &mut self,
+        id: StreamId,
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
         max_headers: usize,
@@ -473,7 +475,6 @@ impl HeaderBlock {
                         self.fields.append(name, value);
                         if self.fields.len() > max_headers {
                             too_many_headers = true;
-                            return;
                         }
                     }
                 }
@@ -506,7 +507,7 @@ impl HeaderBlock {
             Err(FrameError::MalformedMessage)
         } else if too_many_headers {
             log::trace!("too many headers");
-            Err(FrameError::TooManyHeaders)
+            Err(FrameError::TooManyHeaders(id))
         } else {
             Ok(())
         }

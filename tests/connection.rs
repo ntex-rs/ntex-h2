@@ -6,7 +6,7 @@ use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
 use ntex_h2::client::{self, Client, SimpleClient};
-use ntex_h2::{Codec, MessageKind, OperationError, ServiceConfig, frame, frame::Reason};
+use ntex_h2::{Codec, MessageKind, ServiceConfig, frame, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
     // load ssl keys
@@ -518,8 +518,7 @@ async fn test_ping_timeout_on_idle() {
 async fn test_max_headers() {
     let srv = test::server_with_config(
         async move || {
-            HttpService::h2(|req: http::Request| async move {
-                println!("000000000 {req:?}");
+            HttpService::h2(|_: http::Request| async move {
                 Ok::<_, io::Error>(Response::Ok().body("test body"))
             })
             .openssl(ssl_acceptor())
@@ -551,11 +550,11 @@ async fn test_max_headers() {
         .unwrap();
 
     let r = rstream.recv().await.unwrap();
-    let MessageKind::Disconnect(err) = r.kind else {
+    let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = r.kind else {
         panic!()
     };
     assert_eq!(
-        err,
-        OperationError::Connection(ntex_h2::ConnectionError::GoAway(Reason::PROTOCOL_ERROR))
+        err.into_error(),
+        ntex_h2::StreamError::Reset(frame::Reason::REFUSED_STREAM)
     );
 }

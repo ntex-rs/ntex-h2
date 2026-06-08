@@ -68,7 +68,7 @@ impl Clone for ClientError {
     fn clone(&self) -> Self {
         match self {
             Self::Protocol(err) => Self::Protocol(*err),
-            Self::Operation(err) => Self::Operation(err.clone()),
+            Self::Operation(err) => Self::Operation(*err),
             Self::Frame(err) => Self::Frame(*err),
             Self::HandshakeTimeout => Self::HandshakeTimeout,
             Self::Connect(err) => Self::Connect(err.clone()),

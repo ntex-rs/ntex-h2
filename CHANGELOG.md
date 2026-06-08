@@ -1,8 +1,8 @@
 # Changes
 
-## [3.12.0] - 2026-06-06
+## [3.12.0] - 2026-06-08
 
-* Add "max headers" check
+* Add "max headers" check, default is 96 headers
 
 ## [3.11.1] - 2026-05-05
 

@@ -151,8 +151,8 @@ impl ServiceConfig {
     /// When a request is received, the parser will reserve a buffer
     /// to store headers for optimal performance.
     ///
-    /// If server receives more headers than the buffer size, it responds
-    /// to the client with “431 Request Header Fields Too Large”.
+    /// If server receives more headers than the buffer size, it resets
+    /// stream with `REFUSED_STREAM` reason.
     ///
     /// Default is set to 96
     pub fn set_max_headers(mut self, val: usize) -> Self {
