@@ -10,6 +10,7 @@ pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
 pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;
 pub(crate) const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 48 * 1024;
 pub(crate) const DEFAULT_MAX_COUNTINUATIONS: usize = 5;
+pub(crate) const DEFAULT_CAPACITY_TIMEOUT: Seconds = Seconds(3);
 
 pub(crate) const PREFACE_LEN: usize = 24;
 pub(crate) const PREFACE: Bytes = Bytes::from_static(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");

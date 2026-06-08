@@ -31,6 +31,8 @@ pub struct ServiceConfig {
     pub(crate) max_header_continuations: usize,
     /// Maximum number of headers
     pub(crate) max_headers: usize,
+    /// Capacity availability timeout
+    pub(crate) capacity_timeout: Option<Seconds>,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
@@ -83,6 +85,7 @@ impl ServiceConfig {
             remote_max_concurrent_streams: Some(consts::DEFAULT_MAX_CONCURRENT_STREAMS),
             max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
+            capacity_timeout: Some(consts::DEFAULT_CAPACITY_TIMEOUT),
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
             config: CfgContext::default(),
@@ -297,6 +300,19 @@ impl ServiceConfig {
     /// By default ping time-out is set to 60 seconds.
     pub fn set_ping_timeout(mut self, timeout: Seconds) -> Self {
         self.ping_timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    /// Set capacity availability timeout.
+    ///
+    /// By default time-out is set to 3 seconds.
+    pub fn set_capacity_timeout(mut self, timeout: Seconds) -> Self {
+        if timeout.is_zero() {
+            self.capacity_timeout = None;
+        } else {
+            self.capacity_timeout = Some(timeout);
+        }
         self
     }
 }

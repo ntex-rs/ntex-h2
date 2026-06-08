@@ -22,6 +22,10 @@ impl Window {
         Window { window_size: sz }
     }
 
+    pub(super) const fn available(self) -> bool {
+        self.window_size > 0
+    }
+
     #[allow(clippy::cast_sign_loss)]
     /// Returns the window size as known by the peer
     pub(super) const fn window_size(self) -> WindowSize {

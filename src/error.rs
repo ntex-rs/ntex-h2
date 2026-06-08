@@ -150,6 +150,8 @@ pub enum StreamError {
     WrongPayloadLength,
     #[error("Non-empty payload for HEAD response")]
     NonEmptyPayload,
+    #[error("Capacity availability timeout")]
+    CapacityTimeout,
     #[error("Stream has been reset with {0}")]
     Reset(Reason),
 }
@@ -159,7 +161,9 @@ impl StreamError {
     pub(crate) fn reason(&self) -> Reason {
         match self {
             StreamError::Closed => Reason::STREAM_CLOSED,
-            StreamError::WindowOverflowed => Reason::FLOW_CONTROL_ERROR,
+            StreamError::WindowOverflowed | StreamError::CapacityTimeout => {
+                Reason::FLOW_CONTROL_ERROR
+            }
             StreamError::Idle(_)
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
@@ -186,6 +190,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::InvalidContentLength => "h2-stream-InvalidContentLength",
             StreamError::WrongPayloadLength => "h2-stream-WrongPayloadLength",
             StreamError::NonEmptyPayload => "h2-stream-NonEmptyPayload",
+            StreamError::CapacityTimeout => "h2-stream-CapacityTimeout",
             StreamError::Reset(_) => "h2-stream-Reset",
         }
     }

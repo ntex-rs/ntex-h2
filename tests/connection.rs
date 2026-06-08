@@ -46,7 +46,11 @@ async fn start_server() -> test::TestServer {
             .openssl(ssl_acceptor())
             .map_err(|_| ())
         },
-        SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(1)),
+        SharedCfg::new("SRV").add(
+            ServiceConfig::new()
+                .set_capacity_timeout(Seconds(1))
+                .set_max_concurrent_streams(1),
+        ),
     )
     .await
 }
@@ -556,5 +560,75 @@ async fn test_max_headers() {
     assert_eq!(
         err.into_error(),
         ntex_h2::StreamError::Reset(frame::Reason::REFUSED_STREAM)
+    );
+}
+
+#[ntex::test]
+async fn test_capacity_timeout() {
+    let srv = start_server().await;
+    let addr = srv.addr();
+
+    let io = connect(addr).await;
+    let codec = Codec::default();
+    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+
+    let mut settings = frame::Settings::default();
+    settings.set_initial_window_size(Some(1));
+    io.encode(settings.into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let hdrs = frame::Headers::new(
+        frame::StreamId::CLIENT,
+        pseudo.clone(),
+        HeaderMap::new(),
+        true,
+    );
+    io.send(hdrs.into(), &codec).await.unwrap();
+    io.recv(&codec).await.unwrap().unwrap(); // headers
+    io.recv(&codec).await.unwrap().unwrap(); // data
+    let res = io.recv(&codec).await.unwrap().unwrap(); // reset on timeout
+    assert_eq!(
+        res,
+        frame::Frame::Reset(frame::Reset::new(
+            frame::StreamId::CLIENT,
+            Reason::FLOW_CONTROL_ERROR,
+        ))
+    );
+
+    // success
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let id = frame::StreamId::CLIENT.next_id().unwrap();
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+    io.send(hdrs.into(), &codec).await.unwrap();
+    io.recv(&codec).await.unwrap().unwrap(); // headers
+    let res = io.recv(&codec).await.unwrap().unwrap(); // data
+    assert_eq!(
+        res,
+        frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"t")))
+    );
+    let _ = io
+        .send(frame::WindowUpdate::new(id, 16).into(), &codec)
+        .await;
+    let res = io.recv(&codec).await.unwrap().unwrap(); // rest
+    assert_eq!(
+        res,
+        frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"est body")))
     );
 }
