@@ -37,6 +37,7 @@ struct CodecInner {
     // decoder state
     decoder: LengthDelimitedCodec,
     decoder_hpack: hpack::Decoder,
+    decoder_max_headers: usize,
     decoder_max_header_list_size: usize,
     decoder_max_header_continuations: usize,
     partial: Option<Partial>, // Partially loaded headers frame
@@ -57,6 +58,7 @@ impl Default for Codec {
         Codec(Rc::new(RefCell::new(CodecInner {
             decoder,
             decoder_hpack: hpack::Decoder::new(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
+            decoder_max_headers: consts::DEFAULT_MAX_HEADERS,
             decoder_max_header_list_size: consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE as usize,
             decoder_max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             partial: None,
@@ -97,6 +99,13 @@ impl Codec {
     /// By default value is set to 48kb
     pub fn set_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
+    }
+
+    /// Set the max headers.
+    ///
+    /// By default value is set to 96
+    pub fn set_max_headers(&self, val: usize) {
+        self.0.borrow_mut().decoder_max_headers = val;
     }
 
     /// Set the max header continuation frames.
@@ -206,8 +215,10 @@ impl Decoder for Codec {
                     }?;
 
                     if frame.is_end_headers() {
+                        let max_headers = inner.decoder_max_headers;
+
                         // Load the HPACK encoded headers
-                        match frame.load_hpack(&mut bytes, &mut inner.decoder_hpack) {
+                        match frame.load_hpack(&mut bytes, &mut inner.decoder_hpack, max_headers) {
                             Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();
@@ -321,10 +332,12 @@ impl Decoder for Codec {
                     }
 
                     if (head.flag() & 0x4) == 0x4 {
-                        match partial
-                            .frame
-                            .load_hpack(&mut partial.buf, &mut inner.decoder_hpack)
-                        {
+                        let max_headers = inner.decoder_max_headers;
+                        match partial.frame.load_hpack(
+                            &mut partial.buf,
+                            &mut inner.decoder_hpack,
+                            max_headers,
+                        ) {
                             Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();

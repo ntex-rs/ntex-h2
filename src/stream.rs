@@ -702,7 +702,7 @@ impl StreamRef {
                     "{}: {:?} sending {} bytes, eof: {eof}, send: {:?}",
                     self.0.tag(),
                     self.0.id,
-                    res.len(),
+                    data.len(),
                     self.0.send.get()
                 );
 
@@ -932,7 +932,7 @@ impl StreamData {
         log::trace!("{_tag}: {id:?} sending {size} out of {} bytes", self.len());
 
         if size >= self.len() {
-            Head::new(Kind::Data, if eof { 0x1 } else { 0 }, id).encode(size, dst);
+            Head::new(Kind::Data, u8::from(eof), id).encode(size, dst);
             match &mut self.0 {
                 Either::Left(b) => {
                     dst.append(b.clone());

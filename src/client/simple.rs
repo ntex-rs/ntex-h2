@@ -58,6 +58,8 @@ impl SimpleClient {
         pool: pool::Pool<()>,
     ) -> Self {
         let codec = Codec::default();
+        codec.set_max_headers(cfg.max_headers);
+
         let con = Connection::new(
             false,
             io.get_ref(),

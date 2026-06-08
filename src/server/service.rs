@@ -185,6 +185,8 @@ where
 
         // create h2 codec
         let codec = Codec::default();
+        codec.set_max_headers(self.cfg.max_headers);
+
         let con = Connection::new(
             true,
             io.get_ref(),
@@ -286,6 +288,7 @@ where
 
     // create h2 codec
     let codec = Codec::default();
+    codec.set_max_headers(config.max_headers);
     let con = Connection::new(
         true,
         io.get_ref(),

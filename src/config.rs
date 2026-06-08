@@ -29,6 +29,8 @@ pub struct ServiceConfig {
     pub(crate) remote_max_concurrent_streams: Option<u32>,
     /// Limit number of continuation frames for headers
     pub(crate) max_header_continuations: usize,
+    /// Maximum number of headers
+    pub(crate) max_headers: usize,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
@@ -78,7 +80,8 @@ impl ServiceConfig {
             settings,
             reset_max: consts::DEFAULT_RESET_STREAM_MAX,
             reset_duration: consts::DEFAULT_RESET_STREAM_SECS.into(),
-            remote_max_concurrent_streams: Some(256),
+            remote_max_concurrent_streams: Some(consts::DEFAULT_MAX_CONCURRENT_STREAMS),
+            max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
@@ -143,6 +146,21 @@ impl ServiceConfig {
     }
 
     #[must_use]
+    /// Set the maximum number of headers.
+    ///
+    /// When a request is received, the parser will reserve a buffer
+    /// to store headers for optimal performance.
+    ///
+    /// If server receives more headers than the buffer size, it resets
+    /// stream with `REFUSED_STREAM` reason.
+    ///
+    /// Default is set to 96
+    pub fn set_max_headers(mut self, val: usize) -> Self {
+        self.max_headers = val;
+        self
+    }
+
+    #[must_use]
     /// Sets the max size of received header frames.
     ///
     /// This advisory setting informs a peer of the maximum size of header list
@@ -186,7 +204,7 @@ impl ServiceConfig {
     /// setting.
     ///
     /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `h2` library will immediately reset
+    /// a protocol level error. Instead, the `ntex-h2` library will immediately reset
     /// the stream.
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.

@@ -9,11 +9,10 @@ use ntex_service::cfg::Cfg;
 use ntex_util::time::{self, now, sleep};
 use ntex_util::{HashMap, HashSet, channel::pool, future::Either, spawn};
 
-use crate::config::ServiceConfig;
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, consts, message::Message, window::Window};
+use crate::{codec::Codec, config::ServiceConfig, consts, message::Message, window::Window};
 
 pub(crate) type EitherError = Either<Error<ConnectionError>, StreamErrorInner>;
 
@@ -395,49 +394,7 @@ impl Connection {
     }
 
     pub(crate) fn drop_stream(&self, id: StreamId) {
-        let empty = {
-            let mut streams = self.0.streams.borrow_mut();
-            if let Some(stream) = streams.remove(&id) {
-                #[cfg(feature = "trace")]
-                log::trace!(
-                    "{}: Dropping stream {id:?} remote: {:?}",
-                    self.tag(),
-                    stream.is_remote()
-                );
-                if stream.is_remote() {
-                    self.0
-                        .active_remote_streams
-                        .set(self.0.active_remote_streams.get() - 1);
-                } else {
-                    let local = self.0.active_local_streams.get();
-                    self.0.active_local_streams.set(local - 1);
-                    if let Some(max) = self.0.local_max_concurrent_streams.get()
-                        && local == max
-                    {
-                        while let Some(tx) = self.0.readiness.borrow_mut().pop_front() {
-                            if !tx.is_canceled() {
-                                let _ = tx.send(());
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            streams.is_empty()
-        };
-        let flags = self.flags();
-
-        // Close connection
-        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
-            log::trace!("{}: All streams are closed, disconnecting", self.tag());
-            self.0.io.close();
-            return;
-        }
-
-        // Add ids to pending queue
-        if flags.contains(ConnectionFlags::UNKNOWN_STREAMS) {
-            self.0.local_pending_reset.add(id, &self.0.local_config);
-        }
+        self.0.drop_stream(id);
     }
 
     pub(crate) fn recv_half(&self) -> RecvHalfConnection {
@@ -452,6 +409,51 @@ impl Connection {
 impl ConnectionState {
     fn err_unknown_streams(&self) -> bool {
         self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
+    }
+
+    fn drop_stream(&self, id: StreamId) {
+        let empty = {
+            let mut streams = self.streams.borrow_mut();
+            if let Some(stream) = streams.remove(&id) {
+                #[cfg(feature = "trace")]
+                log::trace!(
+                    "{}: Dropping stream {id:?} remote: {:?}",
+                    self.io.tag(),
+                    stream.is_remote()
+                );
+                if stream.is_remote() {
+                    self.active_remote_streams
+                        .set(self.active_remote_streams.get() - 1);
+                } else {
+                    let local = self.active_local_streams.get();
+                    self.active_local_streams.set(local - 1);
+                    if let Some(max) = self.local_max_concurrent_streams.get()
+                        && local == max
+                    {
+                        while let Some(tx) = self.readiness.borrow_mut().pop_front() {
+                            if !tx.is_canceled() {
+                                let _ = tx.send(());
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            streams.is_empty()
+        };
+        let flags = self.flags.get();
+
+        // Close connection
+        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
+            log::trace!("{}: All streams are closed, disconnecting", self.io.tag());
+            self.io.close();
+            return;
+        }
+
+        // Add ids to pending queue
+        if flags.contains(ConnectionFlags::UNKNOWN_STREAMS) {
+            self.local_pending_reset.add(id, &self.local_config);
+        }
     }
 }
 
@@ -480,6 +482,10 @@ impl RecvHalfConnection {
 
     pub(crate) fn connection(&self) -> Connection {
         Connection(self.0.clone())
+    }
+
+    pub(crate) fn drop_stream(&self, id: StreamId) {
+        self.0.drop_stream(id);
     }
 
     pub(crate) fn encode<T>(&self, item: T)
@@ -733,10 +739,7 @@ impl RecvHalfConnection {
         Ok(())
     }
 
-    pub(crate) fn recv_window_update(
-        &self,
-        frm: frame::WindowUpdate,
-    ) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
+    pub(crate) fn recv_window_update(&self, frm: frame::WindowUpdate) -> Result<(), EitherError> {
         log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         if frm.stream_id().is_zero() {
@@ -786,24 +789,21 @@ impl RecvHalfConnection {
         }
     }
 
-    fn update_rst_count(&self) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
+    pub(crate) fn update_rst_count(&self) -> Result<(), Error<ConnectionError>> {
         let count = self.0.rst_count.get() + 1;
         let streams_count = self.0.streams_count.get();
         if streams_count >= 10 && count >= streams_count >> 1 {
-            Err(Either::Left(Error::new(
+            Err(Error::new(
                 ConnectionError::StreamResetsLimit,
                 self.service(),
-            )))
+            ))
         } else {
             self.0.rst_count.set(count);
             Ok(())
         }
     }
 
-    pub(crate) fn recv_rst_stream(
-        &self,
-        frm: frame::Reset,
-    ) -> Result<(), Either<Error<ConnectionError>, StreamErrorInner>> {
+    pub(crate) fn recv_rst_stream(&self, frm: frame::Reset) -> Result<(), EitherError> {
         log::trace!("{}: processing incoming {:#?}", self.tag(), frm);
 
         let id = frm.stream_id();
@@ -814,16 +814,16 @@ impl RecvHalfConnection {
             )))
         } else if let Some(stream) = self.query(id) {
             stream.recv_rst_stream(frm);
-            self.update_rst_count()?;
+            self.update_rst_count().map_err(Either::Left)?;
 
             Err(Either::Right(StreamErrorInner::new(
                 stream,
                 Error::new(StreamError::Reset(frm.reason()), self.service()),
             )))
         } else if self.0.local_pending_reset.remove(id) {
-            self.update_rst_count()
+            self.update_rst_count().map_err(Either::Left)
         } else if self.0.err_unknown_streams() {
-            self.update_rst_count()?;
+            self.update_rst_count().map_err(Either::Left)?;
             Err(Either::Left(Error::new(
                 ConnectionError::UnknownStream("RST_STREAM"),
                 self.service(),

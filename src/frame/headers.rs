@@ -153,8 +153,10 @@ impl Headers {
         &mut self,
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
+        max_headers: usize,
     ) -> Result<(), FrameError> {
-        self.header_block.load(src, decoder)
+        self.header_block
+            .load(self.stream_id, src, decoder, max_headers)
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -418,9 +420,16 @@ thread_local! {
 }
 
 impl HeaderBlock {
-    fn load(&mut self, src: &mut Bytes, decoder: &mut hpack::Decoder) -> Result<(), FrameError> {
+    fn load(
+        &mut self,
+        id: StreamId,
+        src: &mut Bytes,
+        decoder: &mut hpack::Decoder,
+        max_headers: usize,
+    ) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
+        let mut too_many_headers = false;
 
         macro_rules! set_pseudo {
             ($field:ident, $val:expr) => {{
@@ -464,6 +473,9 @@ impl HeaderBlock {
                     } else {
                         reg = true;
                         self.fields.append(name, value);
+                        if self.fields.len() > max_headers {
+                            too_many_headers = true;
+                        }
                     }
                 }
                 Header::Authority(v) => {
@@ -489,15 +501,16 @@ impl HeaderBlock {
 
         if let Err(e) = res {
             log::trace!("hpack decoding error; err={e:?}");
-            return Err(e.into());
-        }
-
-        if malformed {
+            Err(e.into())
+        } else if malformed {
             log::trace!("malformed message");
-            return Err(FrameError::MalformedMessage);
+            Err(FrameError::MalformedMessage)
+        } else if too_many_headers {
+            log::trace!("too many headers");
+            Err(FrameError::TooManyHeaders(id))
+        } else {
+            Ok(())
         }
-
-        Ok(())
     }
 
     fn encode(

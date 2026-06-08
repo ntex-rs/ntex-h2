@@ -114,6 +114,10 @@ pub enum FrameError {
     #[error("The padding length was larger than the frame-header-specified length of the payload")]
     TooMuchPadding,
 
+    /// Headers frame contains too many headers
+    #[error("Headers frame contains too many headers")]
+    TooManyHeaders(StreamId),
+
     /// An invalid setting value was provided
     #[error("An invalid setting value was provided")]
     InvalidSettingValue,
