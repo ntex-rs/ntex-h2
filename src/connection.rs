@@ -404,9 +404,40 @@ impl Connection {
     pub(crate) fn pings_count(&self) -> u16 {
         self.0.pings_count.get()
     }
+
+    pub(crate) fn capacity_timeout(&self, id: StreamId) {
+        self.0.drop_stream(id);
+
+        if let Err(err) = self.0.update_rst_count() {
+            let err = err.map(OperationError::Connection);
+            self.0.error.set(Some(err.clone()));
+
+            let streams = mem::take(&mut *self.0.streams.borrow_mut());
+            for stream in streams.values() {
+                stream.set_failed_stream(err.clone());
+            }
+
+            self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
+            self.0.io.close();
+        }
+    }
 }
 
 impl ConnectionState {
+    fn update_rst_count(&self) -> Result<(), Error<ConnectionError>> {
+        let count = self.rst_count.get() + 1;
+        let streams_count = self.streams_count.get();
+        if streams_count >= 10 && count >= streams_count >> 1 {
+            Err(Error::new(
+                ConnectionError::StreamResetsLimit,
+                self.local_config.service(),
+            ))
+        } else {
+            self.rst_count.set(count);
+            Ok(())
+        }
+    }
+
     fn err_unknown_streams(&self) -> bool {
         self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
     }
@@ -790,17 +821,7 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn update_rst_count(&self) -> Result<(), Error<ConnectionError>> {
-        let count = self.0.rst_count.get() + 1;
-        let streams_count = self.0.streams_count.get();
-        if streams_count >= 10 && count >= streams_count >> 1 {
-            Err(Error::new(
-                ConnectionError::StreamResetsLimit,
-                self.service(),
-            ))
-        } else {
-            self.0.rst_count.set(count);
-            Ok(())
-        }
+        self.0.update_rst_count()
     }
 
     pub(crate) fn recv_rst_stream(&self, frm: frame::Reset) -> Result<(), EitherError> {

@@ -71,7 +71,7 @@ pub type WindowSize = u32;
 
 pub const HEADER_LEN: usize = 9;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum Frame {
     Data(Data),
     Headers(Headers),

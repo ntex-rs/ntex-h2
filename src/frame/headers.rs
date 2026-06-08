@@ -11,7 +11,7 @@ use super::{Frame, FrameError, Head, Kind, Protocol, StreamId, util};
 /// Header frame
 ///
 /// This could be either a request or a response.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Headers {
     /// The ID of the stream with which this frame is associated.
     stream_id: StreamId,
@@ -26,7 +26,7 @@ pub struct Headers {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PseudoHeaders {
     // Request
     pub method: Option<Method>,
@@ -47,7 +47,7 @@ pub(super) struct Iter<'a> {
     fields: header::Iter<'a>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,

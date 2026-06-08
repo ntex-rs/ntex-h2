@@ -1,4 +1,4 @@
-use std::{cell::Cell, cmp, fmt, future::poll_fn, ops, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, cmp, fmt, future::poll_fn, hash, ops, rc::Rc, task::Context, task::Poll};
 
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
@@ -9,7 +9,7 @@ use crate::error::{OperationError, StreamError};
 use crate::frame::{
     Data, Head, Headers, Kind, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
-use crate::{connection::Connection, frame, message::Message, window::Window};
+use crate::{connection::Connection, frame, message::Message, timer, window::Window};
 
 /// HTTP/2 Stream
 pub struct Stream(StreamRef);
@@ -571,10 +571,14 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_window_update_connection(&self) {
-        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
-            && self.0.send_window.get().window_size() > 0
-        {
+        let window = self.0.send_window.get();
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
             self.0.send_cap.wake();
+
+            // remove capacity timeout
+            if self.0.con.config().capacity_timeout.is_some() {
+                timer::unregister(self);
+            }
         }
     }
 
@@ -585,16 +589,19 @@ impl StreamRef {
                 self.service(),
             ))
         } else {
-            let window = self
-                .0
-                .send_window
-                .get()
+            let orig = self.0.send_window.get();
+            let window = orig
                 .inc(frm.size_increment())
                 .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?;
             self.0.send_window.set(window);
 
-            if window.window_size() > 0 {
+            if window.available() {
                 self.0.send_cap.wake();
+
+                // remove capacity timeout
+                if !orig.available() && self.0.con.config().capacity_timeout.is_some() {
+                    timer::unregister(self);
+                }
             }
             Ok(())
         }
@@ -617,6 +624,7 @@ impl StreamRef {
             window.window_size
         );
         self.0.send_window.set(window);
+
         Ok(())
     }
 
@@ -757,6 +765,12 @@ impl StreamRef {
                             self.0.id,
                             data.len()
                         );
+
+                        // start capacity timeout
+                        if let Some(to) = self.0.con.config().capacity_timeout {
+                            timer::register(to, self);
+                        }
+
                         // wait for available send window
                         self.send_capacity().await?;
                     }
@@ -786,6 +800,20 @@ impl StreamRef {
             self.0.send_window.get().window_size(),
             self.0.con.send_window_size(),
         )
+    }
+
+    pub(crate) fn capacity_timeout(&self) {
+        log::warn!(
+            "{}: Capacity availability timed-out for {:?}",
+            self.0.tag(),
+            self.0.id,
+        );
+        self.reset(Reason::FLOW_CONTROL_ERROR);
+        self.0.failed(Error::new(
+            OperationError::Stream(StreamError::CapacityTimeout),
+            self.service(),
+        ));
+        self.0.con.capacity_timeout(self.0.id);
     }
 
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
@@ -824,9 +852,17 @@ impl StreamRef {
     }
 }
 
+impl Eq for StreamRef {}
+
 impl PartialEq for StreamRef {
     fn eq(&self, other: &StreamRef) -> bool {
         Rc::as_ptr(&self.0) == Rc::as_ptr(&other.0)
+    }
+}
+
+impl hash::Hash for StreamRef {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        Rc::as_ptr(&self.0).hash(state);
     }
 }
 

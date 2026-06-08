@@ -104,6 +104,7 @@ mod dispatcher;
 mod error;
 mod message;
 mod stream;
+mod timer;
 mod window;
 
 pub mod client;
