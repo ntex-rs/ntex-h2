@@ -1022,14 +1022,14 @@ impl Pending {
         let current_time = now();
 
         // remove old ids
-        #[allow(clippy::unchecked_time_subtraction)]
-        let max_time = current_time - config.reset_duration;
-        while let Some(item) = inner.queue.front() {
-            if item.1 < max_time {
-                inner.ids.remove(&item.0);
-                inner.queue.pop_front();
-            } else {
-                break;
+        if let Some(max_time) = current_time.checked_sub(config.reset_duration) {
+            while let Some(item) = inner.queue.front() {
+                if item.1 < max_time {
+                    inner.ids.remove(&item.0);
+                    inner.queue.pop_front();
+                } else {
+                    break;
+                }
             }
         }
 
@@ -1070,6 +1070,8 @@ impl Pending {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use ntex::http::{HeaderMap, Method, test, uri::Scheme};
     use ntex::time::{Millis, Seconds, sleep};
     use ntex::{SharedCfg, io::Io, service::fn_service, util::Bytes};
@@ -1091,6 +1093,18 @@ mod tests {
             frame::Frame::GoAway(f) => f,
             _ => panic!("Expect Reset frame: {frm:?}"),
         }
+    }
+
+    #[test]
+    fn test_pending_reset_time_underflow() {
+        let pending = super::Pending::default();
+        let mut config = ServiceConfig::new();
+        config.reset_duration = Duration::MAX;
+        let id = frame::StreamId::CLIENT;
+
+        pending.add(id, &config);
+
+        assert!(pending.is_pending(id));
     }
 
     #[ntex::test]
