@@ -1,5 +1,9 @@
 # Changes
 
+## [3.12.1] - 2026-07-13
+
+* Avoid pending reset time underflow #96
+
 ## [3.12.0] - 2026-06-08
 
 * Add "capacity" availability timeout
