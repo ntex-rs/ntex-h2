@@ -632,3 +632,43 @@ async fn test_capacity_timeout() {
         frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"est body")))
     );
 }
+
+#[ntex::test]
+async fn test_con_lifetime() {
+    let srv = test::server_with_config(
+        async move || {
+            HttpService::h2(|_: http::Request| async move {
+                Ok::<_, io::Error>(Response::Ok().body("test body"))
+            })
+            .openssl(ssl_acceptor())
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new()),
+    )
+    .await;
+
+    let addr = srv.addr();
+    let pool = Client::builder(
+        "localhost",
+        fn_service(move |_| async move { Ok(connect(addr).await) }),
+    )
+    .scheme(Scheme::HTTPS)
+    .lifetime(1)
+    .build(SharedCfg::default())
+    .await
+    .unwrap();
+    assert!(pool.is_ready());
+
+    let client = pool.client().await.unwrap();
+    let id1 = client.id().clone();
+    drop(client);
+    let client = pool.client().await.unwrap();
+    let id2 = client.id().clone();
+    drop(client);
+    assert_eq!(id1, id2);
+    sleep(Seconds(2)).await;
+
+    let client = pool.client().await.unwrap();
+    let id3 = client.id().clone();
+    assert_ne!(id1, id3);
+}

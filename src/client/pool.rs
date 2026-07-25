@@ -403,7 +403,8 @@ where
     /// until it is closed regardless of keep-alive period.
     ///
     /// Default lifetime period is not set.
-    pub fn lifetime(mut self, dur: Seconds) -> Self {
+    pub fn lifetime<U: Into<Seconds>>(mut self, dur: U) -> Self {
+        let dur = dur.into();
         self.inner.conn_lifetime = dur;
         self.inner.conn_lifetime_dur = dur.into();
         self
