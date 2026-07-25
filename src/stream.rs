@@ -24,7 +24,7 @@ pub struct Capacity {
 impl Capacity {
     fn new(size: u32, stream: &Rc<StreamState>) -> Self {
         if size != 0 {
-            stream.data_received(size);
+            stream.received_data_added(size);
         }
 
         Self {
@@ -54,7 +54,7 @@ impl Capacity {
                 self.stream.id,
             );
             self.size.set(sz);
-            self.stream.consume_capacity(size - sz);
+            self.stream.received_data_consumed(size - sz);
         } else {
             panic!("Capacity overflow");
         }
@@ -97,7 +97,7 @@ impl Drop for Capacity {
     fn drop(&mut self) {
         let size = self.size.get();
         if size > 0 {
-            self.stream.consume_capacity(size);
+            self.stream.received_data_consumed(size);
         }
     }
 }
@@ -272,7 +272,7 @@ impl StreamState {
     }
 
     /// data received, update recevice window size
-    fn data_received(&self, size: u32) {
+    fn received_data_added(&self, size: u32) {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
         self.recv_window.set(self.recv_window.get().dec(size));
@@ -290,7 +290,7 @@ impl StreamState {
     }
 
     /// check and update recevice window size
-    fn consume_capacity(&self, size: u32) {
+    fn received_data_consumed(&self, size: u32) {
         let cap = self.recv_size.get();
         let size = cap - size;
 
