@@ -9,7 +9,7 @@ use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
-use ntex_util::time::{Millis, Seconds, timeout_checked};
+use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
@@ -112,6 +112,8 @@ impl Client {
 
     fn get_client(&self) -> (Option<SimpleClient>, usize) {
         let cfg = &self.inner.config;
+        let now = system_time();
+        let lifetime = cfg.conn_lifetime.non_zero();
         let mut connections = cfg.connections.borrow_mut();
 
         // cleanup connections
@@ -125,10 +127,19 @@ impl Client {
                 ntex_util::spawn(async move {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
+            } else if lifetime
+                && now
+                    .duration_since(connections[idx].created())
+                    .unwrap_or_default()
+                    > cfg.conn_lifetime_dur
+            {
+                let con = connections.remove(idx);
+                con.close();
             } else {
                 idx += 1;
             }
         }
+
         let num = connections.len();
         if cfg.minconn > 0 && num < cfg.minconn {
             // create new connection
@@ -287,7 +298,8 @@ struct InnerConfig {
     minconn: usize,
     maxconn: usize,
     conn_timeout: Millis,
-    conn_lifetime: Duration,
+    conn_lifetime: Seconds,
+    conn_lifetime_dur: Duration,
     disconnect_timeout: Millis,
     max_streams: u32,
     skip_unknown_streams: bool,
@@ -321,7 +333,8 @@ where
             inner: InnerConfig {
                 authority,
                 conn_timeout: Millis(1_000),
-                conn_lifetime: Duration::from_secs(0),
+                conn_lifetime: Seconds::ZERO,
+                conn_lifetime_dur: Duration::from_secs(0),
                 disconnect_timeout: Millis(15_000),
                 max_streams: 100,
                 skip_unknown_streams: false,
@@ -390,8 +403,10 @@ where
     /// until it is closed regardless of keep-alive period.
     ///
     /// Default lifetime period is not set.
-    pub fn lifetime(mut self, dur: Seconds) -> Self {
-        self.inner.conn_lifetime = dur.into();
+    pub fn lifetime<U: Into<Seconds>>(mut self, dur: U) -> Self {
+        let dur = dur.into();
+        self.inner.conn_lifetime = dur;
+        self.inner.conn_lifetime_dur = dur.into();
         self
     }
 

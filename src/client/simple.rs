@@ -1,4 +1,4 @@
-use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll};
+use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll, time::SystemTime};
 
 use nanorand::Rng;
 use ntex_bytes::{BufMut, ByteString, BytesMut};
@@ -7,7 +7,7 @@ use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::{IoBoxed, IoRef, OnDisconnect};
 use ntex_service::cfg::Cfg;
-use ntex_util::{channel::pool, time::Millis, time::Sleep};
+use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
 use crate::connection::Connection;
 use crate::default::DefaultControlService;
@@ -26,6 +26,7 @@ struct ClientRef {
     con: Connection,
     authority: ByteString,
     storage: InflightStorage,
+    created: SystemTime,
 }
 
 impl SimpleClient {
@@ -87,6 +88,7 @@ impl SimpleClient {
             authority,
             storage,
             id: gen_id(),
+            created: system_time(),
         }))
     }
 
@@ -106,6 +108,12 @@ impl SimpleClient {
     /// Get io service
     pub fn service(&self) -> &'static str {
         self.0.con.service()
+    }
+
+    #[inline]
+    /// Created time
+    pub fn created(&self) -> SystemTime {
+        self.0.created
     }
 
     #[inline]
