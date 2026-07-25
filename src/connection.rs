@@ -262,19 +262,9 @@ impl Connection {
         self.0.send_window.set(self.0.send_window.get().dec(cap));
     }
 
-    /// added new capacity, update recevice window size
-    pub(crate) fn add_recv_capacity(&self, size: u32) {
-        let mut recv_window = self.0.recv_window.get().dec(size);
-
-        // update connection window size
-        if let Some(val) = recv_window.update(
-            0,
-            self.0.local_config.connection_window_sz,
-            self.0.local_config.connection_window_sz_threshold,
-        ) {
-            self.encode(WindowUpdate::new(StreamId::CON, val));
-        }
-        self.0.recv_window.set(recv_window);
+    /// data received, update recevice window size if needed
+    pub(crate) fn data_received(&self, size: u32) {
+        self.0.data_received(size);
     }
 
     pub(crate) fn send_window_size(&self) -> WindowSize {
@@ -424,6 +414,23 @@ impl Connection {
 }
 
 impl ConnectionState {
+    /// data received, update recevice window size if needed
+    fn data_received(&self, size: u32) {
+        let mut recv_window = self.recv_window.get().dec(size);
+
+        // update connection window size
+        if let Some(val) = recv_window.update(
+            0,
+            self.local_config.connection_window_sz,
+            self.local_config.connection_window_sz_threshold,
+        ) {
+            let _ = self
+                .io
+                .encode(WindowUpdate::new(StreamId::CON, val).into(), &self.codec);
+        }
+        self.recv_window.set(recv_window);
+    }
+
     fn update_rst_count(&self) -> Result<(), Error<ConnectionError>> {
         let count = self.rst_count.get() + 1;
         let streams_count = self.streams_count.get();
@@ -659,6 +666,9 @@ impl RecvHalfConnection {
         } else if !self.0.err_unknown_streams()
             || self.0.local_pending_reset.is_pending(frm.stream_id())
         {
+            // connection level recv window
+            self.0.data_received(frm.payload().len() as u32);
+
             self.encode(frame::Reset::new(
                 frm.stream_id(),
                 frame::Reason::STREAM_CLOSED,
