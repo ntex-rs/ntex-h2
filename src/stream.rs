@@ -24,7 +24,7 @@ pub struct Capacity {
 impl Capacity {
     fn new(size: u32, stream: &Rc<StreamState>) -> Self {
         if size != 0 {
-            stream.add_recv_capacity(size);
+            stream.data_received(size);
         }
 
         Self {
@@ -271,22 +271,22 @@ impl StreamState {
         }
     }
 
-    /// added new capacity, update recevice window size
-    fn add_recv_capacity(&self, size: u32) {
+    /// data received, update recevice window size
+    fn data_received(&self, size: u32) {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
         self.recv_window.set(self.recv_window.get().dec(size));
 
         #[cfg(feature = "trace")]
         log::trace!(
-            "{}: {:?} capacity incresed from {cap} to {} ({size})",
+            "{}: {:?} received size incresed from {cap} to {} ({size})",
             self.tag(),
             self.id,
             cap + size
         );
 
         // connection level recv window
-        self.con.add_recv_capacity(size);
+        self.con.data_received(size);
     }
 
     /// check and update recevice window size

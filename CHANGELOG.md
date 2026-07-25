@@ -1,5 +1,9 @@
 # Changes
 
+## [3.13.0] - 2026-07-25
+
+* Fix connection flow control for canceled streams
+
 ## [3.12.1] - 2026-07-13
 
 * Avoid pending reset time underflow #96

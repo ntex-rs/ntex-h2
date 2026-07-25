@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "3.12.1"
+version = "3.13.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -26,16 +26,16 @@ trace = []
 features = []
 
 [dependencies]
-ntex-bytes = "1.7.0"
+ntex-bytes = "1.9.0"
 ntex-codec = "1.2"
 ntex-dispatcher = "3.2"
-ntex-error = "2.2"
+ntex-error = "2.3"
 ntex-http = "1.2"
-ntex-io = "3.12"
-ntex-net = "3.12"
+ntex-io = "3.13"
+ntex-net = "3.13"
 ntex-service = "4.6"
 ntex-util = "3.6"
-ntex-server = "3.9"
+ntex-server = "3.10"
 
 bitflags = "2"
 foldhash = "0.2"
