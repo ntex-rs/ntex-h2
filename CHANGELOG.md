@@ -2,6 +2,8 @@
 
 ## [3.13.0] - 2026-07-25
 
+* Add support for connection lifetime
+
 * Fix connection flow control for canceled streams
 
 ## [3.12.1] - 2026-07-13
