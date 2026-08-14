@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "3.13.0"
+version = "4.0.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -28,14 +28,14 @@ features = []
 [dependencies]
 ntex-bytes = "1.9.0"
 ntex-codec = "1.2"
-ntex-dispatcher = "3.2"
-ntex-error = "2.3"
+ntex-dispatcher = "4.0"
+ntex-error = "2.4"
 ntex-http = "1.2"
-ntex-io = "3.13"
-ntex-net = "3.13"
-ntex-service = "4.6"
-ntex-util = "3.6"
-ntex-server = "3.10"
+ntex-io = "4.0"
+ntex-net = "4.0"
+ntex-service = "5.0"
+ntex-util = "4.0"
+ntex-server = "4.0"
 
 bitflags = "2"
 foldhash = "0.2"
@@ -64,3 +64,10 @@ env_logger = "0.11"
 
 [patch.crates-io]
 ntex-h2 = { path = "." }
+
+ntex-dispatcher = { path = "../../ntex/ntex-dispatcher" }
+ntex-io = { path = "../../ntex/ntex-io" }
+ntex-net = { path = "../../ntex/ntex-net" }
+ntex-service = { path = "../../ntex/ntex-service" }
+ntex-util = { path = "../../ntex/ntex-util" }
+ntex-server = { path = "../../ntex/ntex-server" }

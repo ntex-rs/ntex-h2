@@ -4,7 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, 
 use ntex_bytes::Bytes;
 use ntex_error::Error;
 use ntex_http::HeaderMap;
-use ntex_service::{Service, ServiceCtx};
+use ntex_service::{Ctx, Service};
 use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
 
 use crate::error::OperationError;
@@ -248,11 +248,13 @@ impl HandleService {
     }
 }
 
-impl Service<Message> for HandleService {
-    type Response = ();
+impl Service for HandleService {
+    type St = ();
+    type Req = Message;
+    type Res = ();
     type Error = ();
 
-    async fn call(&self, msg: Message, _: ServiceCtx<'_, Self>) -> Result<(), ()> {
+    async fn call(&self, msg: Message, _: Ctx<'_, Self>) -> Result<(), ()> {
         let id = msg.id();
         if let Some(inflight) = self.0.0.inflight.borrow_mut().get_mut(&id) {
             let eof = match msg.kind() {

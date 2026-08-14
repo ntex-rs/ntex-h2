@@ -2,7 +2,7 @@ use std::{cell::Cell, fmt, future::Future, future::poll_fn, rc::Rc, task::Contex
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
-use ntex_service::{Pipeline, Service, ServiceCtx};
+use ntex_service::{Ctx, Pipeline, ReadyCtx, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
@@ -14,8 +14,8 @@ use crate::{codec::Codec, message::Message, stream::StreamRef};
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<Control<Pub::Error>>,
-    Pub: Service<Message>,
+    Ctl: Service<St = (), Req = Control<Pub::Error>>,
+    Pub: Service<St = (), Req = Message>,
 {
     inner: Rc<Inner<Ctl, Pub>>,
     connection: RecvHalfConnection,
@@ -23,8 +23,8 @@ where
 
 struct Inner<Ctl, Pub>
 where
-    Ctl: Service<Control<Pub::Error>>,
-    Pub: Service<Message>,
+    Ctl: Service<St = (), Req = Control<Pub::Error>>,
+    Pub: Service<St = (), Req = Message>,
 {
     control: Pipeline<Ctl>,
     publish: Pub,
@@ -35,9 +35,9 @@ where
 
 impl<Ctl, Pub> Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<Control<Pub::Error>, Response = ControlAck> + 'static,
+    Ctl: Service<St = (), Req = Control<Pub::Error>, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Pub: Service<Message, Response = ()> + 'static,
+    Pub: Service<St = (), Req = Message, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
     pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
@@ -56,7 +56,7 @@ where
     async fn handle_message<'f>(
         &'f self,
         result: Result<Option<(StreamRef, Message)>, EitherError>,
-        ctx: ServiceCtx<'f, Self>,
+        ctx: Ctx<'f, Self>,
     ) -> Result<Option<Frame>, ()> {
         match result {
             Ok(Some((stream, msg))) => publish(msg, stream, &self.inner, ctx).await,
@@ -101,25 +101,27 @@ where
             spawn(async move {
                 let p = Pipeline::new(&inner.publish);
                 for stream in streams.into_values() {
-                    let _ = p.call(Message::disconnect(err.clone(), stream)).await;
+                    let _ = p.call(Message::disconnect(err.clone(), stream), &()).await;
                 }
             });
         }
     }
 }
 
-impl<Ctl, Pub> Service<DispatchItem<Codec>> for Dispatcher<Ctl, Pub>
+impl<Ctl, Pub> Service for Dispatcher<Ctl, Pub>
 where
-    Ctl: Service<Control<Pub::Error>, Response = ControlAck> + 'static,
+    Ctl: Service<St = (), Req = Control<Pub::Error>, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Pub: Service<Message, Response = ()> + 'static,
+    Pub: Service<St = (), Req = Message, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
-    type Response = Option<Frame>;
+    type St = ();
+    type Req = DispatchItem<Codec>;
+    type Res = Option<Frame>;
     type Error = ();
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+    async fn ready(&self, ctx: ReadyCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(
             ctx.ready(&self.inner.publish),
             ctx.ready(self.inner.control.get_ref()),
@@ -131,7 +133,7 @@ where
                 Err(())
             } else {
                 match ctx
-                    .call_nowait(self.inner.control.get_ref(), Control::error(e, None))
+                    .call(self.inner.control.get_ref(), Control::error(e, None))
                     .await
                 {
                     Ok(_) => {
@@ -153,7 +155,7 @@ where
             ntex_util::spawn(async move {
                 if inner
                     .control
-                    .call_nowait(Control::error(e, None))
+                    .call_nowait(Control::error(e, None), ())
                     .await
                     .is_ok()
                 {
@@ -165,7 +167,7 @@ where
     }
 
     async fn shutdown(&self) {
-        let _ = self.inner.control.call(Control::terminated()).await;
+        let _ = self.inner.control.call(Control::terminated(), &()).await;
 
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
@@ -176,8 +178,8 @@ where
     async fn call(
         &self,
         request: DispatchItem<Codec>,
-        ctx: ServiceCtx<'_, Self>,
-    ) -> Result<Self::Response, Self::Error> {
+        ctx: Ctx<'_, Self>,
+    ) -> Result<Self::Res, Self::Error> {
         #[cfg(feature = "trace")]
         log::debug!("{}: Handle h2 message: {request:?}", self.connection.tag());
 
@@ -323,12 +325,12 @@ async fn publish<'f, P, C>(
     msg: Message,
     stream: StreamRef,
     inner: &'f Inner<C, P>,
-    ctx: ServiceCtx<'f, Dispatcher<C, P>>,
+    ctx: Ctx<'f, Dispatcher<C, P>>,
 ) -> Result<Option<Frame>, ()>
 where
-    P: Service<Message, Response = ()>,
+    P: Service<St = (), Req = Message, Res = ()> + 'static,
     P::Error: fmt::Debug,
-    C: Service<Control<P::Error>, Response = ControlAck>,
+    C: Service<St = (), Req = Control<P::Error>, Res = ControlAck> + 'static,
     C::Error: fmt::Debug,
 {
     let result = if stream.is_remote() {
@@ -354,8 +356,8 @@ where
 
 impl<Ctl, Pub> Inner<Ctl, Pub>
 where
-    Ctl: Service<Control<Pub::Error>>,
-    Pub: Service<Message>,
+    Ctl: Service<St = (), Req = Control<Pub::Error>>,
+    Pub: Service<St = (), Req = Message>,
 {
     fn can_disconnect(&self) -> bool {
         if self.disconnected.get() {
@@ -370,12 +372,12 @@ where
 async fn control<'f, Ctl, Pub>(
     pkt: Control<Pub::Error>,
     inner: &'f Inner<Ctl, Pub>,
-    ctx: ServiceCtx<'f, Dispatcher<Ctl, Pub>>,
+    ctx: Ctx<'f, Dispatcher<Ctl, Pub>>,
 ) -> Result<Option<Frame>, ()>
 where
-    Ctl: Service<Control<Pub::Error>, Response = ControlAck>,
+    Ctl: Service<St = (), Req = Control<Pub::Error>, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Pub: Service<Message>,
+    Pub: Service<St = (), Req = Message, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
     if inner.can_disconnect() {

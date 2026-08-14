@@ -4,9 +4,9 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
-use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{IntoServiceFactory, Service, ServiceCtx, ServiceFactory};
+use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};
 
 use crate::client::{SimpleClient, stream::InflightStorage};
@@ -22,16 +22,16 @@ pub struct Connector<A: Address, T> {
     _t: PhantomData<A>,
 }
 
-impl<A, T> Connector<A, T>
+impl<A, Sf> Connector<A, Sf>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    Sf: ServiceFactory<Connect<A>, St = (), Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    IoBoxed: From<Sf::Res>,
 {
     /// Create new http2 connector
-    pub fn new<F>(svc: F) -> Connector<A, T>
+    pub fn new<F>(svc: F) -> Connector<A, Sf>
     where
-        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
+        F: IntoServiceFactory<Sf, Connect<A>>,
     {
         Connector {
             svc: svc.into_factory(),
@@ -52,7 +52,7 @@ where
     }
 }
 
-impl<A, T> Connector<A, T>
+impl<A, Sf> Connector<A, Sf>
 where
     A: Address,
 {
@@ -66,9 +66,9 @@ where
     /// Use custom connector
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-        IoBoxed: From<U::Response>,
+        F: IntoServiceFactory<U, Connect<A>>,
+        U: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>,
+        IoBoxed: From<U::Res>,
     {
         Connector {
             svc: svc.into_factory(),
@@ -79,18 +79,20 @@ where
     }
 }
 
-impl<A, T> ServiceFactory<A, SharedCfg> for Connector<A, T>
+impl<A, Sf> ServiceFactory<A> for Connector<A, Sf>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    Sf: ServiceFactory<Connect<A>, St = (), Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    IoBoxed: From<Sf::Res>,
 {
-    type Response = SimpleClient;
+    type St = Sf::St;
+    type Res = SimpleClient;
     type Error = Error<ClientError>;
-    type InitError = T::InitError;
-    type Service = ConnectorService<A, T::Service>;
+    type InitCfg = SharedCfg;
+    type InitError = Sf::InitError;
+    type Service = ConnectorService<A, Sf::Service>;
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         let config = cfg.get();
         let svc = self.svc.create(cfg).await?;
         Ok(ConnectorService {
@@ -104,25 +106,27 @@ where
 }
 
 #[derive(Debug)]
-pub struct ConnectorService<A, T> {
-    svc: T,
+pub struct ConnectorService<A, S> {
+    svc: S,
     scheme: Scheme,
     config: Cfg<ServiceConfig>,
     pool: pool::Pool<()>,
     _t: PhantomData<A>,
 }
 
-impl<A, T> Service<A> for ConnectorService<A, T>
+impl<A, S,> Service for ConnectorService<A, S>
 where
     A: Address,
-    T: Service<Connect<A>, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    S: Service<Req = Connect<A>, Error = Error<ConnectError>>,
+    IoBoxed: From<S::Res>,
 {
-    type Response = SimpleClient;
+    type St = S::St;
+    type Req = A;
+    type Res = SimpleClient;
     type Error = Error<ClientError>;
 
     /// Connect to http2 server
-    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<SimpleClient, Self::Error> {
+    async fn call(&self, req: A, ctx: Ctx<'_, Self>) -> Result<SimpleClient, Self::Error> {
         let authority = ByteString::from(req.host());
 
         let fut = async {

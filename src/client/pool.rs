@@ -6,7 +6,7 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
-use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
 use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
@@ -49,9 +49,10 @@ impl Client {
     pub fn builder<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
     where
         A: Address + Clone,
-        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
-        T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-        IoBoxed: From<T::Response>,
+        F: IntoServiceFactory<T, Connect<A>>,
+        T: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>
+            + 'static,
+        IoBoxed: From<T::Res>,
         Connect<A>: From<U>,
     {
         ClientBuilder::new(addr, connector)
@@ -315,13 +316,13 @@ struct InnerConfig {
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    T: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>,
+    IoBoxed: From<T::Res>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
     where
         Connect<A>: From<U>,
-        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
+        F: IntoServiceFactory<T, Connect<A>>,
     {
         let connect = Connect::from(addr);
         let authority = ByteString::from(connect.host());
@@ -431,9 +432,10 @@ where
     /// Use custom connector
     pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-        IoBoxed: From<U::Response>,
+        F: IntoServiceFactory<U, Connect<A>>,
+        U: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>
+            + 'static,
+        IoBoxed: From<U::Res>,
     {
         ClientBuilder {
             connect: self.connect,
@@ -447,19 +449,20 @@ where
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-    IoBoxed: From<T::Response>,
+    T: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>
+        + 'static,
+    IoBoxed: From<T::Res>,
 {
     /// Finish configuration process and create connections pool.
     pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
         let connect = self.connect;
         let tag = cfg.tag();
         let client_cfg = cfg.get();
-        let svc = Pipeline::new(self.connector.create(cfg).await?);
+        let svc = Pipeline::new(self.connector.create(&cfg).await?);
 
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
-            let fut = svc.call_static(connect.clone());
+            let fut = svc.call_static(connect.clone(), ());
             Box::pin(async move { fut.await.map(IoBoxed::from) }) as Fut
         });
 
