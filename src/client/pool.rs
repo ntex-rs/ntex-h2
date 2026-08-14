@@ -8,7 +8,7 @@ use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
+use ntex_service::{IntoServiceFactory, ServiceFactory};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
@@ -50,7 +50,8 @@ impl Client {
     where
         A: Address + Clone,
         F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
-        T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
+        T: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
+        T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
         IoBoxed: From<T::Response>,
         Connect<A>: From<U>,
     {
@@ -315,7 +316,8 @@ struct InnerConfig {
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Data = ()>,
+    T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
@@ -432,7 +434,8 @@ where
     pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
+        U: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
+        U::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
         IoBoxed: From<U::Response>,
     {
         ClientBuilder {
@@ -447,7 +450,8 @@ where
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
+    T: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
+    T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<T::Response>,
 {
     /// Finish configuration process and create connections pool.
@@ -455,7 +459,7 @@ where
         let connect = self.connect;
         let tag = cfg.tag();
         let client_cfg = cfg.get();
-        let svc = Pipeline::new(self.connector.create(cfg).await?);
+        let svc = self.connector.pipeline(cfg, &()).await?;
 
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());

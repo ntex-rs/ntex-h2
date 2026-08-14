@@ -1,4 +1,4 @@
-use std::marker::PhantomData;
+use std::{marker::PhantomData, task::Context};
 
 use ntex_bytes::ByteString;
 use ntex_error::Error;
@@ -87,8 +87,9 @@ where
 {
     type Response = SimpleClient;
     type Error = Error<ClientError>;
-    type InitError = T::InitError;
     type Service = ConnectorService<A, T::Service>;
+    type InitError = T::InitError;
+    type Data = T::Data;
 
     async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
         let config = cfg.get();
@@ -101,10 +102,21 @@ where
             _t: PhantomData,
         })
     }
+
+    async fn map_data(
+        &self,
+        cfg: &SharedCfg,
+        data: &Self::Data,
+    ) -> Result<<Self::Service as Service<A>>::Data, Self::InitError> {
+        self.svc.map_data(cfg, data).await
+    }
 }
 
 #[derive(Debug)]
-pub struct ConnectorService<A, T> {
+pub struct ConnectorService<A, T>
+where
+    T: Service<Connect<A>>,
+{
     svc: T,
     scheme: Scheme,
     config: Cfg<ServiceConfig>,
@@ -120,14 +132,20 @@ where
 {
     type Response = SimpleClient;
     type Error = Error<ClientError>;
+    type Data = T::Data;
 
     /// Connect to http2 server
-    async fn call(&self, req: A, ctx: ServiceCtx<'_, Self>) -> Result<SimpleClient, Self::Error> {
+    async fn call(
+        &self,
+        req: A,
+        data: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<SimpleClient, Self::Error> {
         let authority = ByteString::from(req.host());
 
         let fut = async {
             let io = ctx
-                .call(&self.svc, Connect::new(req))
+                .call(&self.svc, Connect::new(req), data)
                 .await
                 .map_err(|e| e.map(ClientError::from))?;
 
@@ -150,7 +168,19 @@ where
             .and_then(|item| item)
     }
 
-    ntex_service::forward_ready!(svc, |e| e.map(ClientError::from));
-    ntex_service::forward_poll!(svc, |e| e.map(ClientError::from));
-    ntex_service::forward_shutdown!(svc);
+    async fn ready(&self, data: &Self::Data, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc, data)
+            .await
+            .map_err(|e| e.map(ClientError::from))
+    }
+
+    fn poll(&self, data: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+        self.svc
+            .poll(data, cx)
+            .map_err(|e| e.map(ClientError::from))
+    }
+
+    async fn shutdown(&self, data: &Self::Data) {
+        self.svc.shutdown(data).await;
+    }
 }

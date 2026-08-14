@@ -26,8 +26,8 @@ where
     Ctl: Service<Control<Pub::Error>>,
     Pub: Service<Message>,
 {
-    control: Pipeline<Ctl>,
-    publish: Pub,
+    control: Pipeline<Ctl, Ctl::Data>,
+    publish: Pipeline<Pub, Pub::Data>,
     connection: Connection,
     last_stream_id: StreamId,
     disconnected: Cell<bool>,
@@ -40,13 +40,19 @@ where
     Pub: Service<Message, Response = ()> + 'static,
     Pub::Error: fmt::Debug,
 {
-    pub(crate) fn new(connection: Connection, control: Ctl, publish: Pub) -> Self {
+    pub(crate) fn new(
+        connection: Connection,
+        control: Ctl,
+        control_data: Ctl::Data,
+        publish: Pub,
+        publish_data: Pub::Data,
+    ) -> Self {
         Dispatcher {
             connection: connection.recv_half(),
             inner: Rc::new(Inner {
-                publish,
+                publish: Pipeline::new(publish, publish_data),
                 connection,
-                control: Pipeline::new(control),
+                control: Pipeline::new(control, control_data),
                 last_stream_id: 0.into(),
                 disconnected: Cell::new(false),
             }),
@@ -56,10 +62,9 @@ where
     async fn handle_message<'f>(
         &'f self,
         result: Result<Option<(StreamRef, Message)>, EitherError>,
-        ctx: ServiceCtx<'f, Self>,
     ) -> Result<Option<Frame>, ()> {
         match result {
-            Ok(Some((stream, msg))) => publish(msg, stream, &self.inner, ctx).await,
+            Ok(Some((stream, msg))) => publish(msg, stream, &self.inner).await,
             Ok(None) => Ok(None),
             Err(Either::Left(err)) => {
                 log::error!(
@@ -68,7 +73,7 @@ where
                 );
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
@@ -86,7 +91,7 @@ where
                     self.connection
                         .encode(Reset::new(stream.id(), kind.reason()));
                 }
-                publish(Message::error(kind, &stream), stream, &self.inner, ctx).await
+                publish(Message::error(kind, &stream), stream, &self.inner).await
             }
         }
     }
@@ -99,9 +104,9 @@ where
         if !streams.is_empty() {
             let inner = self.inner.clone();
             spawn(async move {
-                let p = Pipeline::new(&inner.publish);
+                let publish = inner.publish.clone();
                 for stream in streams.into_values() {
-                    let _ = p.call(Message::disconnect(err.clone(), stream)).await;
+                    let _ = publish.call(Message::disconnect(err.clone(), stream)).await;
                 }
             });
         }
@@ -117,21 +122,20 @@ where
 {
     type Response = Option<Frame>;
     type Error = ();
+    type Data = ();
 
     #[inline]
-    async fn ready(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(
-            ctx.ready(&self.inner.publish),
-            ctx.ready(self.inner.control.get_ref()),
-        )
-        .await;
+    async fn ready(&self, _: &Self::Data, _: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        let (res1, res2) = join(self.inner.publish.ready(), self.inner.control.ready()).await;
 
         if let Err(e) = res1 {
             if res2.is_err() {
                 Err(())
             } else {
-                match ctx
-                    .call_nowait(self.inner.control.get_ref(), Control::error(e, None))
+                match self
+                    .inner
+                    .control
+                    .call_nowait(Control::error(e, None))
                     .await
                 {
                     Ok(_) => {
@@ -146,7 +150,7 @@ where
         }
     }
 
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+    fn poll(&self, _: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         if let Err(e) = self.inner.publish.poll(cx) {
             let inner = self.inner.clone();
             let con = self.connection.connection();
@@ -164,8 +168,8 @@ where
         self.inner.control.poll(cx).map_err(|_| ())
     }
 
-    async fn shutdown(&self) {
-        let _ = self.inner.control.call(Control::terminated()).await;
+    async fn shutdown(&self, _: &Self::Data) {
+        let _ = self.inner.control.clone().call(Control::terminated()).await;
 
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
@@ -176,7 +180,8 @@ where
     async fn call(
         &self,
         request: DispatchItem<Codec>,
-        ctx: ServiceCtx<'_, Self>,
+        _: &Self::Data,
+        _: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
         #[cfg(feature = "trace")]
         log::debug!("{}: Handle h2 message: {request:?}", self.connection.tag());
@@ -184,13 +189,10 @@ where
         match request {
             DispatchItem::Item(frame) => match frame {
                 Frame::Headers(hdrs) => {
-                    self.handle_message(self.connection.recv_headers(hdrs), ctx)
+                    self.handle_message(self.connection.recv_headers(hdrs))
                         .await
                 }
-                Frame::Data(data) => {
-                    self.handle_message(self.connection.recv_data(data), ctx)
-                        .await
-                }
+                Frame::Data(data) => self.handle_message(self.connection.recv_data(data)).await,
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
                         let streams = self.connection.proto_error(&err);
@@ -198,7 +200,7 @@ where
                             streams,
                             err.clone().map(OperationError::from),
                         );
-                        control(Control::proto_error(err), &self.inner, ctx).await
+                        control(Control::proto_error(err), &self.inner).await
                     }
                     Err(Either::Right(errs)) => {
                         // handle stream errors
@@ -212,7 +214,6 @@ where
                                 Message::error(kind, &stream),
                                 stream,
                                 &self.inner,
-                                ctx,
                             )
                             .await;
                         }
@@ -221,14 +222,11 @@ where
                     Ok(()) => Ok(None),
                 },
                 Frame::WindowUpdate(update) => {
-                    self.handle_message(
-                        self.connection.recv_window_update(update).map(|()| None),
-                        ctx,
-                    )
-                    .await
+                    self.handle_message(self.connection.recv_window_update(update).map(|()| None))
+                        .await
                 }
                 Frame::Reset(reset) => {
-                    self.handle_message(self.connection.recv_rst_stream(reset).map(|()| None), ctx)
+                    self.handle_message(self.connection.recv_rst_stream(reset).map(|()| None))
                         .await
                 }
                 Frame::Ping(ping) => {
@@ -249,7 +247,7 @@ where
                         streams,
                         Error::new(ConnectionError::GoAway(reason), self.connection.service()),
                     );
-                    control(Control::go_away(frm), &self.inner, ctx).await
+                    control(Control::go_away(frm), &self.inner).await
                 }
                 Frame::Priority(_prio) => {
                     #[cfg(feature = "trace")]
@@ -264,7 +262,7 @@ where
                 let err = Error::new(ConnectionError::from(err), self.connection.service());
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::Decoder(err)) => {
                 let err = if let FrameError::TooManyHeaders(id) = err {
@@ -282,7 +280,7 @@ where
                 };
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::KeepAliveTimeout) => {
                 log::warn!(
@@ -293,7 +291,7 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::KeepaliveTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::ReadTimeout) => {
                 log::warn!(
@@ -304,7 +302,7 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::ReadTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner, ctx).await
+                control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::Io(err)) => {
                 let streams = self.connection.disconnect();
@@ -312,7 +310,7 @@ where
                     streams,
                     Error::new(OperationError::Disconnected, self.connection.service()),
                 );
-                control(Control::peer_gone(err), &self.inner, ctx).await
+                control(Control::peer_gone(err), &self.inner).await
             }
             DispatchItem::Control(_) => Ok(None),
         }
@@ -323,7 +321,6 @@ async fn publish<'f, P, C>(
     msg: Message,
     stream: StreamRef,
     inner: &'f Inner<C, P>,
-    ctx: ServiceCtx<'f, Dispatcher<C, P>>,
 ) -> Result<Option<Frame>, ()>
 where
     P: Service<Message, Response = ()>,
@@ -331,8 +328,9 @@ where
     C: Service<Control<P::Error>, Response = ControlAck>,
     C::Error: fmt::Debug,
 {
+    let publish = inner.publish.clone();
     let result = if stream.is_remote() {
-        let fut = ctx.call(&inner.publish, msg);
+        let fut = publish.call(msg);
         let mut pinned = std::pin::pin!(fut);
         poll_fn(|cx| {
             if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
@@ -343,12 +341,12 @@ where
         })
         .await
     } else {
-        ctx.call(&inner.publish, msg).await
+        publish.call(msg).await
     };
 
     match result {
         Ok(()) => Ok(None),
-        Err(e) => control(Control::error(e, Some(&stream)), inner, ctx).await,
+        Err(e) => control(Control::error(e, Some(&stream)), inner).await,
     }
 }
 
@@ -370,7 +368,6 @@ where
 async fn control<'f, Ctl, Pub>(
     pkt: Control<Pub::Error>,
     inner: &'f Inner<Ctl, Pub>,
-    ctx: ServiceCtx<'f, Dispatcher<Ctl, Pub>>,
 ) -> Result<Option<Frame>, ()>
 where
     Ctl: Service<Control<Pub::Error>, Response = ControlAck>,
@@ -379,7 +376,7 @@ where
     Pub::Error: fmt::Debug,
 {
     if inner.can_disconnect() {
-        match ctx.call(inner.control.get_ref(), pkt).await {
+        match inner.control.clone().call(pkt).await {
             Ok(res) => {
                 if let Some(frm) = res.frame {
                     inner.connection.encode(frm);

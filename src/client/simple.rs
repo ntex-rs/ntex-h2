@@ -75,7 +75,9 @@ impl SimpleClient {
         let disp = Dispatcher::new(
             con.clone(),
             DefaultControlService,
+            (),
             HandleService::new(storage.clone()),
+            (),
         );
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);

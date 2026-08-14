@@ -1,5 +1,5 @@
 mod service;
-pub use self::service::{Server, ServerHandler, handle_one};
+pub use self::service::{Server, ServerHandler, handle_one, handle_one_with_data};
 
 use crate::frame;
 

@@ -61,6 +61,3 @@ openssl = "0.10"
 
 # Examples
 env_logger = "0.11"
-
-[patch.crates-io]
-ntex-h2 = { path = "." }

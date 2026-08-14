@@ -2,7 +2,7 @@ use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
 use ntex::http::{self, HeaderMap, HttpService, Method, Response, test, uri::Scheme};
-use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::service::{ServiceFactory, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
 use ntex_h2::client::{self, Client, SimpleClient};
@@ -65,9 +65,8 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
 
     let addr = ntex::connect::Connect::new("localhost").set_addr(Some(addr));
     openssl::SslConnector::new(builder.build())
-        .create(SharedCfg::default())
+        .pipeline(SharedCfg::default(), &())
         .await
-        .map(Pipeline::new)
         .unwrap()
         .call(addr)
         .await
@@ -97,9 +96,8 @@ async fn test_max_concurrent_streams() {
         client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
             .scheme(Scheme::HTTP)
             .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-            .create(SharedCfg::default())
+            .pipeline(SharedCfg::default(), &())
             .await
-            .map(Pipeline::new)
             .unwrap()
             .call("localhost")
             .await
