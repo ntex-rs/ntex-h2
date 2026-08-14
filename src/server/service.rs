@@ -12,6 +12,9 @@ use crate::{config::ServiceConfig, consts, dispatcher::Dispatcher, frame, messag
 
 use super::ServerError;
 
+type PublishService<Pub> = <Pub as Service<SharedCfg>>::Response;
+type PublishError<Pub> = <PublishService<Pub> as Service<Message>>::Error;
+
 #[derive(Debug)]
 /// Http/2 server factory
 pub struct Server<Pub, Ctl>(ServerInner<Pub, Ctl>);
@@ -33,17 +36,18 @@ impl<Pub, Ctl> Clone for ServerInner<Pub, Ctl> {
     }
 }
 
-impl<Pub> Server<Pub, DefaultControlService>
+impl<Pub> Server<Pub, DefaultControlService<PublishError<Pub>>>
 where
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    PublishError<Pub>: fmt::Debug + 'static,
 {
     /// Create new instance of Server factory
     pub fn new(publish: Pub) -> Self {
         Self(ServerInner {
             publish: Rc::new(publish),
-            control: Rc::new(DefaultControlService),
+            control: Rc::new(DefaultControlService::new()),
             pool: pool::new(),
         })
     }
@@ -51,21 +55,20 @@ where
 
 impl<Pub, Ctl> Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    Ctl: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+    Ctl::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
 {
     /// Service to handle control frames
     pub fn control<S, F>(&self, service: F) -> Server<Pub, S>
     where
-        F: IntoServiceFactory<S, Control<Pub::Error>, SharedCfg>,
-        S: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()>
-            + 'static,
+        F: IntoServiceFactory<S, Control<PublishError<Pub>>, SharedCfg>,
+        S: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+        S::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
         S::Error: fmt::Debug,
-        S::InitError: fmt::Debug,
     {
         Server(ServerInner {
             control: Rc::new(service.into_factory()),
@@ -80,52 +83,26 @@ where
     }
 }
 
-impl<Pub, Ctl> ServiceFactory<IoBoxed, SharedCfg> for Server<Pub, Ctl>
+impl<Pub, Ctl> Service<SharedCfg> for Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    Ctl: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+    Ctl::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
 {
-    type Response = ();
-    type Error = ServerError<()>;
-    type Service = ServerHandler<Pub, Ctl>;
-    type InitError = ();
+    type Response = ServerHandler<Pub, Ctl>;
+    type Error = ();
     type Data = ();
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn call(
+        &self,
+        cfg: SharedCfg,
+        _: &Self::Data,
+        _: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         Ok(ServerHandler::new(cfg, self.0.clone()))
-    }
-
-    async fn map_data(&self, _: &SharedCfg, _: &Self::Data) -> Result<(), Self::InitError> {
-        Ok(())
-    }
-}
-
-impl<F, Pub, Ctl> ServiceFactory<Io<F>, SharedCfg> for Server<Pub, Ctl>
-where
-    F: Filter,
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
-    Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
-    Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
-{
-    type Response = ();
-    type Error = ServerError<()>;
-    type Service = ServerHandler<Pub, Ctl>;
-    type InitError = ();
-    type Data = ();
-
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
-        Ok(ServerHandler::new(cfg, self.0.clone()))
-    }
-
-    async fn map_data(&self, _: &SharedCfg, _: &Self::Data) -> Result<(), Self::InitError> {
-        Ok(())
     }
 }
 
@@ -156,14 +133,20 @@ impl<Pub, Ctl> Clone for ServerHandler<Pub, Ctl> {
 
 impl<Pub, Ctl> ServerHandler<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    PublishError<Pub>: fmt::Debug,
+    Ctl: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+    Ctl::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
+    <Ctl::Response as Service<Control<PublishError<Pub>>>>::Error: fmt::Debug,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
 {
-    async fn run_inner(&self, io: IoBoxed) -> Result<(), ServerError<()>> {
+    async fn run_inner(
+        &self,
+        io: IoBoxed,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<(), ServerError<()>> {
         let inner = &self.inner;
 
         let (ctl_srv, ctl_data, pub_srv, pub_data) =
@@ -180,9 +163,8 @@ where
                     })?;
 
                 // create publish service
-                let pub_srv = inner
-                    .publish
-                    .create(self.shared.clone())
+                let pub_srv = ctx
+                    .call(&*inner.publish, self.shared.clone(), &())
                     .await
                     .map_err(|e| {
                         log::error!("Publish service init error: {e:?}");
@@ -199,9 +181,8 @@ where
                     })?;
 
                 // create control service
-                let ctl_srv = inner
-                    .control
-                    .create(self.shared.clone())
+                let ctl_srv = ctx
+                    .call(&*inner.control, self.shared.clone(), &())
                     .await
                     .map_err(|e| {
                         log::error!("Control service init error: {e:?}");
@@ -244,6 +225,41 @@ where
         .map_err(|()| ServerError::Dispatcher)
     }
 
+    async fn ready_factories(&self, ctx: ServiceCtx<'_, Self>) -> Result<(), ServerError<()>> {
+        let (publish, control) = ntex_util::future::join(
+            ctx.ready(&*self.inner.publish, &()),
+            ctx.ready(&*self.inner.control, &()),
+        )
+        .await;
+        publish.map_err(|e| {
+            log::error!("Publish service readiness error: {e:?}");
+            ServerError::PublishServiceError
+        })?;
+        control.map_err(|e| {
+            log::error!("Control service readiness error: {e:?}");
+            ServerError::ControlServiceError
+        })
+    }
+
+    fn poll_factories(&self, cx: &mut std::task::Context<'_>) -> Result<(), ServerError<()>> {
+        self.inner.publish.poll(&(), cx).map_err(|e| {
+            log::error!("Publish service poll error: {e:?}");
+            ServerError::PublishServiceError
+        })?;
+        self.inner.control.poll(&(), cx).map_err(|e| {
+            log::error!("Control service poll error: {e:?}");
+            ServerError::ControlServiceError
+        })
+    }
+
+    async fn shutdown_factories(&self) {
+        ntex_util::future::join(
+            self.inner.publish.shutdown(&()),
+            self.inner.control.shutdown(&()),
+        )
+        .await;
+    }
+
     /// Run the HTTP/2 dispatcher.
     pub async fn run(&self, io: IoBoxed) -> Result<(), ServerError<()>> {
         Pipeline::new(self.clone(), ()).call(io).await
@@ -252,48 +268,76 @@ where
 
 impl<Pub, Ctl> Service<IoBoxed> for ServerHandler<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    PublishError<Pub>: fmt::Debug,
+    Ctl: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+    Ctl::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
+    <Ctl::Response as Service<Control<PublishError<Pub>>>>::Error: fmt::Debug,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
 {
     type Response = ();
     type Error = ServerError<()>;
     type Data = ();
 
+    async fn ready(&self, _: &Self::Data, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        self.ready_factories(ctx).await
+    }
+
+    fn poll(&self, _: &Self::Data, cx: &mut std::task::Context<'_>) -> Result<(), Self::Error> {
+        self.poll_factories(cx)
+    }
+
+    async fn shutdown(&self, _: &Self::Data) {
+        self.shutdown_factories().await;
+    }
+
     async fn call(
         &self,
         io: IoBoxed,
         _: &Self::Data,
-        _: ServiceCtx<'_, Self>,
+        ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        self.run_inner(io).await
+        self.run_inner(io, ctx).await
     }
 }
 
 impl<F, Pub, Ctl> Service<Io<F>> for ServerHandler<Pub, Ctl>
 where
     F: Filter,
-    Ctl: ServiceFactory<Control<Pub::Error>, SharedCfg, Response = ControlAck, Data = ()> + 'static,
+    Pub: ServiceFactory<Message, SharedCfg, Data = ()> + 'static,
+    Pub::Response: Service<Message, Response = ()> + 'static,
+    PublishError<Pub>: fmt::Debug,
+    Ctl: ServiceFactory<Control<PublishError<Pub>>, SharedCfg, Data = ()> + 'static,
+    Ctl::Response: Service<Control<PublishError<Pub>>, Response = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
-    Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, SharedCfg, Response = (), Data = ()> + 'static,
+    <Ctl::Response as Service<Control<PublishError<Pub>>>>::Error: fmt::Debug,
     Pub::Error: fmt::Debug,
-    Pub::InitError: fmt::Debug,
 {
     type Response = ();
     type Error = ServerError<()>;
     type Data = ();
 
+    async fn ready(&self, _: &Self::Data, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        self.ready_factories(ctx).await
+    }
+
+    fn poll(&self, _: &Self::Data, cx: &mut std::task::Context<'_>) -> Result<(), Self::Error> {
+        self.poll_factories(cx)
+    }
+
+    async fn shutdown(&self, _: &Self::Data) {
+        self.shutdown_factories().await;
+    }
+
     async fn call(
         &self,
         req: Io<F>,
         _: &Self::Data,
-        _: ServiceCtx<'_, Self>,
+        ctx: ServiceCtx<'_, Self>,
     ) -> Result<Self::Response, Self::Error> {
-        self.run_inner(req.into()).await
+        self.run_inner(req.into(), ctx).await
     }
 }
 

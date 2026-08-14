@@ -1,30 +1,35 @@
-use std::fmt;
+use std::{fmt, marker::PhantomData};
 
-use ntex_service::{Service, ServiceCtx, ServiceFactory, cfg::SharedCfg};
+use ntex_service::{Service, ServiceCtx, cfg::SharedCfg};
 
 use super::control::{Control, ControlAck};
 
 #[derive(Copy, Clone, Debug)]
 /// Default control service
-pub struct DefaultControlService;
+pub struct DefaultControlService<E>(PhantomData<fn() -> E>);
 
-impl<E: fmt::Debug + 'static> ServiceFactory<Control<E>, SharedCfg> for DefaultControlService {
-    type Response = ControlAck;
-    type Error = E;
-    type Service = DefaultControlService;
-    type InitError = E;
-    type Data = ();
-
-    async fn create(&self, _: SharedCfg) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultControlService)
-    }
-
-    async fn map_data(&self, _: &SharedCfg, _: &Self::Data) -> Result<(), Self::InitError> {
-        Ok(())
+impl<E> DefaultControlService<E> {
+    pub const fn new() -> Self {
+        Self(PhantomData)
     }
 }
 
-impl<E: fmt::Debug + 'static> Service<Control<E>> for DefaultControlService {
+impl<E: fmt::Debug + 'static> Service<SharedCfg> for DefaultControlService<E> {
+    type Response = Self;
+    type Error = E;
+    type Data = ();
+
+    async fn call(
+        &self,
+        _: SharedCfg,
+        _: &Self::Data,
+        _: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
+        Ok(Self::new())
+    }
+}
+
+impl<E: fmt::Debug + 'static> Service<Control<E>> for DefaultControlService<E> {
     type Response = ControlAck;
     type Error = E;
     type Data = ();

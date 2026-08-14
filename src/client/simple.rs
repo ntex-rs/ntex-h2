@@ -74,7 +74,7 @@ impl SimpleClient {
 
         let disp = Dispatcher::new(
             con.clone(),
-            DefaultControlService,
+            DefaultControlService::<()>::new(),
             (),
             HandleService::new(storage.clone()),
             (),

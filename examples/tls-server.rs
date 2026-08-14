@@ -1,4 +1,4 @@
-use ntex::service::{ServiceFactory, fn_service};
+use ntex::service::{Service, fn_service};
 use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, server};
 use ntex_http::{HeaderMap, StatusCode, header};

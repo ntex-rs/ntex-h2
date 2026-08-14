@@ -25,8 +25,9 @@ pub struct Connector<A: Address, T> {
 impl<A, T> Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Data = ()>,
+    T::Response: Service<Connect<A>, Error = Error<ConnectError>>,
+    IoBoxed: From<<T::Response as Service<Connect<A>>>::Response>,
 {
     /// Create new http2 connector
     pub fn new<F>(svc: F) -> Connector<A, T>
@@ -67,8 +68,9 @@ where
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-        IoBoxed: From<U::Response>,
+        U: ServiceFactory<Connect<A>, SharedCfg, Data = ()>,
+        U::Response: Service<Connect<A>, Error = Error<ConnectError>>,
+        IoBoxed: From<<U::Response as Service<Connect<A>>>::Response>,
     {
         Connector {
             svc: svc.into_factory(),
@@ -79,36 +81,34 @@ where
     }
 }
 
-impl<A, T> ServiceFactory<A, SharedCfg> for Connector<A, T>
+impl<A, T> Service<SharedCfg> for Connector<A, T>
 where
     A: Address,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    T: ServiceFactory<Connect<A>, SharedCfg, Data = ()>,
+    T::Response: Service<Connect<A>, Error = Error<ConnectError>>,
+    IoBoxed: From<<T::Response as Service<Connect<A>>>::Response>,
 {
-    type Response = SimpleClient;
-    type Error = Error<ClientError>;
-    type Service = ConnectorService<A, T::Service>;
-    type InitError = T::InitError;
-    type Data = T::Data;
+    type Response = ConnectorService<A, T::Response>;
+    type Error = T::Error;
+    type Data = ();
 
-    async fn create(&self, cfg: SharedCfg) -> Result<Self::Service, Self::InitError> {
+    async fn call(
+        &self,
+        cfg: SharedCfg,
+        data: &Self::Data,
+        ctx: ServiceCtx<'_, Self>,
+    ) -> Result<Self::Response, Self::Error> {
         let config = cfg.get();
-        let svc = self.svc.create(cfg).await?;
+        let svc_data = self.svc.map_data(&cfg, data).await?;
+        let svc = ctx.call(&self.svc, cfg, data).await?;
         Ok(ConnectorService {
             svc,
+            data: svc_data,
             config,
             scheme: self.scheme.clone(),
             pool: self.pool.clone(),
             _t: PhantomData,
         })
-    }
-
-    async fn map_data(
-        &self,
-        cfg: &SharedCfg,
-        data: &Self::Data,
-    ) -> Result<<Self::Service as Service<A>>::Data, Self::InitError> {
-        self.svc.map_data(cfg, data).await
     }
 }
 
@@ -118,6 +118,7 @@ where
     T: Service<Connect<A>>,
 {
     svc: T,
+    data: T::Data,
     scheme: Scheme,
     config: Cfg<ServiceConfig>,
     pool: pool::Pool<()>,
@@ -132,20 +133,20 @@ where
 {
     type Response = SimpleClient;
     type Error = Error<ClientError>;
-    type Data = T::Data;
+    type Data = ();
 
     /// Connect to http2 server
     async fn call(
         &self,
         req: A,
-        data: &Self::Data,
+        _: &Self::Data,
         ctx: ServiceCtx<'_, Self>,
     ) -> Result<SimpleClient, Self::Error> {
         let authority = ByteString::from(req.host());
 
         let fut = async {
             let io = ctx
-                .call(&self.svc, Connect::new(req), data)
+                .call(&self.svc, Connect::new(req), &self.data)
                 .await
                 .map_err(|e| e.map(ClientError::from))?;
 
@@ -168,19 +169,19 @@ where
             .and_then(|item| item)
     }
 
-    async fn ready(&self, data: &Self::Data, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
-        ctx.ready(&self.svc, data)
+    async fn ready(&self, _: &Self::Data, ctx: ServiceCtx<'_, Self>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc, &self.data)
             .await
             .map_err(|e| e.map(ClientError::from))
     }
 
-    fn poll(&self, data: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
+    fn poll(&self, _: &Self::Data, cx: &mut Context<'_>) -> Result<(), Self::Error> {
         self.svc
-            .poll(data, cx)
+            .poll(&self.data, cx)
             .map_err(|e| e.map(ClientError::from))
     }
 
-    async fn shutdown(&self, data: &Self::Data) {
-        self.svc.shutdown(data).await;
+    async fn shutdown(&self, _: &Self::Data) {
+        self.svc.shutdown(&self.data).await;
     }
 }

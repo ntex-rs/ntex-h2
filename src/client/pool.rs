@@ -51,8 +51,8 @@ impl Client {
         A: Address + Clone,
         F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
         T: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
-        T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
-        IoBoxed: From<T::Response>,
+        T::Response: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
+        IoBoxed: From<<T::Response as ntex_service::Service<Connect<A>>>::Response>,
         Connect<A>: From<U>,
     {
         ClientBuilder::new(addr, connector)
@@ -317,8 +317,8 @@ impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
     T: ServiceFactory<Connect<A>, SharedCfg, Data = ()>,
-    T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    T::Response: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
+    IoBoxed: From<<T::Response as ntex_service::Service<Connect<A>>>::Response>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
     where
@@ -435,8 +435,8 @@ where
     where
         F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
         U: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
-        U::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
-        IoBoxed: From<U::Response>,
+        U::Response: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
+        IoBoxed: From<<U::Response as ntex_service::Service<Connect<A>>>::Response>,
     {
         ClientBuilder {
             connect: self.connect,
@@ -451,11 +451,11 @@ impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
     T: ServiceFactory<Connect<A>, SharedCfg, Data = ()> + 'static,
-    T::Service: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
+    T::Response: ntex_service::Service<Connect<A>, Error = Error<ConnectError>>,
+    IoBoxed: From<<T::Response as ntex_service::Service<Connect<A>>>::Response>,
 {
     /// Finish configuration process and create connections pool.
-    pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
+    pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::Error> {
         let connect = self.connect;
         let tag = cfg.tag();
         let client_cfg = cfg.get();
