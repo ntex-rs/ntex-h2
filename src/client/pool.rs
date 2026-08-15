@@ -462,7 +462,7 @@ where
 
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
-            let fut = svc.call_static(connect.clone(), ());
+            let fut = svc.call_static(connect.clone());
             Box::pin(async move { fut.await.map(IoBoxed::from) }) as Fut
         });
 

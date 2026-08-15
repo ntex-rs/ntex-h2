@@ -227,7 +227,7 @@ where
         let mut fut = IoDispatcher::new(
             io,
             codec,
-            Pipeline::new(Dispatcher::new(con, ctl_srv, pub_srv)).bind(),
+            Pipeline::new(Dispatcher::new(con, ctl_srv, pub_srv)),
         );
         poll_fn(|cx| {
             if con2.config().is_shutdown() {
@@ -330,7 +330,7 @@ where
     let mut fut = IoDispatcher::new(
         io,
         codec,
-        Pipeline::new(Dispatcher::new(con, ctl_svc, pub_svc)).bind(),
+        Pipeline::new(Dispatcher::new(con, ctl_svc, pub_svc)),
     );
 
     poll_fn(|cx| {

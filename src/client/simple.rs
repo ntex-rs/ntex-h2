@@ -72,10 +72,9 @@ impl SimpleClient {
 
         let disp = Pipeline::new(Dispatcher::new(
             con.clone(),
-            Pipeline::new(DefaultControlService::new()).bind(),
+            DefaultControlService::new(),
             HandleService::new(storage.clone()),
-        ))
-        .bind();
+        ));
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         ntex_util::spawn(async move {

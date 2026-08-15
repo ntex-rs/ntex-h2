@@ -26,7 +26,7 @@ where
     Ctl: Service<St = (), Req = Control<Pub::Error>>,
     Pub: Service<St = (), Req = Message>,
 {
-    control: Pipeline<Ctl>,
+    control: Ctl,
     publish: Pub,
     connection: Connection,
     last_stream_id: StreamId,
@@ -46,7 +46,7 @@ where
             inner: Rc::new(Inner {
                 publish,
                 connection,
-                control: Pipeline::new(control),
+                control: control,
                 last_stream_id: 0.into(),
                 disconnected: Cell::new(false),
             }),
@@ -101,7 +101,7 @@ where
             spawn(async move {
                 let p = Pipeline::new(&inner.publish);
                 for stream in streams.into_values() {
-                    let _ = p.call(Message::disconnect(err.clone(), stream), &()).await;
+                    let _ = p.call(Message::disconnect(err.clone(), stream)).await;
                 }
             });
         }
@@ -124,7 +124,7 @@ where
     async fn ready(&self, ctx: ReadyCtx<'_, Self>) -> Result<(), Self::Error> {
         let (res1, res2) = join(
             ctx.ready(&self.inner.publish),
-            ctx.ready(self.inner.control.get_ref()),
+            ctx.ready(&self.inner.control),
         )
         .await;
 
@@ -132,10 +132,7 @@ where
             if res2.is_err() {
                 Err(())
             } else {
-                match ctx
-                    .call(self.inner.control.get_ref(), Control::error(e, None))
-                    .await
-                {
+                match ctx.call(&self.inner.control, Control::error(e, None)).await {
                     Ok(_) => {
                         self.connection.disconnect();
                         Ok(())
@@ -149,8 +146,6 @@ where
     }
 
     async fn shutdown(&self) {
-        let _ = self.inner.control.call(Control::terminated(), &()).await;
-
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
         self.connection.disconnect();
@@ -363,7 +358,7 @@ where
     Pub::Error: fmt::Debug,
 {
     if inner.can_disconnect() {
-        match ctx.call(inner.control.get_ref(), pkt).await {
+        match ctx.call(&inner.control, pkt).await {
             Ok(res) => {
                 if let Some(frm) = res.frame {
                     inner.connection.encode(frm);
