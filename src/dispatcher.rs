@@ -1,4 +1,4 @@
-use std::{cell::Cell, fmt, future::Future, future::poll_fn, rc::Rc, task::Context, task::Poll};
+use std::{cell::Cell, fmt, future::Future, future::poll_fn, rc::Rc, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
@@ -146,24 +146,6 @@ where
         } else {
             res2.map_err(|_| ())
         }
-    }
-
-    fn poll(&self, cx: &mut Context<'_>) -> Result<(), Self::Error> {
-        if let Err(e) = self.inner.publish.poll(cx) {
-            let inner = self.inner.clone();
-            let con = self.connection.connection();
-            ntex_util::spawn(async move {
-                if inner
-                    .control
-                    .call_nowait(Control::error(e, None), ())
-                    .await
-                    .is_ok()
-                {
-                    con.close();
-                }
-            });
-        }
-        self.inner.control.poll(cx).map_err(|_| ())
     }
 
     async fn shutdown(&self) {

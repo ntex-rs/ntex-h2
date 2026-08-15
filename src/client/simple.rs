@@ -6,11 +6,11 @@ use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::{IoBoxed, IoRef, OnDisconnect};
-use ntex_service::{cfg::Cfg, Pipeline};
+use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
-use crate::{dispatcher::Dispatcher, connection::Connection, default::DefaultControlService};
 use crate::{OperationError, ServiceConfig, codec::Codec};
+use crate::{connection::Connection, default::DefaultControlService, dispatcher::Dispatcher};
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
@@ -72,10 +72,10 @@ impl SimpleClient {
 
         let disp = Pipeline::new(Dispatcher::new(
             con.clone(),
-            Pipeline::new(DefaultControlService::new())
-                .bind(),
+            Pipeline::new(DefaultControlService::new()).bind(),
             HandleService::new(storage.clone()),
-        )).bind();
+        ))
+        .bind();
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         ntex_util::spawn(async move {

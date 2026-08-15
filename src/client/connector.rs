@@ -114,7 +114,7 @@ pub struct ConnectorService<A, S> {
     _t: PhantomData<A>,
 }
 
-impl<A, S,> Service for ConnectorService<A, S>
+impl<A, S> Service for ConnectorService<A, S>
 where
     A: Address,
     S: Service<Req = Connect<A>, Error = Error<ConnectError>>,
@@ -155,6 +155,5 @@ where
     }
 
     ntex_service::forward_ready!(svc, |e| e.map(ClientError::from));
-    ntex_service::forward_poll!(svc, |e| e.map(ClientError::from));
     ntex_service::forward_shutdown!(svc);
 }

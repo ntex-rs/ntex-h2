@@ -518,10 +518,6 @@ impl RecvHalfConnection {
         self.0.local_config.service()
     }
 
-    pub(crate) fn connection(&self) -> Connection {
-        Connection(self.0.clone())
-    }
-
     pub(crate) fn drop_stream(&self, id: StreamId) {
         self.0.drop_stream(id);
     }

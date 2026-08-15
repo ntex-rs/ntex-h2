@@ -1,4 +1,4 @@
-use std::{fmt, future::Future, future::poll_fn, pin::Pin, rc::Rc, marker::PhantomData};
+use std::{fmt, future::Future, future::poll_fn, marker::PhantomData, pin::Pin, rc::Rc};
 
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::{Filter, Io, IoBoxed};
@@ -51,7 +51,8 @@ where
 
 impl<Pub, Ctl> Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
+        + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
@@ -62,7 +63,8 @@ where
     pub fn control<S, F>(&self, service: F) -> Server<Pub, S>
     where
         F: IntoServiceFactory<S, Control<Pub::Error>>,
-        S: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck> + 'static,
+        S: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
+            + 'static,
         S::Error: fmt::Debug,
         S::InitError: fmt::Debug,
     {
@@ -81,7 +83,8 @@ where
 
 impl<Pub, Ctl> ServiceFactory<IoBoxed> for Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
+        + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
@@ -102,7 +105,8 @@ where
 
 impl<F: Filter, Pub, Ctl> ServiceFactory<Io<F>> for Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck> + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
+        + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
     Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
