@@ -1,4 +1,4 @@
-use std::{fmt, marker::PhantomData};
+use std::{error::Error, fmt, marker::PhantomData, rc::Rc};
 
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::SharedCfg};
 
@@ -14,10 +14,9 @@ impl<E> DefaultControlService<E> {
     }
 }
 
-impl<E: fmt::Debug> ServiceFactory<Control<E>> for DefaultControlService<E> {
-    type St = ();
+impl<E: fmt::Debug> ServiceFactory<Control<E>, ()> for DefaultControlService<E> {
     type Res = ControlAck;
-    type Error = E;
+    type Error = Rc<dyn Error>;
     type InitCfg = SharedCfg;
     type InitError = E;
     type Service = DefaultControlService<E>;
@@ -27,13 +26,12 @@ impl<E: fmt::Debug> ServiceFactory<Control<E>> for DefaultControlService<E> {
     }
 }
 
-impl<E: fmt::Debug> Service for DefaultControlService<E> {
-    type St = ();
+impl<E: fmt::Debug> Service<()> for DefaultControlService<E> {
     type Req = Control<E>;
     type Res = ControlAck;
-    type Error = E;
+    type Error = Rc<dyn Error>;
 
-    async fn call(&self, msg: Control<E>, _: Ctx<'_, Self>) -> Result<ControlAck, E> {
+    async fn call(&self, msg: Control<E>, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
         log::trace!("Default control service is used: {msg:?}");
         Ok(msg.ack())
     }

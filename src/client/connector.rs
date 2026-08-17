@@ -25,14 +25,11 @@ pub struct Connector<A: Address, T> {
 impl<A, Sf> Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<Connect<A>, St = (), Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
     IoBoxed: From<Sf::Res>,
 {
     /// Create new http2 connector
-    pub fn new<F>(svc: F) -> Connector<A, Sf>
-    where
-        F: IntoServiceFactory<Sf, Connect<A>>,
-    {
+    pub fn new(svc: impl IntoServiceFactory<Sf, (), Connect<A>>) -> Connector<A, Sf> {
         Connector {
             svc: svc.into_factory(),
             scheme: Scheme::HTTP,
@@ -66,8 +63,8 @@ where
     /// Use custom connector
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>>,
-        U: ServiceFactory<Connect<A>, St = (), InitCfg = SharedCfg, Error = Error<ConnectError>>,
+        F: IntoServiceFactory<U, (), Connect<A>>,
+        U: ServiceFactory<Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         Connector {
@@ -82,10 +79,9 @@ where
 impl<A, Sf> ServiceFactory<A> for Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<Connect<A>, St = (), Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
     IoBoxed: From<Sf::Res>,
 {
-    type St = Sf::St;
     type Res = SimpleClient;
     type Error = Error<ClientError>;
     type InitCfg = SharedCfg;
@@ -114,19 +110,18 @@ pub struct ConnectorService<A, S> {
     _t: PhantomData<A>,
 }
 
-impl<A, S> Service for ConnectorService<A, S>
+impl<A, S, St> Service<St> for ConnectorService<A, S>
 where
     A: Address,
-    S: Service<Req = Connect<A>, Error = Error<ConnectError>>,
+    S: Service<St, Req = Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<S::Res>,
 {
-    type St = S::St;
     type Req = A;
     type Res = SimpleClient;
     type Error = Error<ClientError>;
 
     /// Connect to http2 server
-    async fn call(&self, req: A, ctx: Ctx<'_, Self>) -> Result<SimpleClient, Self::Error> {
+    async fn call(&self, req: A, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         let authority = ByteString::from(req.host());
 
         let fut = async {
@@ -154,6 +149,6 @@ where
             .and_then(|item| item)
     }
 
-    ntex_service::forward_ready!(svc, |e| e.map(ClientError::from));
+    ntex_service::forward_ready!(St, svc, |e| e.map(ClientError::from));
     ntex_service::forward_shutdown!(svc);
 }

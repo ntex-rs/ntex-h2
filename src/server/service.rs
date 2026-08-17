@@ -1,10 +1,12 @@
-use std::{fmt, future::Future, future::poll_fn, marker::PhantomData, pin::Pin, rc::Rc};
+use std::{
+    error::Error, fmt, future::Future, future::poll_fn, marker::PhantomData, pin::Pin, rc::Rc,
+};
 
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::{Filter, Io, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Ctx, IntoServiceFactory, Pipeline, Service, ServiceFactory};
-use ntex_util::{channel::pool, time::timeout_checked};
+use ntex_service::{Ctx, IntoServiceFactory, Pipeline, PipelineBinding, Service, ServiceFactory};
+use ntex_util::{channel::pool, str_rc_err, time::timeout_checked};
 
 use crate::control::{Control, ControlAck};
 use crate::{codec::Codec, connection::Connection, default::DefaultControlService};
@@ -35,7 +37,7 @@ impl<Pub, Ctl> Clone for ServerInner<Pub, Ctl> {
 
 impl<Pub> Server<Pub, DefaultControlService<Pub::Error>>
 where
-    Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
+    Pub: ServiceFactory<(), Message, InitCfg = SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -51,22 +53,20 @@ where
 
 impl<Pub, Ctl> Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, InitCfg = SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
+    Pub: ServiceFactory<Message, InitCfg = SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
     /// Service to handle control frames
-    pub fn control<S, F>(&self, service: F) -> Server<Pub, S>
+    pub fn control<Sf, F>(&self, service: F) -> Server<Pub, Sf>
     where
-        F: IntoServiceFactory<S, Control<Pub::Error>>,
-        S: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
-            + 'static,
-        S::Error: fmt::Debug,
-        S::InitError: fmt::Debug,
+        F: IntoServiceFactory<Sf, (), Control<Pub::Error>>,
+        Sf: ServiceFactory<Control<Pub::Error>, InitCfg = SharedCfg, Res = ControlAck> + 'static,
+        Sf::Error: fmt::Debug,
+        Sf::InitError: fmt::Debug,
     {
         Server(ServerInner {
             control: Rc::new(service.into_factory()),
@@ -81,17 +81,15 @@ where
     }
 }
 
-impl<Pub, Ctl> ServiceFactory<IoBoxed> for Server<Pub, Ctl>
+impl<St, Pub, Ctl> ServiceFactory<IoBoxed, St> for Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, InitCfg = SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
+    Pub: ServiceFactory<Message, InitCfg = SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type St = ();
     type Res = ();
     type Error = ServerError<()>;
     type Service = ServerHandler<Pub, Ctl>;
@@ -103,17 +101,15 @@ where
     }
 }
 
-impl<F: Filter, Pub, Ctl> ServiceFactory<Io<F>> for Server<Pub, Ctl>
+impl<F: Filter, St, Pub, Ctl> ServiceFactory<Io<F>, St> for Server<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, InitCfg = SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
+    Pub: ServiceFactory<Message, InitCfg = SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type St = ();
     type Res = ();
     type Error = ServerError<()>;
     type Service = ServerHandlerF<Pub, Ctl, F>;
@@ -177,11 +173,10 @@ impl<Pub, Ctl, F> Clone for ServerHandlerF<Pub, Ctl, F> {
 
 impl<Pub, Ctl> ServerHandler<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), InitCfg = SharedCfg, Res = ControlAck>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, InitCfg = SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), InitCfg = SharedCfg, Res = ()> + 'static,
+    Pub: ServiceFactory<Message, InitCfg = SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
@@ -227,7 +222,11 @@ where
         let mut fut = IoDispatcher::new(
             io,
             codec,
-            Pipeline::new(Dispatcher::new(con, ctl_srv, pub_srv)),
+            Pipeline::new(Dispatcher::new(
+                con,
+                Pipeline::new(pub_srv),
+                Pipeline::new(ctl_srv.map_err(|e| str_rc_err(format!("{e:?}")))).bind(),
+            )),
         );
         poll_fn(|cx| {
             if con2.config().is_shutdown() {
@@ -240,42 +239,38 @@ where
     }
 }
 
-impl<Pub, Ctl> Service for ServerHandler<Pub, Ctl>
+impl<St, Pub, Ctl> Service<St> for ServerHandler<Pub, Ctl>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), Res = ControlAck, InitCfg = SharedCfg>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Res = ControlAck, InitCfg = SharedCfg> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), Res = (), InitCfg = SharedCfg> + 'static,
+    Pub: ServiceFactory<Message, Res = (), InitCfg = SharedCfg> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type St = ();
     type Req = IoBoxed;
     type Res = ();
     type Error = ServerError<()>;
 
-    async fn call(&self, io: IoBoxed, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
+    async fn call(&self, io: IoBoxed, _: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         self.run(io).await
     }
 }
 
-impl<F: Filter, Pub, Ctl> Service for ServerHandlerF<Pub, Ctl, F>
+impl<F: Filter, St, Pub, Ctl> Service<St> for ServerHandlerF<Pub, Ctl, F>
 where
-    Ctl: ServiceFactory<Control<Pub::Error>, St = (), Res = ControlAck, InitCfg = SharedCfg>
-        + 'static,
+    Ctl: ServiceFactory<Control<Pub::Error>, Res = ControlAck, InitCfg = SharedCfg> + 'static,
     Ctl::Error: fmt::Debug,
     Ctl::InitError: fmt::Debug,
-    Pub: ServiceFactory<Message, St = (), Res = (), InitCfg = SharedCfg> + 'static,
+    Pub: ServiceFactory<Message, Res = (), InitCfg = SharedCfg> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type St = ();
     type Req = Io<F>;
     type Res = ();
     type Error = ServerError<()>;
 
-    async fn call(&self, io: Io<F>, _: Ctx<'_, Self>) -> Result<(), Self::Error> {
+    async fn call(&self, io: Io<F>, _: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
         self.hnd.run(io.boxed()).await
     }
 }
@@ -294,17 +289,11 @@ async fn read_preface(io: &IoBoxed) -> Result<(), ServerError<()>> {
 }
 
 /// Handle io object.
-pub async fn handle_one<Pub, Ctl>(
+pub async fn handle_one<Err: 'static>(
     io: IoBoxed,
-    pub_svc: Pub,
-    ctl_svc: Ctl,
-) -> Result<(), ServerError<()>>
-where
-    Ctl: Service<St = (), Req = Control<Pub::Error>, Res = ControlAck> + 'static,
-    Ctl::Error: fmt::Debug,
-    Pub: Service<St = (), Req = Message, Res = ()> + 'static,
-    Pub::Error: fmt::Debug,
-{
+    pub_svc: Pipeline<Message, (), Err>,
+    ctl_svc: PipelineBinding<Control<Err>, ControlAck, Rc<dyn Error>>,
+) -> Result<(), ServerError<()>> {
     let config: Cfg<ServiceConfig> = io.shared().get();
 
     // read preface
@@ -330,7 +319,7 @@ where
     let mut fut = IoDispatcher::new(
         io,
         codec,
-        Pipeline::new(Dispatcher::new(con, ctl_svc, pub_svc)),
+        Pipeline::new(Dispatcher::new(con, pub_svc, ctl_svc)),
     );
 
     poll_fn(|cx| {
