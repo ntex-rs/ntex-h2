@@ -14,12 +14,12 @@ impl<E> DefaultControlService<E> {
     }
 }
 
-impl<E: fmt::Debug> ServiceFactory<(), Control<E>> for DefaultControlService<E> {
+impl<E: fmt::Debug> ServiceFactory<(), Control<E>, SharedCfg> for DefaultControlService<E> {
     type Res = ControlAck;
     type Error = Rc<dyn Error>;
-    type InitCfg = SharedCfg;
-    type InitError = E;
+
     type Service = DefaultControlService<E>;
+    type InitError = E;
 
     async fn create(&self, _: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService::new())

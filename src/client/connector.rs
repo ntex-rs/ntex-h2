@@ -14,8 +14,8 @@ use crate::{client::ClientError, config::ServiceConfig};
 
 #[derive(Debug)]
 /// Http2 client connector
-pub struct Connector<A: Address, T> {
-    svc: T,
+pub struct Connector<A: Address, Sf> {
+    svc: Sf,
     scheme: Scheme,
     pool: pool::Pool<()>,
 
@@ -25,11 +25,11 @@ pub struct Connector<A: Address, T> {
 impl<A, Sf> Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<(), Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<Sf::Res>,
 {
     /// Create new http2 connector
-    pub fn new(svc: impl IntoServiceFactory<Sf, (), Connect<A>>) -> Connector<A, Sf> {
+    pub fn new(svc: impl IntoServiceFactory<Sf, (), Connect<A>, SharedCfg>) -> Connector<A, Sf> {
         Connector {
             svc: svc.into_factory(),
             scheme: Scheme::HTTP,
@@ -63,8 +63,8 @@ where
     /// Use custom connector
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
-        F: IntoServiceFactory<U, (), Connect<A>>,
-        U: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>,
+        F: IntoServiceFactory<U, (), Connect<A>, SharedCfg>,
+        U: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         Connector {
@@ -76,15 +76,14 @@ where
     }
 }
 
-impl<A, Sf> ServiceFactory<(), A> for Connector<A, Sf>
+impl<A, Sf> ServiceFactory<(), A, SharedCfg> for Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<(), Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<Sf::Res>,
 {
     type Res = SimpleClient;
     type Error = Error<ClientError>;
-    type InitCfg = SharedCfg;
     type InitError = Sf::InitError;
     type Service = ConnectorService<A, Sf::Service>;
 

@@ -38,7 +38,7 @@ impl<Err: 'static> Dispatcher<Err> {
             inner: Rc::new(Inner {
                 publish,
                 connection,
-                control: control,
+                control,
                 last_stream_id: 0.into(),
                 disconnected: Cell::new(false),
             }),

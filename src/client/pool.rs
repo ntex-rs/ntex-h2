@@ -49,9 +49,8 @@ impl Client {
     pub fn builder<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
     where
         A: Address + Clone,
-        F: IntoServiceFactory<T, (), Connect<A>>,
-        T: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>
-            + 'static,
+        F: IntoServiceFactory<T, (), Connect<A>, SharedCfg>,
+        T: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
         IoBoxed: From<T::Res>,
         Connect<A>: From<U>,
     {
@@ -316,13 +315,13 @@ struct InnerConfig {
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>,
+    T: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
     IoBoxed: From<T::Res>,
 {
     fn new<U, F>(addr: U, connector: F) -> Self
     where
         Connect<A>: From<U>,
-        F: IntoServiceFactory<T, (), Connect<A>>,
+        F: IntoServiceFactory<T, (), Connect<A>, SharedCfg>,
     {
         let connect = Connect::from(addr);
         let authority = ByteString::from(connect.host());
@@ -432,9 +431,8 @@ where
     /// Use custom connector
     pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
     where
-        F: IntoServiceFactory<U, (), Connect<A>>,
-        U: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>
-            + 'static,
+        F: IntoServiceFactory<U, (), Connect<A>, SharedCfg>,
+        U: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
         IoBoxed: From<U::Res>,
     {
         ClientBuilder {
@@ -449,7 +447,7 @@ where
 impl<A, T> ClientBuilder<A, T>
 where
     A: Address + Clone,
-    T: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>> + 'static,
+    T: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
     IoBoxed: From<T::Res>,
 {
     /// Finish configuration process and create connections pool.
