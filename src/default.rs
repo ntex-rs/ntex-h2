@@ -14,7 +14,7 @@ impl<E> DefaultControlService<E> {
     }
 }
 
-impl<E: fmt::Debug> ServiceFactory<Control<E>, ()> for DefaultControlService<E> {
+impl<E: fmt::Debug> ServiceFactory<(), Control<E>> for DefaultControlService<E> {
     type Res = ControlAck;
     type Error = Rc<dyn Error>;
     type InitCfg = SharedCfg;

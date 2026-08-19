@@ -25,7 +25,7 @@ pub struct Connector<A: Address, T> {
 impl<A, Sf> Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<(), Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
     IoBoxed: From<Sf::Res>,
 {
     /// Create new http2 connector
@@ -64,7 +64,7 @@ where
     pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
     where
         F: IntoServiceFactory<U, (), Connect<A>>,
-        U: ServiceFactory<Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>,
+        U: ServiceFactory<(), Connect<A>, InitCfg = SharedCfg, Error = Error<ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         Connector {
@@ -76,10 +76,10 @@ where
     }
 }
 
-impl<A, Sf> ServiceFactory<A> for Connector<A, Sf>
+impl<A, Sf> ServiceFactory<(), A> for Connector<A, Sf>
 where
     A: Address,
-    Sf: ServiceFactory<Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
+    Sf: ServiceFactory<(), Connect<A>, Error = Error<ConnectError>, InitCfg = SharedCfg>,
     IoBoxed: From<Sf::Res>,
 {
     type Res = SimpleClient;
