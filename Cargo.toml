@@ -11,7 +11,7 @@ keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.95"
 
 [features]
 default = []

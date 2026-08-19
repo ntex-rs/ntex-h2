@@ -4,7 +4,7 @@ use std::{
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
-use ntex_service::{Ctx, Pipeline, PipelineBinding, ReadyCtx, Service};
+use ntex_service::{Ctx, Pipeline, PipelineBinding, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
@@ -104,7 +104,7 @@ impl<Err: 'static> Service<()> for Dispatcher<Err> {
     type Error = ();
 
     #[inline]
-    async fn ready(&self, _: ReadyCtx<'_, Self, ()>) -> Result<(), Self::Error> {
+    async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         let (res1, res2) = join(self.inner.publish.ready(), self.inner.control.ready()).await;
 
         if let Err(e) = res1 {
