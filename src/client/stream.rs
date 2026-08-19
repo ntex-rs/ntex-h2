@@ -248,8 +248,7 @@ impl HandleService {
     }
 }
 
-impl Service<()> for HandleService {
-    type Req = Message;
+impl Service<(), Message> for HandleService {
     type Res = ();
     type Error = ();
 

@@ -73,7 +73,7 @@ impl SimpleClient {
         let disp = Pipeline::new(Dispatcher::new(
             con.clone(),
             Pipeline::new(HandleService::new(storage.clone())),
-            Pipeline::new(DefaultControlService::new()).bind(),
+            Pipeline::new(DefaultControlService).bind(),
         ));
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);

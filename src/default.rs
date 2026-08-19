@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, marker::PhantomData, rc::Rc};
+use std::{error::Error, fmt, rc::Rc};
 
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::SharedCfg};
 
@@ -6,28 +6,21 @@ use super::control::{Control, ControlAck};
 
 #[derive(Copy, Clone, Debug)]
 /// Default control service
-pub struct DefaultControlService<E>(PhantomData<E>);
+pub struct DefaultControlService;
 
-impl<E> DefaultControlService<E> {
-    pub fn new() -> Self {
-        DefaultControlService(PhantomData)
-    }
-}
-
-impl<E: fmt::Debug> ServiceFactory<(), Control<E>, SharedCfg> for DefaultControlService<E> {
+impl<E: fmt::Debug> ServiceFactory<(), Control<E>, SharedCfg> for DefaultControlService {
     type Res = ControlAck;
     type Error = Rc<dyn Error>;
 
-    type Service = DefaultControlService<E>;
+    type Service = DefaultControlService;
     type InitError = E;
 
     async fn create(&self, _: &SharedCfg) -> Result<Self::Service, Self::InitError> {
-        Ok(DefaultControlService::new())
+        Ok(DefaultControlService)
     }
 }
 
-impl<E: fmt::Debug> Service<()> for DefaultControlService<E> {
-    type Req = Control<E>;
+impl<E: fmt::Debug> Service<(), Control<E>> for DefaultControlService {
     type Res = ControlAck;
     type Error = Rc<dyn Error>;
 

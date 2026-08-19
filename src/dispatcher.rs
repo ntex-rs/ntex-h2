@@ -98,8 +98,7 @@ impl<Err: 'static> Dispatcher<Err> {
     }
 }
 
-impl<Err: 'static> Service<()> for Dispatcher<Err> {
-    type Req = DispatchItem<Codec>;
+impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
     type Res = Option<Frame>;
     type Error = ();
 
@@ -131,7 +130,11 @@ impl<Err: 'static> Service<()> for Dispatcher<Err> {
     }
 
     #[allow(clippy::used_underscore_binding)]
-    async fn call(&self, req: Self::Req, _: Ctx<'_, Self, ()>) -> Result<Self::Res, Self::Error> {
+    async fn call(
+        &self,
+        req: DispatchItem<Codec>,
+        _: Ctx<'_, Self, ()>,
+    ) -> Result<Self::Res, Self::Error> {
         #[cfg(feature = "trace")]
         log::debug!("{}: Handle h2 message: {reqt:?}", self.connection.tag());
 

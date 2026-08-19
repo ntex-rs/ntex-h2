@@ -109,13 +109,12 @@ pub struct ConnectorService<A, S> {
     _t: PhantomData<A>,
 }
 
-impl<A, S, St> Service<St> for ConnectorService<A, S>
+impl<A, S, St> Service<St, A> for ConnectorService<A, S>
 where
     A: Address,
-    S: Service<St, Req = Connect<A>, Error = Error<ConnectError>>,
+    S: Service<St, Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<S::Res>,
 {
-    type Req = A;
     type Res = SimpleClient;
     type Error = Error<ClientError>;
 

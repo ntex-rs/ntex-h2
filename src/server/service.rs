@@ -1,6 +1,4 @@
-use std::{
-    error::Error, fmt, future::Future, future::poll_fn, marker::PhantomData, pin::Pin, rc::Rc,
-};
+use std::{error::Error, fmt, future::Future, future::poll_fn, pin::Pin, rc::Rc};
 
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::{Filter, Io, IoBoxed};
@@ -35,7 +33,7 @@ impl<Pub, Ctl> Clone for ServerInner<Pub, Ctl> {
     }
 }
 
-impl<Pub> Server<Pub, DefaultControlService<Pub::Error>>
+impl<Pub> Server<Pub, DefaultControlService>
 where
     Pub: ServiceFactory<(), Message, SharedCfg, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
@@ -45,7 +43,7 @@ where
     pub fn new(publish: Pub) -> Self {
         Self(ServerInner {
             publish: Rc::new(publish),
-            control: Rc::new(DefaultControlService::new()),
+            control: Rc::new(DefaultControlService),
             pool: pool::new(),
         })
     }
@@ -113,11 +111,11 @@ where
     type Res = ();
     type Error = ServerError<()>;
 
-    type Service = ServerHandlerF<Pub, Ctl, F>;
+    type Service = ServerHandler<Pub, Ctl>;
     type InitError = ();
 
     async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
-        Ok(ServerHandlerF::new(cfg.clone(), self.0.clone()))
+        Ok(ServerHandler::new(cfg.clone(), self.0.clone()))
     }
 }
 
@@ -127,13 +125,6 @@ pub struct ServerHandler<Pub, Ctl> {
     cfg: Cfg<ServiceConfig>,
     inner: ServerInner<Pub, Ctl>,
     shared: SharedCfg,
-}
-
-#[derive(Debug)]
-/// Http2 connections handler
-pub struct ServerHandlerF<Pub, Ctl, F> {
-    hnd: ServerHandler<Pub, Ctl>,
-    f: PhantomData<F>,
 }
 
 impl<Pub, Ctl> ServerHandler<Pub, Ctl> {
@@ -149,24 +140,6 @@ impl<Pub, Ctl> Clone for ServerHandler<Pub, Ctl> {
             inner: self.inner.clone(),
             cfg: self.cfg.clone(),
             shared: self.shared.clone(),
-        }
-    }
-}
-
-impl<Pub, Ctl, F> ServerHandlerF<Pub, Ctl, F> {
-    fn new(shared: SharedCfg, inner: ServerInner<Pub, Ctl>) -> Self {
-        Self {
-            hnd: ServerHandler::new(shared, inner),
-            f: PhantomData,
-        }
-    }
-}
-
-impl<Pub, Ctl, F> Clone for ServerHandlerF<Pub, Ctl, F> {
-    fn clone(&self) -> Self {
-        Self {
-            hnd: self.hnd.clone(),
-            f: PhantomData,
         }
     }
 }
@@ -239,7 +212,7 @@ where
     }
 }
 
-impl<St, Pub, Ctl> Service<St> for ServerHandler<Pub, Ctl>
+impl<St, Pub, Ctl> Service<St, IoBoxed> for ServerHandler<Pub, Ctl>
 where
     Ctl: ServiceFactory<(), Control<Pub::Error>, SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
@@ -248,7 +221,6 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type Req = IoBoxed;
     type Res = ();
     type Error = ServerError<()>;
 
@@ -257,7 +229,7 @@ where
     }
 }
 
-impl<F: Filter, St, Pub, Ctl> Service<St> for ServerHandlerF<Pub, Ctl, F>
+impl<F: Filter, St, Pub, Ctl> Service<St, Io<F>> for ServerHandler<Pub, Ctl>
 where
     Ctl: ServiceFactory<(), Control<Pub::Error>, SharedCfg, Res = ControlAck> + 'static,
     Ctl::Error: fmt::Debug,
@@ -266,12 +238,11 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: fmt::Debug,
 {
-    type Req = Io<F>;
     type Res = ();
     type Error = ServerError<()>;
 
     async fn call(&self, io: Io<F>, _: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
-        self.hnd.run(io.boxed()).await
+        self.run(io.boxed()).await
     }
 }
 
