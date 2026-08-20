@@ -3,7 +3,7 @@ use std::{cell::Cell, error::Error as StdError, future, rc::Rc, task::Poll};
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
 use ntex_service::pipeline::{Pipeline, PipelineBinding};
-use ntex_service::{Ctx, CtxShutdown, Service};
+use ntex_service::{Ctx, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
@@ -122,7 +122,7 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
         }
     }
 
-    async fn shutdown(&self, _: CtxShutdown<'_, ()>) {
+    async fn shutdown(&self, _: Ctx<'_, Self, ()>) {
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
         self.connection.disconnect();
