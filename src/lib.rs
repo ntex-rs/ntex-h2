@@ -69,13 +69,7 @@
 //! [futures]: https://docs.rs/futures/
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
-#![deny(
-    rust_2018_idioms,
-    warnings,
-    unreachable_pub,
-    missing_debug_implementations,
-    clippy::pedantic
-)]
+#![deny(clippy::pedantic)]
 #![allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,

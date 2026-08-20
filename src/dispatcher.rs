@@ -1,11 +1,9 @@
-use std::{
-    cell::Cell, error::Error as StdError, future::Future, future::poll_fn, rc::Rc, task::Poll,
-};
+use std::{cell::Cell, error::Error as StdError, future, rc::Rc, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
 use ntex_service::pipeline::{Pipeline, PipelineBinding};
-use ntex_service::{Ctx, Service};
+use ntex_service::{Ctx, CtxShutdown, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
@@ -46,8 +44,8 @@ impl<Err: 'static> Dispatcher<Err> {
         }
     }
 
-    async fn handle_message<'f>(
-        &'f self,
+    async fn handle_message(
+        &self,
         result: Result<Option<(StreamRef, Message)>, EitherError>,
     ) -> Result<Option<Frame>, ()> {
         match result {
@@ -124,7 +122,7 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
         }
     }
 
-    async fn shutdown(&self) {
+    async fn shutdown(&self, _: CtxShutdown<'_, ()>) {
         join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
 
         self.connection.disconnect();
@@ -266,15 +264,15 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
     }
 }
 
-async fn publish<'f, Err: 'static>(
+async fn publish<Err: 'static>(
     msg: Message,
     stream: StreamRef,
-    inner: &'f Inner<Err>,
+    inner: &Inner<Err>,
 ) -> Result<Option<Frame>, ()> {
     let result = if stream.is_remote() {
         let fut = inner.publish.call(msg);
         let mut pinned = std::pin::pin!(fut);
-        poll_fn(|cx| {
+        future::poll_fn(|cx| {
             if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
                 log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
                 return Poll::Ready(Ok(()));
@@ -303,10 +301,7 @@ impl<Err> Inner<Err> {
     }
 }
 
-async fn control<'f, Err: 'static>(
-    pkt: Control<Err>,
-    inner: &'f Inner<Err>,
-) -> Result<Option<Frame>, ()> {
+async fn control<Err: 'static>(pkt: Control<Err>, inner: &Inner<Err>) -> Result<Option<Frame>, ()> {
     if inner.can_disconnect() {
         match inner.control.call(pkt).await {
             Ok(res) => {

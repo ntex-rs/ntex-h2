@@ -148,5 +148,5 @@ where
     }
 
     ntex_service::forward_ready!(St, svc, |e| e.map(ClientError::from));
-    ntex_service::forward_shutdown!(svc);
+    ntex_service::forward_shutdown!(St, svc);
 }
