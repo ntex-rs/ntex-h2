@@ -4,7 +4,8 @@ use std::{
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
-use ntex_service::{Ctx, Pipeline, PipelineBinding, Service};
+use ntex_service::pipeline::{Pipeline, PipelineBinding};
+use ntex_service::{Ctx, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};

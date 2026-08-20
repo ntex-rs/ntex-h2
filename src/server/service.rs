@@ -3,7 +3,8 @@ use std::{error::Error, fmt, future::Future, future::poll_fn, pin::Pin, rc::Rc};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::{Filter, Io, IoBoxed};
 use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Ctx, IntoServiceFactory, Pipeline, PipelineBinding, Service, ServiceFactory};
+use ntex_service::pipeline::{Pipeline, PipelineBinding};
+use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
 use ntex_util::{channel::pool, str_rc_err, time::timeout_checked};
 
 use crate::control::{Control, ControlAck};
