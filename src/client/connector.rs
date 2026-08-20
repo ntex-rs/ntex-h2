@@ -5,33 +5,44 @@ use ntex_error::Error;
 use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{Ctx, IntoServiceFactory, Service, ServiceFactory};
+use ntex_service::{Ctx, IntoService, Service, cfg::SharedCfg};
 use ntex_util::{channel::pool, time::timeout_checked};
 
-use crate::client::{SimpleClient, stream::InflightStorage};
-use crate::{client::ClientError, config::ServiceConfig};
+use crate::client::{ClientError, SimpleClient, stream::InflightStorage};
+use crate::config::ServiceConfig;
 
 #[derive(Debug)]
 /// Http2 client connector
-pub struct Connector<A: Address, Sf> {
-    svc: Sf,
+pub struct Connector<A: Address, S, St> {
+    svc: S,
     scheme: Scheme,
     pool: pool::Pool<()>,
-
-    _t: PhantomData<A>,
+    cfg: SharedCfg,
+    _t: PhantomData<(A, St)>,
 }
 
-impl<A, Sf> Connector<A, Sf>
+impl<A> Default for Connector<A, DefaultConnector<A, ()>, ()>
 where
     A: Address,
-    Sf: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<Sf::Res>,
+{
+    /// Create new h2 connector
+    fn default() -> Self {
+        Self::new(SharedCfg::default())
+    }
+}
+
+impl<A, St> Connector<A, DefaultConnector<A, St>, St>
+where
+    A: Address,
 {
     /// Create new http2 connector
-    pub fn new(svc: impl IntoServiceFactory<Sf, (), Connect<A>, SharedCfg>) -> Connector<A, Sf> {
+    pub fn new(cfg: impl Into<SharedCfg>) -> Self {
+        let cfg = cfg.into();
+        let svc = DefaultConnector::with(cfg.clone());
+
         Connector {
-            svc: svc.into_factory(),
+            cfg,
+            svc,
             scheme: Scheme::HTTP,
             pool: pool::new(),
             _t: PhantomData,
@@ -39,17 +50,7 @@ where
     }
 }
 
-impl<A> Default for Connector<A, DefaultConnector<A>>
-where
-    A: Address,
-{
-    /// Create new h2 connector
-    fn default() -> Self {
-        Self::new(DefaultConnector::default())
-    }
-}
-
-impl<A, Sf> Connector<A, Sf>
+impl<A, S, St> Connector<A, S, St>
 where
     A: Address,
 {
@@ -61,55 +62,22 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U, F>(&self, svc: F) -> Connector<A, U>
+    pub fn connector<U>(self, svc: impl IntoService<U, St, Connect<A>>) -> Connector<A, U, St>
     where
-        F: IntoServiceFactory<U, (), Connect<A>, SharedCfg>,
-        U: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
+        U: Service<St, Connect<A>, Error = Error<ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         Connector {
-            svc: svc.into_factory(),
-            scheme: self.scheme.clone(),
-            pool: self.pool.clone(),
+            cfg: self.cfg,
+            svc: svc.into_service(),
+            scheme: self.scheme,
+            pool: self.pool,
             _t: PhantomData,
         }
     }
 }
 
-impl<A, Sf> ServiceFactory<(), A, SharedCfg> for Connector<A, Sf>
-where
-    A: Address,
-    Sf: ServiceFactory<(), Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<Sf::Res>,
-{
-    type Res = SimpleClient;
-    type Error = Error<ClientError>;
-    type InitError = Sf::InitError;
-    type Service = ConnectorService<A, Sf::Service>;
-
-    async fn create(&self, cfg: &SharedCfg) -> Result<Self::Service, Self::InitError> {
-        let config = cfg.get();
-        let svc = self.svc.create(cfg).await?;
-        Ok(ConnectorService {
-            svc,
-            config,
-            scheme: self.scheme.clone(),
-            pool: self.pool.clone(),
-            _t: PhantomData,
-        })
-    }
-}
-
-#[derive(Debug)]
-pub struct ConnectorService<A, S> {
-    svc: S,
-    scheme: Scheme,
-    config: Cfg<ServiceConfig>,
-    pool: pool::Pool<()>,
-    _t: PhantomData<A>,
-}
-
-impl<A, S, St> Service<St, A> for ConnectorService<A, S>
+impl<A, S, St> Service<St, A> for Connector<A, S, St>
 where
     A: Address,
     S: Service<St, Connect<A>, Error = Error<ConnectError>>,
@@ -122,6 +90,9 @@ where
     async fn call(&self, req: A, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         let authority = ByteString::from(req.host());
 
+        let cfg = self.cfg.get::<ServiceConfig>();
+        let timeout = cfg.handshake_timeout;
+
         let fut = async {
             let io = ctx
                 .call(&self.svc, Connect::new(req))
@@ -130,7 +101,7 @@ where
 
             Ok::<_, Error<ClientError>>(SimpleClient::with_params(
                 io.into(),
-                self.config.clone(),
+                cfg,
                 &self.scheme,
                 authority,
                 false,
@@ -139,10 +110,10 @@ where
             ))
         };
 
-        timeout_checked(self.config.handshake_timeout, fut)
+        timeout_checked(timeout, fut)
             .await
             .map_err(|()| {
-                Error::from(ClientError::HandshakeTimeout).set_service(self.config.service())
+                Error::from(ClientError::HandshakeTimeout).set_service(self.cfg.service())
             })
             .and_then(|item| item)
     }
