@@ -58,11 +58,7 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
         if !timer.running.get() {
             let current = (now() - timer.base.get()).as_secs() as u32;
             timer.current.set(current);
-            log::debug!(
-                "{}: Timer driver does not run, current: {}",
-                io.tag(),
-                current
-            );
+            log::debug!("{}: Timer driver does not run, current: {}", io.tag(), current);
         }
 
         // insert handle

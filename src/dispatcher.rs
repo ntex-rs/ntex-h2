@@ -73,19 +73,14 @@ impl<Err: 'static> Dispatcher<Err> {
                 }
 
                 if !stream.reset(kind.reason()) {
-                    self.connection
-                        .encode(Reset::new(stream.id(), kind.reason()));
+                    self.connection.encode(Reset::new(stream.id(), kind.reason()));
                 }
                 publish(Message::error(kind, &stream), stream, &self.inner).await
             }
         }
     }
 
-    fn handle_connection_error(
-        &self,
-        streams: HashMap<StreamId, StreamRef>,
-        err: Error<OperationError>,
-    ) {
+    fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: Error<OperationError>) {
         if !streams.is_empty() {
             let publish = self.inner.publish.bind();
             spawn(async move {
@@ -139,18 +134,12 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
 
         match req {
             DispatchItem::Item(frame) => match frame {
-                Frame::Headers(hdrs) => {
-                    self.handle_message(self.connection.recv_headers(hdrs))
-                        .await
-                }
+                Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)).await,
                 Frame::Data(data) => self.handle_message(self.connection.recv_data(data)).await,
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
                         let streams = self.connection.proto_error(&err);
-                        self.handle_connection_error(
-                            streams,
-                            err.clone().map(OperationError::from),
-                        );
+                        self.handle_connection_error(streams, err.clone().map(OperationError::from));
                         control(Control::proto_error(err), &self.inner).await
                     }
                     Err(Either::Right(errs)) => {
@@ -159,10 +148,8 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
                             let (stream, kind) = err.into_inner();
                             stream.set_failed_stream(kind.clone().map(OperationError::from));
 
-                            self.connection
-                                .encode(Reset::new(stream.id(), kind.reason()));
-                            let _ =
-                                publish(Message::error(kind, &stream), stream, &self.inner).await;
+                            self.connection.encode(Reset::new(stream.id(), kind.reason()));
+                            let _ = publish(Message::error(kind, &stream), stream, &self.inner).await;
                         }
                         Ok(None)
                     }
@@ -215,8 +202,7 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
                 let err = if let FrameError::TooManyHeaders(id) = err {
                     log::warn!("{}: TOO Many headers: {id:?}", self.connection.tag());
                     self.connection.drop_stream(id);
-                    self.connection
-                        .encode(Reset::new(id, Reason::REFUSED_STREAM));
+                    self.connection.encode(Reset::new(id, Reason::REFUSED_STREAM));
                     if let Err(err) = self.connection.update_rst_count() {
                         err
                     } else {
@@ -316,9 +302,9 @@ async fn control<Err: 'static>(pkt: Control<Err>, inner: &Inner<Err>) -> Result<
                     inner.connection.tag()
                 );
                 // we cannot handle control service errors, close connection
-                inner.connection.encode(
-                    GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id),
-                );
+                inner
+                    .connection
+                    .encode(GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id));
                 inner.connection.close();
             }
         }

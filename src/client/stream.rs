@@ -209,11 +209,7 @@ impl RecvStream {
                 Poll::Pending
             }
         } else {
-            log::warn!(
-                "{}: Stream does not exists, {:?}",
-                self.0.tag(),
-                self.0.id()
-            );
+            log::warn!("{}: Stream does not exists, {:?}", self.0.tag(), self.0.id());
             Poll::Ready(None)
         }
     }

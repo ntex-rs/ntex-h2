@@ -288,11 +288,7 @@ pub async fn handle_one<Err: 'static>(
     let con2 = con.clone();
 
     // start protocol dispatcher
-    let mut fut = IoDispatcher::new(
-        io,
-        codec,
-        Pipeline::new(Dispatcher::new(con, pub_svc, ctl_svc)),
-    );
+    let mut fut = IoDispatcher::new(io, codec, Pipeline::new(Dispatcher::new(con, pub_svc, ctl_svc)));
 
     poll_fn(|cx| {
         if con2.config().is_shutdown() {

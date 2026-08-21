@@ -155,8 +155,7 @@ impl Headers {
         decoder: &mut hpack::Decoder,
         max_headers: usize,
     ) -> Result<(), FrameError> {
-        self.header_block
-            .load(self.stream_id, src, decoder, max_headers)
+        self.header_block.load(self.stream_id, src, decoder, max_headers)
     }
 
     pub fn stream_id(&self) -> StreamId {
@@ -241,9 +240,7 @@ impl PseudoHeaders {
 
         let mut path = parts
             .path_and_query
-            .map_or(ByteString::from_static(""), |v| {
-                ByteString::from(v.as_str())
-            });
+            .map_or(ByteString::from_static(""), |v| ByteString::from(v.as_str()));
 
         match method {
             Method::OPTIONS | Method::CONNECT => {}
@@ -513,13 +510,7 @@ impl HeaderBlock {
         }
     }
 
-    fn encode(
-        self,
-        encoder: &mut hpack::Encoder,
-        head: Head,
-        dst: &mut BytePages,
-        max_size: usize,
-    ) {
+    fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytePages, max_size: usize) {
         HDRS_BUF.with(|buf| {
             let mut b = buf.borrow_mut();
             let hpack = &mut b;
@@ -571,14 +562,8 @@ mod test {
             HeaderName::from_static("hello"),
             HeaderValue::from_static("world"),
         );
-        hdrs.append(
-            HeaderName::from_static("hello"),
-            HeaderValue::from_static("zomg"),
-        );
-        hdrs.append(
-            HeaderName::from_static("hello"),
-            HeaderValue::from_static("sup"),
-        );
+        hdrs.append(HeaderName::from_static("hello"), HeaderValue::from_static("zomg"));
+        hdrs.append(HeaderName::from_static("hello"), HeaderValue::from_static("sup"));
 
         let mut headers = Headers::new(StreamId::CON, PseudoHeaders::default(), hdrs, false);
         headers.set_end_headers();

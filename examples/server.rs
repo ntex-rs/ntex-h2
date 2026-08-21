@@ -13,11 +13,7 @@ async fn main() -> std::io::Result<()> {
             server::Server::new(fn_service(async move |msg: Message| {
                 let Message { stream, kind } = msg;
                 match kind {
-                    MessageKind::Headers {
-                        pseudo,
-                        headers,
-                        eof,
-                    } => {
+                    MessageKind::Headers { pseudo, headers, eof } => {
                         log::trace!(
                             "{:?} got request (eof: {}): {:#?}\nheaders: {:#?}",
                             stream.id(),

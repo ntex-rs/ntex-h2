@@ -58,13 +58,15 @@ impl ConnectionError {
             ConnectionError::MissingPseudo(s) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Missing pseudo header {s:?}"))
             }
-            ConnectionError::UnexpectedPseudo(s) => GoAway::new(Reason::PROTOCOL_ERROR)
-                .set_data(format!("Unexpected pseudo header {s:?}")),
+            ConnectionError::UnexpectedPseudo(s) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Unexpected pseudo header {s:?}"))
+            }
             ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
             }
-            ConnectionError::InvalidStreamId(_) => GoAway::new(Reason::PROTOCOL_ERROR)
-                .set_data("An invalid stream identifier was provided"),
+            ConnectionError::InvalidStreamId(_) => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("An invalid stream identifier was provided")
+            }
             ConnectionError::StreamClosed(s, _) => {
                 GoAway::new(Reason::STREAM_CLOSED).set_data(format!("{s:?} is closed"))
             }
@@ -73,18 +75,19 @@ impl ConnectionError {
             }
             ConnectionError::ZeroWindowUpdateValue => GoAway::new(Reason::PROTOCOL_ERROR)
                 .set_data("Zero value for window update frame is not allowed"),
-            ConnectionError::WindowValueOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
-                .set_data("Updated value for window is overflowed"),
-            ConnectionError::ConcurrencyOverflow => GoAway::new(Reason::FLOW_CONTROL_ERROR)
-                .set_data("Max concurrent streams count achieved"),
-            ConnectionError::StreamResetsLimit => GoAway::new(Reason::FLOW_CONTROL_ERROR)
-                .set_data("Stream rapid reset count achieved"),
+            ConnectionError::WindowValueOverflow => {
+                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Updated value for window is overflowed")
+            }
+            ConnectionError::ConcurrencyOverflow => {
+                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Max concurrent streams count achieved")
+            }
+            ConnectionError::StreamResetsLimit => {
+                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Stream rapid reset count achieved")
+            }
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
-            ConnectionError::ReadTimeout => {
-                GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout")
-            }
+            ConnectionError::ReadTimeout => GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout"),
         }
     }
 }
@@ -161,9 +164,7 @@ impl StreamError {
     pub(crate) fn reason(&self) -> Reason {
         match self {
             StreamError::Closed => Reason::STREAM_CLOSED,
-            StreamError::WindowOverflowed | StreamError::CapacityTimeout => {
-                Reason::FLOW_CONTROL_ERROR
-            }
+            StreamError::WindowOverflowed | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
             StreamError::Idle(_)
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos

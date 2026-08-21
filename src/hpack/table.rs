@@ -293,10 +293,7 @@ impl Table {
 
         let pos_idx = 0usize.wrapping_sub(self.inserted);
 
-        let prev = self.indices[probe].replace(Pos {
-            index: pos_idx,
-            hash,
-        });
+        let prev = self.indices[probe].replace(Pos { index: pos_idx, hash });
 
         if let Some(mut prev) = prev {
             // Shift forward
@@ -658,10 +655,7 @@ fn hash_header(header: &Header) -> HashValue {
 /// boolean representing if the value matched as well.
 fn index_static(header: &Header) -> Option<(usize, bool)> {
     match *header {
-        Header::Field {
-            ref name,
-            ref value,
-        } => match *name {
+        Header::Field { ref name, ref value } => match *name {
             header::ACCEPT_CHARSET => Some((15, false)),
             header::ACCEPT_ENCODING => {
                 if value == "gzip, deflate" {

@@ -14,9 +14,7 @@ fn ssl_acceptor() -> SslAcceptor {
     builder
         .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
         .unwrap();
-    builder
-        .set_certificate_chain_file("./tests/cert.pem")
-        .unwrap();
+    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     builder.set_alpn_select_callback(|_, protos| {
         const H2: &[u8] = b"\x02h2";
         const H11: &[u8] = b"\x08http/1.1";
@@ -93,17 +91,16 @@ fn goaway(frm: frame::Frame) -> frame::GoAway {
 async fn test_max_concurrent_streams() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client =
-        client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
-            .scheme(Scheme::HTTP)
-            .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-            .create(SharedCfg::default())
-            .await
-            .map(Pipeline::new)
-            .unwrap()
-            .call("localhost")
-            .await
-            .unwrap();
+    let client = client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
+        .scheme(Scheme::HTTP)
+        .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
+        .create(SharedCfg::default())
+        .await
+        .map(Pipeline::new)
+        .unwrap()
+        .call("localhost")
+        .await
+        .unwrap();
     assert!(format!("{:?}", client).contains("SimpleClient"));
     assert_eq!(client.authority(), "localhost");
 
@@ -548,10 +545,7 @@ async fn test_max_headers() {
         hdrs.append(n.try_into().unwrap(), "123".try_into().unwrap());
     }
 
-    let (_, rstream) = client
-        .send(Method::GET, "/".into(), hdrs, true)
-        .await
-        .unwrap();
+    let (_, rstream) = client.send(Method::GET, "/".into(), hdrs, true).await.unwrap();
 
     let r = rstream.recv().await.unwrap();
     let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = r.kind else {
@@ -588,12 +582,7 @@ async fn test_capacity_timeout() {
         path: Some("/".into()),
         ..Default::default()
     };
-    let hdrs = frame::Headers::new(
-        frame::StreamId::CLIENT,
-        pseudo.clone(),
-        HeaderMap::new(),
-        true,
-    );
+    let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo.clone(), HeaderMap::new(), true);
     io.send(hdrs.into(), &codec).await.unwrap();
     io.recv(&codec).await.unwrap().unwrap(); // headers
     io.recv(&codec).await.unwrap().unwrap(); // data
@@ -623,9 +612,7 @@ async fn test_capacity_timeout() {
         res,
         frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"t")))
     );
-    let _ = io
-        .send(frame::WindowUpdate::new(id, 16).into(), &codec)
-        .await;
+    let _ = io.send(frame::WindowUpdate::new(id, 16).into(), &codec).await;
     let res = io.recv(&codec).await.unwrap().unwrap(); // rest
     assert_eq!(
         res,

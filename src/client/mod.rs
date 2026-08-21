@@ -72,9 +72,7 @@ impl Clone for ClientError {
             Self::Frame(err) => Self::Frame(*err),
             Self::HandshakeTimeout => Self::HandshakeTimeout,
             Self::Connect(err) => Self::Connect(err.clone()),
-            Self::Disconnected(err) => {
-                Self::Disconnected(io::Error::new(err.kind(), format!("{err}")))
-            }
+            Self::Disconnected(err) => Self::Disconnected(io::Error::new(err.kind(), format!("{err}"))),
         }
     }
 }

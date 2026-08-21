@@ -37,11 +37,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     ntex::rt::spawn(async move {
         while let Some(msg) = recv_stream.recv().await {
             match msg.kind {
-                MessageKind::Headers {
-                    pseudo,
-                    headers,
-                    eof,
-                } => {
+                MessageKind::Headers { pseudo, headers, eof } => {
                     println!(
                         "Got response (eof: {}): {:#?}\nheaders: {:#?}",
                         eof, pseudo, headers

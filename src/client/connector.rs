@@ -13,36 +13,31 @@ use crate::config::ServiceConfig;
 
 #[derive(Debug)]
 /// Http2 client connector
-pub struct Connector<A: Address, S, St> {
+pub struct Connector<A: Address, S> {
     svc: S,
     scheme: Scheme,
     pool: pool::Pool<()>,
-    cfg: SharedCfg,
-    _t: PhantomData<(A, St)>,
+    _t: PhantomData<A>,
 }
 
-impl<A> Default for Connector<A, DefaultConnector<A, ()>, ()>
+impl<A> Default for Connector<A, DefaultConnector<A>>
 where
     A: Address,
 {
     /// Create new h2 connector
     fn default() -> Self {
-        Self::new(SharedCfg::default())
+        Self::new()
     }
 }
 
-impl<A, St> Connector<A, DefaultConnector<A, St>, St>
+impl<A> Connector<A, DefaultConnector<A>>
 where
     A: Address,
 {
     /// Create new http2 connector
-    pub fn new(cfg: impl Into<SharedCfg>) -> Self {
-        let cfg = cfg.into();
-        let svc = DefaultConnector::with(cfg.clone());
-
+    pub fn new() -> Self {
         Connector {
-            cfg,
-            svc,
+            svc: DefaultConnector::new(),
             scheme: Scheme::HTTP,
             pool: pool::new(),
             _t: PhantomData,
@@ -50,7 +45,7 @@ where
     }
 }
 
-impl<A, S, St> Connector<A, S, St>
+impl<A, S> Connector<A, S>
 where
     A: Address,
 {
@@ -62,13 +57,12 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U>(self, svc: impl IntoService<U, St, Connect<A>>) -> Connector<A, U, St>
+    pub fn connector<U>(self, svc: impl IntoService<U, SharedCfg, Connect<A>>) -> Connector<A, U>
     where
-        U: Service<St, Connect<A>, Error = Error<ConnectError>>,
+        U: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>>,
         IoBoxed: From<U::Res>,
     {
         Connector {
-            cfg: self.cfg,
             svc: svc.into_service(),
             scheme: self.scheme,
             pool: self.pool,
@@ -77,20 +71,20 @@ where
     }
 }
 
-impl<A, S, St> Service<St, A> for Connector<A, S, St>
+impl<A, S> Service<SharedCfg, A> for Connector<A, S>
 where
     A: Address,
-    S: Service<St, Connect<A>, Error = Error<ConnectError>>,
+    S: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>>,
     IoBoxed: From<S::Res>,
 {
     type Res = SimpleClient;
     type Error = Error<ClientError>;
 
     /// Connect to http2 server
-    async fn call(&self, req: A, ctx: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
+    async fn call(&self, req: A, ctx: Ctx<'_, Self, SharedCfg>) -> Result<Self::Res, Self::Error> {
         let authority = ByteString::from(req.host());
 
-        let cfg = self.cfg.get::<ServiceConfig>();
+        let cfg = ctx.st().get::<ServiceConfig>();
         let timeout = cfg.handshake_timeout;
 
         let fut = async {
@@ -101,7 +95,7 @@ where
 
             Ok::<_, Error<ClientError>>(SimpleClient::with_params(
                 io.into(),
-                cfg,
+                cfg.clone(),
                 &self.scheme,
                 authority,
                 false,
@@ -112,12 +106,10 @@ where
 
         timeout_checked(timeout, fut)
             .await
-            .map_err(|()| {
-                Error::from(ClientError::HandshakeTimeout).set_service(self.cfg.service())
-            })
+            .map_err(|()| Error::from(ClientError::HandshakeTimeout).set_service(cfg.service()))
             .and_then(|item| item)
     }
 
-    ntex_service::forward_ready!(St, svc, |e| e.map(ClientError::from));
-    ntex_service::forward_shutdown!(St, svc);
+    ntex_service::forward_ready!(SharedCfg, svc, |e| e.map(ClientError::from));
+    ntex_service::forward_shutdown!(SharedCfg, svc);
 }

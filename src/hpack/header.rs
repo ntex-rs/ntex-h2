@@ -36,10 +36,7 @@ pub(super) fn len(name: &HeaderName, value: &HeaderValue) -> usize {
 impl Header<Option<HeaderName>> {
     pub fn reify(self) -> Result<Header, HeaderValue> {
         Ok(match self {
-            Header::Field {
-                name: Some(n),
-                value,
-            } => Header::Field { name: n, value },
+            Header::Field { name: Some(n), value } => Header::Field { name: n, value },
             Header::Field { name: None, value } => return Err(value),
             Header::Authority(v) => Header::Authority(v),
             Header::Method(v) => Header::Method(v),

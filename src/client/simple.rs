@@ -59,15 +59,7 @@ impl SimpleClient {
         let codec = Codec::default();
         codec.set_max_headers(cfg.max_headers);
 
-        let con = Connection::new(
-            false,
-            io.get_ref(),
-            codec,
-            cfg,
-            false,
-            skip_unknown_streams,
-            pool,
-        );
+        let con = Connection::new(false, io.get_ref(), codec, cfg, false, skip_unknown_streams, pool);
         con.set_secure(*scheme == Scheme::HTTPS);
 
         let disp = Pipeline::new(Dispatcher::new(

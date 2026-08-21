@@ -16,9 +16,7 @@ async fn main() -> std::io::Result<()> {
     builder
         .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
         .unwrap();
-    builder
-        .set_certificate_chain_file("./tests/cert.pem")
-        .unwrap();
+    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     builder.set_alpn_select_callback(|_, protos| {
         const H2: &[u8] = b"\x02h2";
         if protos.windows(3).any(|window| window == H2) {
@@ -37,11 +35,7 @@ async fn main() -> std::io::Result<()> {
                     server::Server::new(fn_service(|msg: Message| async move {
                         let Message { stream, kind } = msg;
                         match kind {
-                            MessageKind::Headers {
-                                pseudo,
-                                headers,
-                                eof,
-                            } => {
+                            MessageKind::Headers { pseudo, headers, eof } => {
                                 println!(
                                     "Got request (eof: {}): {:#?}\nheaders: {:#?}",
                                     eof, pseudo, headers

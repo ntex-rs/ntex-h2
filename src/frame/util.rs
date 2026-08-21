@@ -38,10 +38,7 @@ pub(super) fn strip_padding(payload: &mut Bytes) -> Result<u8, FrameError> {
     Ok(pad_len as u8)
 }
 
-pub(super) fn debug_flags<'a, 'f: 'a>(
-    fmt: &'a mut fmt::Formatter<'f>,
-    bits: u8,
-) -> DebugFlags<'a, 'f> {
+pub(super) fn debug_flags<'a, 'f: 'a>(fmt: &'a mut fmt::Formatter<'f>, bits: u8) -> DebugFlags<'a, 'f> {
     let result = write!(fmt, "({bits:#x}");
     DebugFlags {
         fmt,

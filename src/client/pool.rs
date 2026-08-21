@@ -7,14 +7,13 @@ use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
-use ntex_service::cfg::{Cfg, SharedCfg};
+use ntex_service::cfg::SharedCfg;
 use ntex_service::{IntoService, Pipeline, Service};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
 use super::{ClientError, simple::SimpleClient};
-use crate::ServiceConfig;
 
 type Fut = BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>;
 type Connector = Box<dyn Fn() -> Fut>;
@@ -27,7 +26,7 @@ pub struct Client {
 }
 
 struct Inner {
-    cfg: Cfg<ServiceConfig>,
+    cfg: SharedCfg,
     config: InnerConfig,
     connector: Connector,
 }
@@ -46,15 +45,12 @@ fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
 impl Client {
     #[inline]
     /// Configure and build client
-    pub fn builder<A, U>(
-        addr: U,
-        cfg: impl Into<SharedCfg>,
-    ) -> ClientBuilder<A, DefaultConnector<A, ()>>
+    pub fn builder<A, U>(addr: U) -> ClientBuilder<A, DefaultConnector<A>>
     where
         A: Address + Clone,
         Connect<A>: From<U>,
     {
-        ClientBuilder::new(addr, cfg.into())
+        ClientBuilder::new(addr)
     }
 
     /// Send request to the peer
@@ -104,8 +100,8 @@ impl Client {
             // wait for available connection
             let (tx, rx) = cfg.pool.channel();
             self.waiters.borrow_mut().push_back(tx);
-            rx.await
-                .map_err(|e| Error::new(e, self.inner.cfg.service()))?;
+
+            rx.await.map_err(|e| Error::new(e, self.inner.cfg.service()))?;
         }
         Ok(())
     }
@@ -128,9 +124,7 @@ impl Client {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
             } else if lifetime
-                && now
-                    .duration_since(connections[idx].created())
-                    .unwrap_or_default()
+                && now.duration_since(connections[idx].created()).unwrap_or_default()
                     > cfg.conn_lifetime_dur
             {
                 let con = connections.remove(idx);
@@ -174,6 +168,7 @@ impl Client {
     async fn create_connection(&self) -> Result<(), Error<ClientError>> {
         let (tx, rx) = oneshot::channel();
 
+        let cfg = self.inner.cfg.get();
         let inner = self.inner.clone();
         let waiters = self.waiters.clone();
 
@@ -188,7 +183,7 @@ impl Client {
                     // construct client
                     let client = SimpleClient::with_params(
                         io,
-                        inner.cfg.clone(),
+                        cfg,
                         &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
@@ -219,8 +214,7 @@ impl Client {
             let _ = tx.send(res);
         });
 
-        rx.await
-            .map_err(|e| Error::new(e, self.inner.cfg.service()))?
+        rx.await.map_err(|e| Error::new(e, self.inner.cfg.service()))?
     }
 
     #[inline]
@@ -289,13 +283,12 @@ impl Client {
 /// construction that finishes by calling the `.finish()` method.
 pub struct ClientBuilder<A, S> {
     connect: Connect<A>,
-    inner: InnerConfig,
     connector: S,
+    inner: InnerConfig,
     _t: PhantomData<A>,
 }
 
 struct InnerConfig {
-    cfg: SharedCfg,
     minconn: usize,
     maxconn: usize,
     conn_timeout: Millis,
@@ -317,19 +310,17 @@ impl<A> ClientBuilder<A, DefaultConnector<A>>
 where
     A: Address + Clone,
 {
-    fn new<U>(addr: U, cfg: impl Into<SharedCfg>) -> Self
+    fn new<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
     {
-        let cfg = cfg.into();
         let connect = Connect::from(addr);
         let authority = ByteString::from(connect.host());
 
         ClientBuilder {
             connect,
-            connector: DefaultConnector::with(cfg.clone()),
+            connector: DefaultConnector::new(),
             inner: InnerConfig {
-                cfg,
                 authority,
                 conn_timeout: Millis(1_000),
                 conn_lifetime: Seconds::ZERO,
@@ -359,7 +350,7 @@ where
     where
         Connect<A>: From<U>,
     {
-        Self::new(addr, SharedCfg::default())
+        Self::new(addr)
     }
 }
 
@@ -428,9 +419,9 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U>(self, f: impl IntoService<U, (), Connect<A>>) -> ClientBuilder<A, U>
+    pub fn connector<U>(self, f: impl IntoService<U, SharedCfg, Connect<A>>) -> ClientBuilder<A, U>
     where
-        U: Service<(), Connect<A>, Error = Error<ConnectError>> + 'static,
+        U: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
         IoBoxed: From<U::Res>,
     {
         ClientBuilder {
@@ -445,16 +436,16 @@ where
 impl<A, S> ClientBuilder<A, S>
 where
     A: Address + Clone,
-    S: Service<(), Connect<A>, Error = Error<ConnectError>> + 'static,
+    S: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
     IoBoxed: From<S::Res>,
 {
     /// Finish configuration process and create connections pool.
-    pub fn build(self) -> Client {
+    pub fn build(self, cfg: impl Into<SharedCfg>) -> Client {
+        let cfg = cfg.into();
+        let tag = cfg.tag();
         let connect = self.connect;
-        let tag = self.inner.cfg.tag();
-        let client_cfg = self.inner.cfg.get();
 
-        let svc = Pipeline::new(self.connector.map(IoBoxed::from));
+        let svc = Pipeline::with_st(cfg.clone(), self.connector.map(IoBoxed::from));
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
             let pl = svc.bind();
@@ -464,8 +455,8 @@ where
 
         Client {
             inner: Rc::new(Inner {
+                cfg,
                 connector,
-                cfg: client_cfg,
                 config: self.inner,
             }),
             waiters: Rc::default(),
