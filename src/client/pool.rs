@@ -7,8 +7,7 @@ use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
-use ntex_service::cfg::SharedCfg;
-use ntex_service::{IntoService, Pipeline, Service};
+use ntex_service::{IntoService, Pipeline, Service, cfg::SharedCfg};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
