@@ -444,7 +444,7 @@ where
         let tag = cfg.tag();
         let connect = self.connect;
 
-        let svc = Pipeline::with_st(cfg.clone(), self.connector.map(IoBoxed::from));
+        let svc = Pipeline::with(cfg.clone(), self.connector.map(IoBoxed::from));
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
             let pl = svc.bind();
