@@ -32,19 +32,10 @@ pub enum StreamEof {
 }
 
 impl Message {
-    pub(crate) fn new(
-        pseudo: PseudoHeaders,
-        headers: HeaderMap,
-        eof: bool,
-        stream: &StreamRef,
-    ) -> Self {
+    pub(crate) fn new(pseudo: PseudoHeaders, headers: HeaderMap, eof: bool, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Headers {
-                pseudo,
-                headers,
-                eof,
-            },
+            kind: MessageKind::Headers { pseudo, headers, eof },
         }
     }
 

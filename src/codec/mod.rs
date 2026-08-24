@@ -83,8 +83,7 @@ impl Codec {
     #[inline]
     pub fn set_recv_frame_size(&self, val: usize) {
         assert!(
-            frame::DEFAULT_MAX_FRAME_SIZE as usize <= val
-                && val <= frame::MAX_MAX_FRAME_SIZE as usize
+            frame::DEFAULT_MAX_FRAME_SIZE as usize <= val && val <= frame::MAX_MAX_FRAME_SIZE as usize
         );
         self.0.borrow_mut().decoder.set_max_frame_length(val);
     }
@@ -323,9 +322,8 @@ impl Decoder for Codec {
                                 frame::FrameContinuationError::MaxLeftoverSize,
                             ));
                         }
-                        let mut buf = BytesMut::with_capacity(
-                            partial.buf.len() + bytes.len() - frame::HEADER_LEN,
-                        );
+                        let mut buf =
+                            BytesMut::with_capacity(partial.buf.len() + bytes.len() - frame::HEADER_LEN);
                         buf.extend_from_slice(&partial.buf);
                         buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
                         partial.buf = buf.into();

@@ -297,10 +297,7 @@ impl Decoder {
         }
     }
 
-    fn try_decode_string(
-        &mut self,
-        buf: &mut Cursor<&mut Bytes>,
-    ) -> Result<StringMarker, DecoderError> {
+    fn try_decode_string(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<StringMarker, DecoderError> {
         const HUFF_FLAG: u8 = 0b1000_0000;
 
         let old_pos = buf.position();
@@ -445,11 +442,7 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
 }
 
 fn peek_u8<B: Buf>(buf: &B) -> Option<u8> {
-    if buf.has_remaining() {
-        Some(buf.chunk()[0])
-    } else {
-        None
-    }
+    if buf.has_remaining() { Some(buf.chunk()[0]) } else { None }
 }
 
 fn take(buf: &mut Cursor<&mut Bytes>, n: usize) -> Bytes {
@@ -867,10 +860,7 @@ mod test {
         assert_eq!(de.table.size(), 0);
 
         match res[0] {
-            Header::Field {
-                ref name,
-                ref value,
-            } => {
+            Header::Field { ref name, ref value } => {
                 assert_eq!(name, "foo");
                 assert_eq!(value, "bar");
             }
@@ -919,10 +909,7 @@ mod test {
         assert_eq!(de.table.size(), 0);
 
         match res[0] {
-            Header::Field {
-                ref name,
-                ref value,
-            } => {
+            Header::Field { ref name, ref value } => {
                 assert_eq!(name, "foo");
                 assert_eq!(value, "bar");
             }

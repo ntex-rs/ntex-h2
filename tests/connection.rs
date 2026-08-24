@@ -1,10 +1,11 @@
+#![recursion_limit = "256"]
 use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
-use ntex::http::{self, HeaderMap, HttpService, Method, Response, test, uri::Scheme};
-use ntex::service::{Pipeline, ServiceFactory, cfg::SharedCfg, fn_service};
+use ntex::http::{self, HeaderMap, HttpService, Method, Response, openssl, test, uri::Scheme};
+use ntex::service::{Pipeline, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
-use ntex::{channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
+use ntex::{Service, channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
 use ntex_h2::client::{self, Client, SimpleClient};
 use ntex_h2::{Codec, MessageKind, ServiceConfig, frame, frame::Reason};
 
@@ -14,9 +15,7 @@ fn ssl_acceptor() -> SslAcceptor {
     builder
         .set_private_key_file("./tests/key.pem", SslFiletype::PEM)
         .unwrap();
-    builder
-        .set_certificate_chain_file("./tests/cert.pem")
-        .unwrap();
+    builder.set_certificate_chain_file("./tests/cert.pem").unwrap();
     builder.set_alpn_select_callback(|_, protos| {
         const H2: &[u8] = b"\x02h2";
         const H11: &[u8] = b"\x08http/1.1";
@@ -37,13 +36,15 @@ fn ssl_acceptor() -> SslAcceptor {
 
 async fn start_server() -> test::TestServer {
     test::server_with_config(
-        async move || {
-            HttpService::h2(|mut req: http::Request| async move {
-                let mut pl = req.take_payload();
-                pl.recv().await;
-                Ok::<_, io::Error>(Response::Ok().body("test body"))
-            })
-            .openssl(ssl_acceptor())
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |mut req: http::Request| {
+                    let mut pl = req.take_payload();
+                    pl.recv().await;
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
             .map_err(|_| ())
         },
         SharedCfg::new("SRV").add(
@@ -52,7 +53,6 @@ async fn start_server() -> test::TestServer {
                 .set_max_concurrent_streams(1),
         ),
     )
-    .await
 }
 
 async fn connect(addr: net::SocketAddr) -> IoBoxed {
@@ -64,11 +64,7 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
     let addr = ntex::connect::Connect::new("localhost").set_addr(Some(addr));
-    openssl::SslConnector::new(builder.build())
-        .create(SharedCfg::default())
-        .await
-        .map(Pipeline::new)
-        .unwrap()
+    Pipeline::new(openssl::SslConnector::new(builder.build()))
         .call(addr)
         .await
         .unwrap()
@@ -93,17 +89,14 @@ fn goaway(frm: frame::Frame) -> frame::GoAway {
 async fn test_max_concurrent_streams() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client =
-        client::Connector::new(fn_service(move |_| async move { Ok(connect(addr).await) }))
+    let client = Pipeline::new(
+        client::Connector::new()
             .scheme(Scheme::HTTP)
-            .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-            .create(SharedCfg::default())
-            .await
-            .map(Pipeline::new)
-            .unwrap()
-            .call("localhost")
-            .await
-            .unwrap();
+            .connector(fn_service(move |_| async move { Ok(connect(addr).await) })),
+    )
+    .call("localhost")
+    .await
+    .unwrap();
     assert!(format!("{:?}", client).contains("SimpleClient"));
     assert_eq!(client.authority(), "localhost");
 
@@ -146,18 +139,14 @@ async fn test_max_concurrent_streams() {
 async fn test_max_concurrent_streams_pool() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client = Client::builder(
-        "localhost",
-        fn_service(move |_| async move { Ok(connect(addr).await) }),
-    );
+    let client = Client::builder("localhost");
     assert!(format!("{:?}", client).contains("ClientBuilder"));
+
     let client = client
         .maxconn(1)
         .scheme(Scheme::HTTPS)
         .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
-        .build(SharedCfg::default())
-        .await
-        .unwrap();
+        .build(SharedCfg::default());
     assert!(format!("{:?}", client).contains("Client"));
     assert!(client.is_ready());
 
@@ -193,17 +182,13 @@ async fn test_max_concurrent_streams_pool2() {
 
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
-    let client = Client::builder(
-        "localhost",
-        fn_service(move |_| {
+    let client = Client::builder("localhost")
+        .maxconn(2)
+        .connector(async move |_| {
             cnt2.set(cnt2.get() + 1);
-            async move { Ok(connect(addr).await) }
-        }),
-    )
-    .maxconn(2)
-    .build(SharedCfg::default())
-    .await
-    .unwrap();
+            Ok(connect(addr).await)
+        })
+        .build(SharedCfg::default());
     assert!(client.is_ready());
 
     let (stream, _recv_stream) = client
@@ -480,13 +465,15 @@ async fn test_goaway_on_reset2() {
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
     let srv = test::server_with_config(
-        async move || {
-            HttpService::h2(|mut req: http::Request| async move {
-                let mut pl = req.take_payload();
-                pl.recv().await;
-                Ok::<_, io::Error>(Response::Ok().body("test body"))
-            })
-            .openssl(ssl_acceptor())
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |mut req: http::Request| {
+                    let mut pl = req.take_payload();
+                    pl.recv().await;
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
             .map_err(|_| ())
         },
         SharedCfg::new("SRV").add(
@@ -494,8 +481,7 @@ async fn test_ping_timeout_on_idle() {
                 .set_max_concurrent_streams(1)
                 .set_ping_timeout(Seconds(1)),
         ),
-    )
-    .await;
+    );
 
     let addr = srv.addr();
     let io = connect(addr).await;
@@ -521,26 +507,23 @@ async fn test_ping_timeout_on_idle() {
 #[ntex::test]
 async fn test_max_headers() {
     let srv = test::server_with_config(
-        async move || {
-            HttpService::h2(|_: http::Request| async move {
-                Ok::<_, io::Error>(Response::Ok().body("test body"))
-            })
-            .openssl(ssl_acceptor())
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(|_: http::Request| async move {
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
             .map_err(|_| ())
         },
         SharedCfg::new("SRV").add(ServiceConfig::new().set_max_headers(5)),
-    )
-    .await;
+    );
 
     let addr = srv.addr();
-    let client = Client::builder(
-        "localhost",
-        fn_service(move |_| async move { Ok(connect(addr).await) }),
-    )
-    .scheme(Scheme::HTTPS)
-    .build(SharedCfg::default())
-    .await
-    .unwrap();
+    let client = Client::builder("localhost")
+        .scheme(Scheme::HTTPS)
+        .connector(async move |_| Ok(connect(addr).await))
+        .build(SharedCfg::default());
     assert!(client.is_ready());
 
     let mut hdrs = HeaderMap::new();
@@ -548,10 +531,7 @@ async fn test_max_headers() {
         hdrs.append(n.try_into().unwrap(), "123".try_into().unwrap());
     }
 
-    let (_, rstream) = client
-        .send(Method::GET, "/".into(), hdrs, true)
-        .await
-        .unwrap();
+    let (_, rstream) = client.send(Method::GET, "/".into(), hdrs, true).await.unwrap();
 
     let r = rstream.recv().await.unwrap();
     let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = r.kind else {
@@ -588,12 +568,7 @@ async fn test_capacity_timeout() {
         path: Some("/".into()),
         ..Default::default()
     };
-    let hdrs = frame::Headers::new(
-        frame::StreamId::CLIENT,
-        pseudo.clone(),
-        HeaderMap::new(),
-        true,
-    );
+    let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo.clone(), HeaderMap::new(), true);
     io.send(hdrs.into(), &codec).await.unwrap();
     io.recv(&codec).await.unwrap().unwrap(); // headers
     io.recv(&codec).await.unwrap().unwrap(); // data
@@ -623,9 +598,7 @@ async fn test_capacity_timeout() {
         res,
         frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"t")))
     );
-    let _ = io
-        .send(frame::WindowUpdate::new(id, 16).into(), &codec)
-        .await;
+    let _ = io.send(frame::WindowUpdate::new(id, 16).into(), &codec).await;
     let res = io.recv(&codec).await.unwrap().unwrap(); // rest
     assert_eq!(
         res,
@@ -636,27 +609,24 @@ async fn test_capacity_timeout() {
 #[ntex::test]
 async fn test_con_lifetime() {
     let srv = test::server_with_config(
-        async move || {
-            HttpService::h2(|_: http::Request| async move {
-                Ok::<_, io::Error>(Response::Ok().body("test body"))
-            })
-            .openssl(ssl_acceptor())
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(|_: http::Request| async move {
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
             .map_err(|_| ())
         },
         SharedCfg::new("SRV").add(ServiceConfig::new()),
-    )
-    .await;
+    );
 
     let addr = srv.addr();
-    let pool = Client::builder(
-        "localhost",
-        fn_service(move |_| async move { Ok(connect(addr).await) }),
-    )
-    .scheme(Scheme::HTTPS)
-    .lifetime(1)
-    .build(SharedCfg::default())
-    .await
-    .unwrap();
+    let pool = Client::builder("localhost")
+        .scheme(Scheme::HTTPS)
+        .lifetime(1)
+        .connector(async move |_| Ok(connect(addr).await))
+        .build(SharedCfg::default());
     assert!(pool.is_ready());
 
     let client = pool.client().await.unwrap();

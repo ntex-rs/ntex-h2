@@ -72,12 +72,7 @@ impl Window {
             return Err(());
         }
 
-        log::trace!(
-            "inc_window; sz={}; old={}; new={}",
-            sz,
-            self.window_size,
-            val
-        );
+        log::trace!("inc_window; sz={}; old={}; new={}", sz, self.window_size, val);
 
         Ok(Self::new(val))
     }

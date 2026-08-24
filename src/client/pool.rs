@@ -6,18 +6,16 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::IoBoxed;
-use ntex_net::connect::{Address, Connect, ConnectError, Connector2 as DefaultConnector};
-use ntex_service::cfg::{Cfg, SharedCfg};
-use ntex_service::{IntoServiceFactory, Pipeline, ServiceFactory};
+use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
+use ntex_service::{IntoService, Pipeline, Service, cfg::SharedCfg};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
 use super::{ClientError, simple::SimpleClient};
-use crate::ServiceConfig;
 
 type Fut = BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>;
-type Connector = Box<dyn Fn() -> BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>>;
+type Connector = Box<dyn Fn() -> Fut>;
 
 #[derive(Clone)]
 /// Manages http client network connectivity.
@@ -27,7 +25,7 @@ pub struct Client {
 }
 
 struct Inner {
-    cfg: Cfg<ServiceConfig>,
+    cfg: SharedCfg,
     config: InnerConfig,
     connector: Connector,
 }
@@ -46,15 +44,12 @@ fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
 impl Client {
     #[inline]
     /// Configure and build client
-    pub fn builder<A, U, T, F>(addr: U, connector: F) -> ClientBuilder<A, T>
+    pub fn builder<A, U>(addr: U) -> ClientBuilder<A, DefaultConnector<A>>
     where
         A: Address + Clone,
-        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
-        T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-        IoBoxed: From<T::Response>,
         Connect<A>: From<U>,
     {
-        ClientBuilder::new(addr, connector)
+        ClientBuilder::new(addr)
     }
 
     /// Send request to the peer
@@ -104,8 +99,8 @@ impl Client {
             // wait for available connection
             let (tx, rx) = cfg.pool.channel();
             self.waiters.borrow_mut().push_back(tx);
-            rx.await
-                .map_err(|e| Error::new(e, self.inner.cfg.service()))?;
+
+            rx.await.map_err(|e| Error::new(e, self.inner.cfg.service()))?;
         }
         Ok(())
     }
@@ -128,9 +123,7 @@ impl Client {
                     let _ = con.disconnect().disconnect_timeout(timeout).await;
                 });
             } else if lifetime
-                && now
-                    .duration_since(connections[idx].created())
-                    .unwrap_or_default()
+                && now.duration_since(connections[idx].created()).unwrap_or_default()
                     > cfg.conn_lifetime_dur
             {
                 let con = connections.remove(idx);
@@ -174,6 +167,7 @@ impl Client {
     async fn create_connection(&self) -> Result<(), Error<ClientError>> {
         let (tx, rx) = oneshot::channel();
 
+        let cfg = self.inner.cfg.get();
         let inner = self.inner.clone();
         let waiters = self.waiters.clone();
 
@@ -188,7 +182,7 @@ impl Client {
                     // construct client
                     let client = SimpleClient::with_params(
                         io,
-                        inner.cfg.clone(),
+                        cfg,
                         &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
@@ -219,8 +213,7 @@ impl Client {
             let _ = tx.send(res);
         });
 
-        rx.await
-            .map_err(|e| Error::new(e, self.inner.cfg.service()))?
+        rx.await.map_err(|e| Error::new(e, self.inner.cfg.service()))?
     }
 
     #[inline]
@@ -287,10 +280,10 @@ impl Client {
 ///
 /// The `ClientBuilder` type uses a builder-like combinator pattern for service
 /// construction that finishes by calling the `.finish()` method.
-pub struct ClientBuilder<A, T> {
+pub struct ClientBuilder<A, S> {
     connect: Connect<A>,
+    connector: S,
     inner: InnerConfig,
-    connector: T,
     _t: PhantomData<A>,
 }
 
@@ -312,24 +305,20 @@ struct InnerConfig {
     pool: pool::Pool<()>,
 }
 
-impl<A, T> ClientBuilder<A, T>
+impl<A> ClientBuilder<A, DefaultConnector<A>>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>>,
-    IoBoxed: From<T::Response>,
 {
-    fn new<U, F>(addr: U, connector: F) -> Self
+    fn new<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
-        F: IntoServiceFactory<T, Connect<A>, SharedCfg>,
     {
         let connect = Connect::from(addr);
         let authority = ByteString::from(connect.host());
-        let connector = connector.into_factory();
 
         ClientBuilder {
             connect,
-            connector,
+            connector: DefaultConnector::new(),
             inner: InnerConfig {
                 authority,
                 conn_timeout: Millis(1_000),
@@ -360,11 +349,11 @@ where
     where
         Connect<A>: From<U>,
     {
-        Self::new(addr, DefaultConnector::default())
+        Self::new(addr)
     }
 }
 
-impl<A, T> ClientBuilder<A, T>
+impl<A, S> ClientBuilder<A, S>
 where
     A: Address + Clone,
 {
@@ -429,48 +418,48 @@ where
     }
 
     /// Use custom connector
-    pub fn connector<U, F>(self, connector: F) -> ClientBuilder<A, U>
+    pub fn connector<U>(self, f: impl IntoService<U, SharedCfg, Connect<A>>) -> ClientBuilder<A, U>
     where
-        F: IntoServiceFactory<U, Connect<A>, SharedCfg>,
-        U: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-        IoBoxed: From<U::Response>,
+        U: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
+        IoBoxed: From<U::Res>,
     {
         ClientBuilder {
             connect: self.connect,
-            connector: connector.into_factory(),
+            connector: f.into_service(),
             inner: self.inner,
             _t: PhantomData,
         }
     }
 }
 
-impl<A, T> ClientBuilder<A, T>
+impl<A, S> ClientBuilder<A, S>
 where
     A: Address + Clone,
-    T: ServiceFactory<Connect<A>, SharedCfg, Error = Error<ConnectError>> + 'static,
-    IoBoxed: From<T::Response>,
+    S: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
+    IoBoxed: From<S::Res>,
 {
     /// Finish configuration process and create connections pool.
-    pub async fn build(self, cfg: SharedCfg) -> Result<Client, T::InitError> {
-        let connect = self.connect;
+    pub fn build(self, cfg: impl Into<SharedCfg>) -> Client {
+        let cfg = cfg.into();
         let tag = cfg.tag();
-        let client_cfg = cfg.get();
-        let svc = Pipeline::new(self.connector.create(cfg).await?);
+        let connect = self.connect;
 
+        let svc = Pipeline::with(cfg.clone(), self.connector.map(IoBoxed::from));
         let connector = Box::new(move || {
             log::trace!("{tag}: Opening http/2 connection to {}", connect.host());
-            let fut = svc.call_static(connect.clone());
-            Box::pin(async move { fut.await.map(IoBoxed::from) }) as Fut
+            let pl = svc.bind();
+            let connect = connect.clone();
+            Box::pin(async move { pl.call(connect).await }) as Fut
         });
 
-        Ok(Client {
+        Client {
             inner: Rc::new(Inner {
+                cfg,
                 connector,
-                cfg: client_cfg,
                 config: self.inner,
             }),
             waiters: Rc::default(),
-        })
+        }
     }
 }
 
@@ -489,7 +478,7 @@ impl fmt::Debug for Client {
     }
 }
 
-impl<A, T> fmt::Debug for ClientBuilder<A, T> {
+impl<A, S> fmt::Debug for ClientBuilder<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientBuilder")
             .field("scheme", &self.inner.scheme)

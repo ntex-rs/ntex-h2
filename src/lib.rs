@@ -69,20 +69,15 @@
 //! [futures]: https://docs.rs/futures/
 //! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
-#![deny(
-    rust_2018_idioms,
-    warnings,
-    unreachable_pub,
-    missing_debug_implementations,
-    clippy::pedantic
-)]
+#![deny(clippy::pedantic)]
 #![allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
     clippy::missing_fields_in_debug,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::unused_async_trait_impl
 )]
 
 macro_rules! proto_err {
@@ -118,10 +113,3 @@ pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Capacity, Stream, StreamData, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};
-
-#[doc(hidden)]
-#[deprecated]
-pub type ControlMessage<E> = Control<E>;
-#[doc(hidden)]
-#[deprecated]
-pub type ControlResult = ControlAck;

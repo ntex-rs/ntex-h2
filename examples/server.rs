@@ -1,3 +1,5 @@
+use std::{error::Error as StdError, rc::Rc};
+
 use ntex::service::{cfg::SharedCfg, fn_service};
 use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, server};
@@ -8,16 +10,14 @@ use ntex_util::time::{Millis, sleep};
 async fn main() -> std::io::Result<()> {
     let _ = env_logger::try_init();
 
+    let cfg = SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(10));
+
     ntex::server::build()
-        .bind("http", "127.0.0.1:5928", async move |_| {
-            server::Server::new(fn_service(async move |msg: Message| {
+        .bind("http", "127.0.0.1:5928", cfg, async move |_| {
+            server::Server::<_, ()>::new(fn_service(async move |msg: Message| {
                 let Message { stream, kind } = msg;
                 match kind {
-                    MessageKind::Headers {
-                        pseudo,
-                        headers,
-                        eof,
-                    } => {
+                    MessageKind::Headers { pseudo, headers, eof } => {
                         log::trace!(
                             "{:?} got request (eof: {}): {:#?}\nheaders: {:#?}",
                             stream.id(),
@@ -54,13 +54,9 @@ async fn main() -> std::io::Result<()> {
             }))
             .control(|msg: Control<_>| async move {
                 log::trace!("Control message: {:?}", msg);
-                Ok::<_, ()>(msg.ack())
+                Ok::<_, Rc<dyn StdError>>(msg.ack())
             })
         })?
-        .config(
-            "http",
-            SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(10)),
-        )
         .workers(1)
         .stop_runtime()
         .run()

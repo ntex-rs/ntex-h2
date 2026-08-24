@@ -6,13 +6,11 @@ use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
 use ntex_io::{IoBoxed, IoRef, OnDisconnect};
-use ntex_service::cfg::Cfg;
+use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
-use crate::connection::Connection;
-use crate::default::DefaultControlService;
-use crate::dispatcher::Dispatcher;
 use crate::{OperationError, ServiceConfig, codec::Codec};
+use crate::{connection::Connection, default::DefaultControlService, dispatcher::Dispatcher};
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
@@ -61,22 +59,14 @@ impl SimpleClient {
         let codec = Codec::default();
         codec.set_max_headers(cfg.max_headers);
 
-        let con = Connection::new(
-            false,
-            io.get_ref(),
-            codec,
-            cfg,
-            false,
-            skip_unknown_streams,
-            pool,
-        );
+        let con = Connection::new(false, io.get_ref(), codec, cfg, false, skip_unknown_streams, pool);
         con.set_secure(*scheme == Scheme::HTTPS);
 
-        let disp = Dispatcher::new(
+        let disp = Pipeline::new(Dispatcher::new(
             con.clone(),
-            DefaultControlService,
-            HandleService::new(storage.clone()),
-        );
+            Pipeline::new(HandleService::new(storage.clone())),
+            Pipeline::new(DefaultControlService).bind(),
+        ));
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         ntex_util::spawn(async move {

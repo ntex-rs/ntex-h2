@@ -150,17 +150,9 @@ impl Encoder {
         }
     }
 
-    fn encode_header_without_name(
-        &mut self,
-        last: &Index,
-        value: &HeaderValue,
-        dst: &mut BytesMut,
-    ) {
+    fn encode_header_without_name(&mut self, last: &Index, value: &HeaderValue, dst: &mut BytesMut) {
         match *last {
-            Index::Indexed(..)
-            | Index::Name(..)
-            | Index::Inserted(..)
-            | Index::InsertedValue(..) => {
+            Index::Indexed(..) | Index::Name(..) | Index::Inserted(..) | Index::InsertedValue(..) => {
                 let idx = Table::resolve_idx(last);
 
                 encode_not_indexed(idx, value.as_ref(), value.is_sensitive(), dst);
@@ -168,12 +160,7 @@ impl Encoder {
             Index::NotIndexed(_) => {
                 let last = self.table.resolve(last);
 
-                encode_not_indexed2(
-                    last.name().as_slice(),
-                    value.as_ref(),
-                    value.is_sensitive(),
-                    dst,
-                );
+                encode_not_indexed2(last.name().as_slice(), value.as_ref(), value.is_sensitive(), dst);
             }
         }
     }
@@ -478,10 +465,7 @@ mod test {
         // Using the name component of a previously indexed header (without
         // sensitive flag set)
 
-        let _ = encode(
-            &mut encoder,
-            vec![self::header("my-password", "not-so-secret")],
-        );
+        let _ = encode(&mut encoder, vec![self::header("my-password", "not-so-secret")]);
 
         let name = "my-password".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();

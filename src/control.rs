@@ -7,8 +7,6 @@ use crate::{error, frame, stream::StreamRef};
 pub enum Control<E> {
     /// Connection is prepared to disconnect
     Disconnect(Reason<E>),
-    /// Protocol dispatcher is terminated
-    Terminated(Terminated),
 }
 
 #[derive(Debug)]
@@ -50,15 +48,10 @@ impl<E> Control<E> {
         Control::Disconnect(Reason::ProtocolError(ConnectionError::new(err)))
     }
 
-    pub(super) fn terminated() -> Self {
-        Control::Terminated(Terminated)
-    }
-
     /// Default ack impl
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Disconnect(item) => item.ack(),
-            Control::Terminated(item) => item.ack(),
         }
     }
 }

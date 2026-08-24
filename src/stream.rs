@@ -456,10 +456,7 @@ impl StreamRef {
         self.0.failed(err);
     }
 
-    pub(crate) fn recv_headers(
-        &self,
-        hdrs: Headers,
-    ) -> Result<Option<Message>, Error<StreamError>> {
+    pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, Error<StreamError>> {
         #[cfg(feature = "trace")]
         log::trace!(
             "{}: processing HEADERS for {:?}:\n{hdrs:#?}\nrecv_state:{:?}, send_state: {:?}",
@@ -486,10 +483,7 @@ impl StreamRef {
                         self.0.content_length.set(ContentLength::Remaining(v));
                     } else {
                         proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
-                        return Err(Error::new(
-                            StreamError::InvalidContentLength,
-                            self.service(),
-                        ));
+                        return Err(Error::new(StreamError::InvalidContentLength, self.service()));
                     }
                 }
                 Ok(Some(Message::new(pseudo, headers, eof, self)))
@@ -524,25 +518,17 @@ impl StreamRef {
 
                 // Returns `Err` when the decrement cannot be completed due to overflow
                 match self.0.content_length.get() {
-                    ContentLength::Remaining(rem) => {
-                        match rem.checked_sub(data.payload().len() as u64) {
-                            Some(val) => {
-                                self.0.content_length.set(ContentLength::Remaining(val));
-                                if eof && val != 0 {
-                                    return Err(Error::new(
-                                        StreamError::WrongPayloadLength,
-                                        self.service(),
-                                    ));
-                                }
-                            }
-                            None => {
-                                return Err(Error::new(
-                                    StreamError::WrongPayloadLength,
-                                    self.service(),
-                                ));
+                    ContentLength::Remaining(rem) => match rem.checked_sub(data.payload().len() as u64) {
+                        Some(val) => {
+                            self.0.content_length.set(ContentLength::Remaining(val));
+                            if eof && val != 0 {
+                                return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
                             }
                         }
-                    }
+                        None => {
+                            return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
+                        }
+                    },
                     ContentLength::Head => {
                         if !data.payload().is_empty() {
                             return Err(Error::new(StreamError::NonEmptyPayload, self.service()));
@@ -584,10 +570,7 @@ impl StreamRef {
 
     pub(crate) fn recv_window_update(&self, frm: WindowUpdate) -> Result<(), Error<StreamError>> {
         if frm.size_increment() == 0 {
-            Err(Error::new(
-                StreamError::WindowZeroUpdateValue,
-                self.service(),
-            ))
+            Err(Error::new(StreamError::WindowZeroUpdateValue, self.service()))
         } else {
             let orig = self.0.send_window.get();
             let window = orig
@@ -628,10 +611,7 @@ impl StreamRef {
         Ok(())
     }
 
-    pub(crate) fn update_recv_window(
-        &self,
-        upd: i32,
-    ) -> Result<Option<WindowSize>, Error<StreamError>> {
+    pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, Error<StreamError>> {
         let mut window = match upd.cmp(&0) {
             cmp::Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
             cmp::Ordering::Greater => self
@@ -679,9 +659,7 @@ impl StreamRef {
                 Ok(())
             }
             HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),
-            HalfState::Closed(r) => {
-                Err(Error::new(OperationError::Closed(r), self.0.con.service()))
-            }
+            HalfState::Closed(r) => Err(Error::new(OperationError::Closed(r), self.0.con.service())),
         }
     }
 
@@ -729,16 +707,13 @@ impl StreamRef {
                     // calaculate available send window size
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
-                        let size =
-                            cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
+                        let size = cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
 
                         // write to io buffer
                         let empty = self
                             .0
                             .con
-                            .encode_data_frame(|buf| {
-                                data.encode(self.0.tag(), self.0.id, size, eof, buf)
-                            })
+                            .encode_data_frame(|buf| data.encode(self.0.tag(), self.0.id, size, eof, buf))
                             .map_err(|_| OperationError::Disconnected)
                             .into_error()?;
 
@@ -747,9 +722,7 @@ impl StreamRef {
                         }
 
                         // update send window
-                        self.0
-                            .send_window
-                            .set(self.0.send_window.get().dec(size as u32));
+                        self.0.send_window.set(self.0.send_window.get().dec(size as u32));
 
                         // update connection send window
                         self.0.con.consume_send_window(size as u32);
@@ -777,10 +750,9 @@ impl StreamRef {
                 }
             }
             HalfState::Idle => Err(Error::new(OperationError::Idle, self.0.con.service())),
-            HalfState::Closed(reason) => Err(Error::new(
-                OperationError::Closed(reason),
-                self.0.con.service(),
-            )),
+            HalfState::Closed(reason) => {
+                Err(Error::new(OperationError::Closed(reason), self.0.con.service()))
+            }
         }
     }
 

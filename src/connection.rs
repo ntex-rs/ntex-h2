@@ -328,10 +328,7 @@ impl Connection {
             log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
         } else {
-            log::trace!(
-                "{}: Not all streams are closed, set disconnect flag",
-                self.tag()
-            );
+            log::trace!("{}: Not all streams are closed, set disconnect flag", self.tag());
             self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
         }
     }
@@ -361,10 +358,9 @@ impl Connection {
             self.0
                 .active_local_streams
                 .set(self.0.active_local_streams.get() + 1);
-            self.0.next_stream_id.set(
-                id.next_id()
-                    .map_err(|_| OperationError::OverflowedStreamId)?,
-            );
+            self.0
+                .next_stream_id
+                .set(id.next_id().map_err(|_| OperationError::OverflowedStreamId)?);
             stream
         };
 
@@ -518,10 +514,6 @@ impl RecvHalfConnection {
         self.0.local_config.service()
     }
 
-    pub(crate) fn connection(&self) -> Connection {
-        Connection(self.0.clone())
-    }
-
     pub(crate) fn drop_stream(&self, id: StreamId) {
         self.0.drop_stream(id);
     }
@@ -533,10 +525,7 @@ impl RecvHalfConnection {
         let _ = self.0.io.encode(item.into(), &self.0.codec);
     }
 
-    pub(crate) fn recv_headers(
-        &self,
-        frm: Headers,
-    ) -> Result<Option<(StreamRef, Message)>, EitherError> {
+    pub(crate) fn recv_headers(&self, frm: Headers) -> Result<Option<(StreamRef, Message)>, EitherError> {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
 
@@ -577,9 +566,7 @@ impl RecvHalfConnection {
         self.0.last_id.set(id);
 
         // 5. Handle specific client closed/pending cases for new streams
-        if !is_server
-            && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id))
-        {
+        if !is_server && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id)) {
             // if client and no stream, then it was closed
             self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
             Ok(None)
@@ -663,16 +650,12 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if !self.0.err_unknown_streams()
-            || self.0.local_pending_reset.is_pending(frm.stream_id())
+        } else if !self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(frm.stream_id())
         {
             // connection level recv window
             self.0.data_received(frm.payload().len() as u32);
 
-            self.encode(frame::Reset::new(
-                frm.stream_id(),
-                frame::Reason::STREAM_CLOSED,
-            ));
+            self.encode(frame::Reset::new(frm.stream_id(), frame::Reason::STREAM_CLOSED));
             Ok(None)
         } else {
             Err(Either::Left(Error::new(
@@ -686,10 +669,7 @@ impl RecvHalfConnection {
         &self,
         settings: frame::Settings,
     ) -> Result<(), Either<Error<ConnectionError>, Vec<StreamErrorInner>>> {
-        log::trace!(
-            "{}: Processing incoming settings: {settings:#?}",
-            self.tag()
-        );
+        log::trace!("{}: Processing incoming settings: {settings:#?}", self.tag());
 
         if settings.is_ack() {
             if self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED) {
@@ -790,17 +770,9 @@ impl RecvHalfConnection {
                     self.service(),
                 )))
             } else {
-                let window = self
-                    .0
-                    .send_window
-                    .get()
-                    .inc(frm.size_increment())
-                    .map_err(|()| {
-                        Either::Left(Error::new(
-                            ConnectionError::WindowValueOverflow,
-                            self.service(),
-                        ))
-                    })?;
+                let window = self.0.send_window.get().inc(frm.size_increment()).map_err(|()| {
+                    Either::Left(Error::new(ConnectionError::WindowValueOverflow, self.service()))
+                })?;
                 self.0.send_window.set(window);
 
                 // wake up streams if needed
@@ -822,10 +794,7 @@ impl RecvHalfConnection {
                 self.service(),
             )))
         } else {
-            self.encode(frame::Reset::new(
-                frm.stream_id(),
-                frame::Reason::STREAM_CLOSED,
-            ));
+            self.encode(frame::Reset::new(frm.stream_id(), frame::Reason::STREAM_CLOSED));
             Ok(())
         }
     }
@@ -880,10 +849,9 @@ impl RecvHalfConnection {
             data.slice(..std::cmp::min(data.len(), 20))
         );
 
-        self.0.error.set(Some(Error::new(
-            ConnectionError::GoAway(reason),
-            self.service(),
-        )));
+        self.0
+            .error
+            .set(Some(Error::new(ConnectionError::GoAway(reason), self.service())));
         self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -894,8 +862,7 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn ping_timeout(&self) -> HashMap<StreamId, StreamRef> {
-        let err: Error<OperationError> =
-            Error::new(ConnectionError::KeepaliveTimeout, self.service());
+        let err: Error<OperationError> = Error::new(ConnectionError::KeepaliveTimeout, self.service());
         self.0.error.set(Some(err.clone()));
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -938,10 +905,9 @@ impl RecvHalfConnection {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err));
         } else {
-            self.0.error.set(Some(Error::new(
-                OperationError::Disconnected,
-                self.service(),
-            )));
+            self.0
+                .error
+                .set(Some(Error::new(OperationError::Disconnected, self.service())));
         }
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
@@ -1083,8 +1049,9 @@ mod tests {
     use std::time::Duration;
 
     use ntex::http::{HeaderMap, Method, test, uri::Scheme};
+    use ntex::service::{Service, fn_service};
     use ntex::time::{Millis, Seconds, sleep};
-    use ntex::{SharedCfg, io::Io, service::fn_service, util::Bytes};
+    use ntex::{Pipeline, SharedCfg, io::Io, util::Bytes};
 
     use crate::{self as h2, Codec, ServiceConfig, frame, frame::Reason};
 
@@ -1120,17 +1087,22 @@ mod tests {
     #[ntex::test]
     async fn test_remote_stream_refused() {
         let srv = test::server_with_config(
-            async || {
-                fn_service(|io: Io<_>| async move {
+            async |()| {
+                fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        fn_service(|msg: h2::Message| async move {
+                        Pipeline::with((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::REFUSED_STREAM);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
-                            Ok::<_, ()>(msg.ack())
-                        }),
+                        Pipeline::with(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
                     )
                     .await;
 
@@ -1138,8 +1110,7 @@ mod tests {
                 })
             },
             SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
-        )
-        .await;
+        );
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
@@ -1153,9 +1124,7 @@ mod tests {
         let msg = recv_stream.recv().await.unwrap();
         assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
 
-        let res = stream
-            .send_payload(Bytes::from_static(b"hello"), false)
-            .await;
+        let res = stream.send_payload(Bytes::from_static(b"hello"), false).await;
         assert!(res.is_err());
 
         let con = &recv_stream.stream().0.con.0;
@@ -1165,17 +1134,22 @@ mod tests {
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
-            async || {
-                fn_service(|io: Io<_>| async move {
+            async |()| {
+                fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        fn_service(|msg: h2::Message| async move {
+                        Pipeline::with((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::NO_ERROR);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(|msg: h2::Control<h2::StreamError>| async move {
-                            Ok::<_, ()>(msg.ack())
-                        }),
+                        Pipeline::with(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
                     )
                     .await;
 
@@ -1187,8 +1161,7 @@ mod tests {
                     .set_ping_timeout(Seconds::ZERO)
                     .set_reset_stream_duration(Seconds(1)),
             ),
-        )
-        .await;
+        );
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr.clone()).await.unwrap();

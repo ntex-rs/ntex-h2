@@ -112,10 +112,9 @@ async fn read_continuation_frames() {
     let large = build_large_headers();
     let frame = large
         .iter()
-        .fold(
-            frames::headers(1).response(200),
-            |frame, &(name, ref value)| frame.field(name, &value[..]),
-        )
+        .fold(frames::headers(1).response(200), |frame, &(name, ref value)| {
+            frame.field(name, &value[..])
+        })
         .eos();
 
     let srv_rx = support::start_server(srv);
@@ -125,9 +124,7 @@ async fn read_continuation_frames() {
         let msg = srv_rx.recv().await.unwrap();
 
         let hdrs = frame.into_fields();
-        msg.stream()
-            .send_response(StatusCode::OK, hdrs, true)
-            .unwrap();
+        msg.stream().send_response(StatusCode::OK, hdrs, true).unwrap();
 
         let (pseudo, _hdrs, eof) = get_headers!(msg);
         assert_eq!(pseudo.path, Some("/index.html".into()));

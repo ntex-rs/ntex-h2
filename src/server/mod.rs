@@ -1,5 +1,7 @@
+use std::{error::Error, io};
+
 mod service;
-pub use self::service::{Server, ServerHandler, handle_one};
+pub use self::service::{Server, handle_one};
 
 use crate::frame;
 
@@ -15,12 +17,9 @@ pub enum ServerError<E> {
     /// Dispatcher error
     #[error("Dispatcher error")]
     Dispatcher,
-    /// Control service init error
-    #[error("Control service init error")]
-    ControlServiceError,
     /// Publish service init error
     #[error("Publish service init error")]
-    PublishServiceError,
+    PublishService(Box<dyn Error>),
     /// Handshake timeout
     #[error("Handshake timeout")]
     HandshakeTimeout,
@@ -29,8 +28,8 @@ pub enum ServerError<E> {
     Disconnected(Option<std::io::Error>),
 }
 
-impl<E> From<std::io::Error> for ServerError<E> {
-    fn from(err: std::io::Error) -> Self {
+impl<E> From<io::Error> for ServerError<E> {
+    fn from(err: io::Error) -> Self {
         ServerError::Disconnected(Some(err))
     }
 }
