@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use std::{cell::Cell, io, net, rc::Rc};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
