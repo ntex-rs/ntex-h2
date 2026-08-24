@@ -1,4 +1,6 @@
-use ntex::service::{ServiceFactory, fn_service};
+use std::{error::Error as StdError, rc::Rc};
+
+use ntex::service::{Service, cfg::SharedCfg};
 use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, server};
 use ntex_http::{HeaderMap, StatusCode, header};
@@ -28,11 +30,11 @@ async fn main() -> std::io::Result<()> {
     let acceptor = builder.build();
 
     ntex::server::build()
-        .bind("http", "127.0.0.1:5928", async move |_| {
+        .bind("http", "127.0.0.1:5928", SharedCfg::default(), async move |_| {
             SslAcceptor::new(acceptor.clone())
                 .map_err(|_err| server::ServerError::Service(()))
                 .and_then(
-                    server::Server::new(fn_service(|msg: Message| async move {
+                    server::Server::new(async move |msg: Message| {
                         let Message { stream, kind } = msg;
                         match kind {
                             MessageKind::Headers { pseudo, headers, eof } => {
@@ -67,10 +69,10 @@ async fn main() -> std::io::Result<()> {
                             }
                         }
                         Ok::<_, Error<OperationError>>(())
-                    }))
-                    .control(|msg: Control<_>| async move {
+                    })
+                    .control(async move |msg: Control<_>| {
                         println!("Control message: {:?}", msg);
-                        Ok::<_, ()>(msg.ack())
+                        Ok::<_, Rc<dyn StdError>>(msg.ack())
                     }),
                 )
         })?

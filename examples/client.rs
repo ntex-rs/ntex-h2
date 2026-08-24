@@ -15,14 +15,10 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .set_alpn_protos(b"\x02h2\x08http/1.1")
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
-    let pool = client::Client::builder(
-        "127.0.0.1:5928",
-        ntex_tls::openssl::SslConnector2::new(builder.build()),
-    )
-    .scheme(Scheme::HTTPS)
-    .build(SharedCfg::default())
-    .await
-    .unwrap();
+    let pool = client::Client::builder("127.0.0.1:5928")
+        .connector(ntex_tls::openssl::SslConnector::new(builder.build()))
+        .scheme(Scheme::HTTPS)
+        .build(SharedCfg::default());
 
     let mut hdrs = HeaderMap::default();
     hdrs.insert(

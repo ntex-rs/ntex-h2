@@ -1049,8 +1049,9 @@ mod tests {
     use std::time::Duration;
 
     use ntex::http::{HeaderMap, Method, test, uri::Scheme};
+    use ntex::service::{Service, fn_service};
     use ntex::time::{Millis, Seconds, sleep};
-    use ntex::{SharedCfg, io::Io, service::fn_service, util::Bytes};
+    use ntex::{Pipeline, SharedCfg, io::Io, util::Bytes};
 
     use crate::{self as h2, Codec, ServiceConfig, frame, frame::Reason};
 
@@ -1086,17 +1087,22 @@ mod tests {
     #[ntex::test]
     async fn test_remote_stream_refused() {
         let srv = test::server_with_config(
-            async || {
-                fn_service(|io: Io<_>| async move {
+            async |()| {
+                fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        fn_service(|msg: h2::Message| async move {
+                        Pipeline::with((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::REFUSED_STREAM);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(
-                            |msg: h2::Control<h2::StreamError>| async move { Ok::<_, ()>(msg.ack()) },
-                        ),
+                        Pipeline::with(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
                     )
                     .await;
 
@@ -1104,8 +1110,7 @@ mod tests {
                 })
             },
             SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
-        )
-        .await;
+        );
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
@@ -1129,17 +1134,22 @@ mod tests {
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
-            async || {
-                fn_service(|io: Io<_>| async move {
+            async |()| {
+                fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        fn_service(|msg: h2::Message| async move {
+                        Pipeline::with((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::NO_ERROR);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        fn_service(
-                            |msg: h2::Control<h2::StreamError>| async move { Ok::<_, ()>(msg.ack()) },
-                        ),
+                        Pipeline::with(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
                     )
                     .await;
 
@@ -1151,8 +1161,7 @@ mod tests {
                     .set_ping_timeout(Seconds::ZERO)
                     .set_reset_stream_duration(Seconds(1)),
             ),
-        )
-        .await;
+        );
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr.clone()).await.unwrap();

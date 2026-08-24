@@ -49,13 +49,14 @@ impl<A, S> Connector<A, S>
 where
     A: Address,
 {
-    #[inline]
+    #[must_use]
     /// Set scheme
-    pub fn scheme(&mut self, scheme: Scheme) -> &mut Self {
+    pub fn scheme(mut self, scheme: Scheme) -> Self {
         self.scheme = scheme;
         self
     }
 
+    #[must_use]
     /// Use custom connector
     pub fn connector<U>(self, svc: impl IntoService<U, SharedCfg, Connect<A>>) -> Connector<A, U>
     where

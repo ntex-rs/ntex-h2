@@ -76,7 +76,8 @@
     clippy::missing_fields_in_debug,
     clippy::missing_errors_doc,
     clippy::must_use_candidate,
-    clippy::too_many_lines
+    clippy::too_many_lines,
+    clippy::unused_async_trait_impl
 )]
 
 macro_rules! proto_err {

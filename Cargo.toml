@@ -29,7 +29,7 @@ features = []
 ntex-bytes = "1.9.0"
 ntex-codec = "1.2"
 ntex-dispatcher = "4.0.0-beta.0"
-ntex-error = "2.4"
+ntex-error = "2.5"
 ntex-http = "1.2"
 ntex-io = "4.0.0-beta.0"
 ntex-net = "4.0.0-beta.0"
@@ -55,8 +55,8 @@ walkdir = "2.3.2"
 serde = "1"
 serde_json = "1"
 
-ntex = { version = "3.9.6", features = ["openssl"] }
-ntex-tls = { version = "3.6", features = ["openssl"] }
+ntex = { version = "4.0.0-beta.0", features = ["openssl"] }
+ntex-tls = { version = "4.0.0-beta.0", features = ["openssl"] }
 openssl = "0.10"
 
 # Examples
@@ -65,9 +65,4 @@ env_logger = "0.11"
 [patch.crates-io]
 ntex-h2 = { path = "." }
 
-ntex-dispatcher = { path = "../../ntex/ntex-dispatcher" }
-ntex-io = { path = "../../ntex/ntex-io" }
-ntex-net = { path = "../../ntex/ntex-net" }
-ntex-service = { path = "../../ntex/ntex-service" }
-ntex-util = { path = "../../ntex/ntex-util" }
-ntex-server = { path = "../../ntex/ntex-server" }
+ntex = { git = "https://github.com/ntex-rs/ntex.git" }

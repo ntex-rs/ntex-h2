@@ -1,7 +1,9 @@
+use std::{error::Error, rc::Rc};
+
 use ntex_h2::{Control, Message, client, server};
 use ntex_http::uri::Scheme;
 use ntex_io::{Io, testing::IoTest};
-use ntex_service::{cfg::SharedCfg, fn_service};
+use ntex_service::cfg::SharedCfg;
 use ntex_util::channel::mpsc;
 
 pub mod frames;
@@ -23,15 +25,14 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
 
     let (tx, rx) = mpsc::channel();
     ntex_util::spawn(async move {
-        let _ = server::Server::new(fn_service(move |msg: Message| {
+        let _ = server::Server::<_, ()>::new(async move |msg: Message| {
             let _ = tx.send(msg);
-            async { Ok(()) }
-        }))
-        .control(fn_service(|msg: Control<()>| async move {
+            Ok::<_, ()>(())
+        })
+        .control(async move |msg: Control<()>| {
             log::trace!("Control message: {:?}", msg);
-            Ok::<_, ()>(msg.ack())
-        }))
-        .handler(SharedCfg::default())
+            Ok::<_, Rc<dyn Error>>(msg.ack())
+        })
         .run(Io::new(io, SharedCfg::default()).into())
         .await;
     });

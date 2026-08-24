@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, rc::Rc};
+use std::{convert::Infallible, error::Error, fmt, rc::Rc};
 
 use ntex_service::{Ctx, Service, ServiceFactory, cfg::SharedCfg};
 
@@ -13,7 +13,7 @@ impl<E: fmt::Debug> ServiceFactory<(), Control<E>, SharedCfg> for DefaultControl
     type Error = Rc<dyn Error>;
 
     type Service = DefaultControlService;
-    type InitError = E;
+    type InitError = Infallible;
 
     async fn create(&self, _: &SharedCfg) -> Result<Self::Service, Self::InitError> {
         Ok(DefaultControlService)
