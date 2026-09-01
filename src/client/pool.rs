@@ -309,7 +309,7 @@ impl<A> ClientBuilder<A, DefaultConnector<A>>
 where
     A: Address + Clone,
 {
-    fn new<U>(addr: U) -> Self
+    pub fn new<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
     {

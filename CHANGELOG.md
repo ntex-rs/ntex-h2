@@ -1,5 +1,13 @@
 # Changes
 
+## [4.0.0-beta.0] - 2026-08-24
+
+* Upgrade to ntex 5
+
+* Service is used for Connector type
+
+* http2 service use Service as handler type
+
 ## [3.13.0] - 2026-07-25
 
 * Add support for connection lifetime
