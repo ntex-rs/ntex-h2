@@ -118,8 +118,7 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
     }
 
     async fn shutdown(&self, _: Ctx<'_, Self, ()>) {
-        join(self.inner.publish.shutdown(), self.inner.control.shutdown()).await;
-
+        self.inner.publish.shutdown().await;
         self.connection.disconnect();
     }
 
