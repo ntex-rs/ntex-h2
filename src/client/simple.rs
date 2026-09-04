@@ -62,11 +62,14 @@ impl SimpleClient {
         let con = Connection::new(false, io.get_ref(), codec, cfg, false, skip_unknown_streams, pool);
         con.set_secure(*scheme == Scheme::HTTPS);
 
-        let disp = Pipeline::new(Dispatcher::new(
-            con.clone(),
-            Pipeline::new(HandleService::new(storage.clone())),
-            Pipeline::new(DefaultControlService).bind(),
-        ));
+        let disp = Pipeline::new(
+            (),
+            Dispatcher::new(
+                con.clone(),
+                Pipeline::new(Default::default(), HandleService::new(storage.clone())),
+                Pipeline::new((), DefaultControlService).bind(),
+            ),
+        );
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp);
         ntex_util::spawn(async move {
