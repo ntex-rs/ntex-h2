@@ -1,4 +1,4 @@
-use ntex_error::{Error, ErrorDiagnostic, ResultType};
+use ntex_error::{Error, ErrorDiagnostic};
 
 pub use crate::codec::EncoderError;
 

@@ -1,7 +1,7 @@
 //! Http2 client
 use std::io;
 
-use ntex_error::{ErrorDiagnostic, ResultType};
+use ntex_error::ErrorDiagnostic;
 use ntex_net::connect::ConnectError;
 use ntex_util::channel::Canceled;
 
