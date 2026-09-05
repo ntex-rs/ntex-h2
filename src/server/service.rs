@@ -1,4 +1,4 @@
-use std::{error::Error, fmt, future::Future, future::poll_fn, marker, pin::Pin, rc::Rc};
+use std::{convert::Infallible, error::Error, fmt, future::Future, future::poll_fn, pin::Pin};
 
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::IoBoxed;
@@ -21,19 +21,17 @@ where
     Pub: ServiceFactory<Req::State, Message, Res = ()>,
 {
     publish: Pub,
-    control: PipelineState<Req::State, Control<Pub::Error>, ControlAck, Rc<dyn Error>>,
+    control: PipelineState<Req::State, Control<Pub::Error>, ControlAck, Err>,
     pool: pool::Pool<()>,
-    err: marker::PhantomData<Err>,
 }
 
-impl<Req, Pub, Err> Server<Req, Pub, Err>
+impl<Req, Pub> Server<Req, Pub, Infallible>
 where
     Req: RequestState<IoBoxed>,
     Req::State: Clone,
     Pub: ServiceFactory<Req::State, Message, Res = ()> + 'static,
     Pub::Error: fmt::Debug,
     Pub::InitError: Into<Box<dyn Error>>,
-    Err: 'static,
 {
     /// Create new instance of Server factory
     pub fn new(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self {
@@ -41,7 +39,6 @@ where
             publish: publish.into_factory(),
             control: PipelineState::new(DefaultControlService),
             pool: pool::new(),
-            err: marker::PhantomData,
         }
     }
 }
@@ -60,16 +57,14 @@ where
     pub fn control<S>(
         self,
         f: impl IntoService<S, Req::State, Control<Pub::Error>>,
-    ) -> Server<Req, Pub, Err>
+    ) -> Server<Req, Pub, S::Error>
     where
         S: Service<Req::State, Control<Pub::Error>, Res = ControlAck> + 'static,
-        S::Error: Into<Rc<dyn Error>>,
     {
         Server {
             publish: self.publish,
-            control: PipelineState::new(f.into_service().map_err(Into::into)),
+            control: PipelineState::new(f.into_service()),
             pool: self.pool,
-            err: marker::PhantomData,
         }
     }
 }
@@ -83,7 +78,9 @@ where
     Pub::InitError: Into<Box<dyn Error>>,
     Err: 'static,
 {
-    pub async fn run<St>(&self, st: Req::State, io: IoBoxed) -> Result<(), ServerError<Err>> {
+    pub async fn run(&self, req: Req) -> Result<(), ServerError<Err>> {
+        let (st, io) = req.unpack();
+
         let shared = io.shared();
         let cfg = shared.get::<ServiceConfig>();
 
@@ -135,7 +132,7 @@ where
             Pin::new(&mut fut).poll(cx)
         })
         .await
-        .map_err(|()| ServerError::Dispatcher)
+        .map_err(ServerError::Service)
     }
 }
 
@@ -153,8 +150,7 @@ where
     type Error = ServerError<Err>;
 
     async fn call(&self, req: Req, _: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
-        let (st, io) = req.unpack();
-        self.run::<St>(st, io).await
+        self.run(req).await
     }
 }
 
@@ -172,11 +168,11 @@ async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
 }
 
 /// Handle io object.
-pub async fn handle_one<Err: 'static>(
+pub async fn handle_one<Err: 'static, PErr: 'static>(
     io: IoBoxed,
-    pub_svc: Pipeline<Message, (), Err>,
-    ctl_svc: PipelineBinding<Control<Err>, ControlAck, Rc<dyn Error>>,
-) -> Result<(), ServerError<()>> {
+    pub_svc: Pipeline<Message, (), PErr>,
+    ctl_svc: PipelineBinding<Control<PErr>, ControlAck, Err>,
+) -> Result<(), ServerError<Err>> {
     let config: Cfg<ServiceConfig> = io.shared().get();
 
     // read preface
@@ -212,5 +208,5 @@ pub async fn handle_one<Err: 'static>(
         Pin::new(&mut fut).poll(cx)
     })
     .await
-    .map_err(|()| ServerError::Dispatcher)
+    .map_err(ServerError::Service)
 }

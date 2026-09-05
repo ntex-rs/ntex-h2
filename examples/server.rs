@@ -1,10 +1,8 @@
-use std::{error::Error as StdError, rc::Rc};
+use std::io;
 
-use ntex::service::{cfg::SharedCfg, fn_service};
-use ntex_error::Error;
+use ntex::{SharedCfg, error::Error, time::Millis, time::sleep};
 use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, server};
 use ntex_http::{HeaderMap, StatusCode, header};
-use ntex_util::time::{Millis, sleep};
 
 #[ntex::main]
 async fn main() -> std::io::Result<()> {
@@ -14,7 +12,7 @@ async fn main() -> std::io::Result<()> {
 
     ntex::server::build()
         .bind("http", "127.0.0.1:5928", cfg, async move |_| {
-            server::Server::<_, ()>::new(fn_service(async move |msg: Message| {
+            server::Server::new(async move |msg: Message| {
                 let Message { stream, kind } = msg;
                 match kind {
                     MessageKind::Headers { pseudo, headers, eof } => {
@@ -51,10 +49,10 @@ async fn main() -> std::io::Result<()> {
                     }
                 }
                 Ok::<_, Error<OperationError>>(())
-            }))
+            })
             .control(|msg: Control<_>| async move {
                 log::trace!("Control message: {:?}", msg);
-                Ok::<_, Rc<dyn StdError>>(msg.ack())
+                Ok::<_, io::Error>(msg.ack())
             })
         })?
         .workers(1)

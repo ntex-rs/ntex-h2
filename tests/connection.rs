@@ -64,7 +64,7 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
         .map_err(|e| log::error!("Cannot set alpn protocol: {:?}", e));
 
     let addr = ntex::connect::Connect::new("localhost").set_addr(Some(addr));
-    Pipeline::new(openssl::SslConnector::new(builder.build()))
+    Pipeline::new(SharedCfg::default(), openssl::SslConnector::new(builder.build()))
         .call(addr)
         .await
         .unwrap()
@@ -90,6 +90,7 @@ async fn test_max_concurrent_streams() {
     let srv = start_server().await;
     let addr = srv.addr();
     let client = Pipeline::new(
+        SharedCfg::default(),
         client::Connector::new()
             .scheme(Scheme::HTTP)
             .connector(fn_service(move |_| async move { Ok(connect(addr).await) })),

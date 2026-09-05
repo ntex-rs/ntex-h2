@@ -66,7 +66,7 @@ impl SimpleClient {
             (),
             Dispatcher::new(
                 con.clone(),
-                Pipeline::new(Default::default(), HandleService::new(storage.clone())),
+                Pipeline::new((), HandleService::new(storage.clone())),
                 Pipeline::new((), DefaultControlService).bind(),
             ),
         );

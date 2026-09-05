@@ -25,7 +25,7 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
 
     let (tx, rx) = mpsc::channel();
     ntex_util::spawn(async move {
-        let _ = server::Server::<_, ()>::new(async move |msg: Message| {
+        let _ = server::Server::new(async move |msg: Message| {
             let _ = tx.send(msg);
             Ok::<_, ()>(())
         })
@@ -33,7 +33,7 @@ pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {
             log::trace!("Control message: {:?}", msg);
             Ok::<_, Rc<dyn Error>>(msg.ack())
         })
-        .run(Io::new(io, SharedCfg::default()).into())
+        .run(Io::new(io, SharedCfg::default()))
         .await;
     });
 

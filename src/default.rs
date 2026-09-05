@@ -1,4 +1,4 @@
-use std::{convert::Infallible, error::Error, fmt, rc::Rc};
+use std::{convert::Infallible, fmt};
 
 use ntex_service::{Ctx, Service, ServiceFactory};
 
@@ -10,7 +10,7 @@ pub struct DefaultControlService;
 
 impl<St, E: fmt::Debug> ServiceFactory<St, Control<E>> for DefaultControlService {
     type Res = ControlAck;
-    type Error = Rc<dyn Error>;
+    type Error = Infallible;
 
     type Service = DefaultControlService;
     type InitError = Infallible;
@@ -22,7 +22,7 @@ impl<St, E: fmt::Debug> ServiceFactory<St, Control<E>> for DefaultControlService
 
 impl<St, E: fmt::Debug> Service<St, Control<E>> for DefaultControlService {
     type Res = ControlAck;
-    type Error = Rc<dyn Error>;
+    type Error = Infallible;
 
     async fn call(&self, msg: Control<E>, _: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
         log::trace!("Default control service is used: {msg:?}");
