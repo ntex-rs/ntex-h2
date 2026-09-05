@@ -1,4 +1,4 @@
-use std::{cell::Cell, error::Error as StdError, future, rc::Rc, task::Poll};
+use std::{cell::Cell, future, rc::Rc, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
@@ -13,24 +13,24 @@ use crate::frame::{Frame, FrameError, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
-pub(crate) struct Dispatcher<Err> {
-    inner: Rc<Inner<Err>>,
+pub(crate) struct Dispatcher<Err, PErr> {
+    inner: Rc<Inner<Err, PErr>>,
     connection: RecvHalfConnection,
 }
 
-struct Inner<Err> {
-    publish: Pipeline<Message, (), Err>,
-    control: PipelineBinding<Control<Err>, ControlAck, Rc<dyn StdError>>,
+struct Inner<Err, PErr> {
+    publish: Pipeline<Message, (), PErr>,
+    control: PipelineBinding<Control<PErr>, ControlAck, Err>,
     connection: Connection,
     last_stream_id: StreamId,
     disconnected: Cell<bool>,
 }
 
-impl<Err: 'static> Dispatcher<Err> {
+impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
     pub(crate) fn new(
         connection: Connection,
-        publish: Pipeline<Message, (), Err>,
-        control: PipelineBinding<Control<Err>, ControlAck, Rc<dyn StdError>>,
+        publish: Pipeline<Message, (), PErr>,
+        control: PipelineBinding<Control<PErr>, ControlAck, Err>,
     ) -> Self {
         Dispatcher {
             connection: connection.recv_half(),
@@ -47,7 +47,7 @@ impl<Err: 'static> Dispatcher<Err> {
     async fn handle_message(
         &self,
         result: Result<Option<(StreamRef, Message)>, EitherError>,
-    ) -> Result<Option<Frame>, ()> {
+    ) -> Result<Option<Frame>, Err> {
         match result {
             Ok(Some((stream, msg))) => publish(msg, stream, &self.inner).await,
             Ok(None) => Ok(None),
@@ -92,24 +92,28 @@ impl<Err: 'static> Dispatcher<Err> {
     }
 }
 
-impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
+impl<Err, PErr> Service<(), DispatchItem<Codec>> for Dispatcher<Err, PErr>
+where
+    Err: 'static,
+    PErr: 'static,
+{
     type Res = Option<Frame>;
-    type Error = ();
+    type Error = Err;
 
     #[inline]
     async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         let (res1, res2) = join(self.inner.publish.ready(), self.inner.control.ready()).await;
 
         if let Err(e) = res1 {
-            if res2.is_err() {
-                Err(())
+            if let Err(e) = res2 {
+                Err(e)
             } else {
                 match self.inner.control.call(Control::error(e, None)).await {
                     Ok(_) => {
                         self.connection.disconnect();
                         Ok(())
                     }
-                    Err(_) => Err(()),
+                    Err(e) => Err(e),
                 }
             }
         } else {
@@ -249,11 +253,15 @@ impl<Err: 'static> Service<(), DispatchItem<Codec>> for Dispatcher<Err> {
     }
 }
 
-async fn publish<Err: 'static>(
+async fn publish<Err, PErr>(
     msg: Message,
     stream: StreamRef,
-    inner: &Inner<Err>,
-) -> Result<Option<Frame>, ()> {
+    inner: &Inner<Err, PErr>,
+) -> Result<Option<Frame>, Err>
+where
+    Err: 'static,
+    PErr: 'static,
+{
     let result = if stream.is_remote() {
         let fut = inner.publish.call(msg);
         let mut pinned = std::pin::pin!(fut);
@@ -275,7 +283,7 @@ async fn publish<Err: 'static>(
     }
 }
 
-impl<Err> Inner<Err> {
+impl<Err, PErr> Inner<Err, PErr> {
     fn can_disconnect(&self) -> bool {
         if self.disconnected.get() {
             false
@@ -286,7 +294,11 @@ impl<Err> Inner<Err> {
     }
 }
 
-async fn control<Err: 'static>(pkt: Control<Err>, inner: &Inner<Err>) -> Result<Option<Frame>, ()> {
+async fn control<Err, PErr>(pkt: Control<PErr>, inner: &Inner<Err, PErr>) -> Result<Option<Frame>, Err>
+where
+    Err: 'static,
+    PErr: 'static,
+{
     if inner.can_disconnect() {
         match inner.control.call(pkt).await {
             Ok(res) => {
@@ -296,15 +308,12 @@ async fn control<Err: 'static>(pkt: Control<Err>, inner: &Inner<Err>) -> Result<
                 inner.connection.close();
             }
             Err(err) => {
-                log::error!(
-                    "{}: control service has failed with {err:?}",
-                    inner.connection.tag()
-                );
                 // we cannot handle control service errors, close connection
                 inner
                     .connection
                     .encode(GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id));
                 inner.connection.close();
+                return Err(err);
             }
         }
     }

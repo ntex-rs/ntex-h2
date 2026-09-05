@@ -1,7 +1,6 @@
-use std::{error::Error as StdError, rc::Rc};
+use std::io;
 
-use ntex::service::{Service, cfg::SharedCfg};
-use ntex_error::Error;
+use ntex::{Service, SharedCfg, error::Error};
 use ntex_h2::{Control, Message, MessageKind, OperationError, server};
 use ntex_http::{HeaderMap, StatusCode, header};
 use ntex_tls::openssl::SslAcceptor;
@@ -32,7 +31,7 @@ async fn main() -> std::io::Result<()> {
     ntex::server::build()
         .bind("http", "127.0.0.1:5928", SharedCfg::default(), async move |_| {
             SslAcceptor::new(acceptor.clone())
-                .map_err(|_err| server::ServerError::Service(()))
+                .map_err(|e| server::ServerError::Service(io::Error::other(e)))
                 .and_then(
                     server::Server::new(async move |msg: Message| {
                         let Message { stream, kind } = msg;
@@ -72,7 +71,7 @@ async fn main() -> std::io::Result<()> {
                     })
                     .control(async move |msg: Control<_>| {
                         println!("Control message: {:?}", msg);
-                        Ok::<_, Rc<dyn StdError>>(msg.ack())
+                        Ok::<_, io::Error>(msg.ack())
                     }),
                 )
         })?

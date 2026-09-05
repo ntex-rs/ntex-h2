@@ -1091,11 +1091,11 @@ mod tests {
                 fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        Pipeline::with((), async move |msg: h2::Message| {
+                        Pipeline::new((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::REFUSED_STREAM);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        Pipeline::with(
+                        Pipeline::new(
                             (),
                             fn_service(async move |msg: h2::Control<h2::StreamError>| {
                                 Ok::<_, ()>(msg.ack())
@@ -1138,11 +1138,11 @@ mod tests {
                 fn_service(async move |io: Io<_>| {
                     let _ = h2::server::handle_one(
                         io.into(),
-                        Pipeline::with((), async move |msg: h2::Message| {
+                        Pipeline::new((), async move |msg: h2::Message| {
                             msg.stream().reset(Reason::NO_ERROR);
                             Ok::<_, h2::StreamError>(())
                         }),
-                        Pipeline::with(
+                        Pipeline::new(
                             (),
                             fn_service(async move |msg: h2::Control<h2::StreamError>| {
                                 Ok::<_, ()>(msg.ack())
