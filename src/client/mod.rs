@@ -78,10 +78,6 @@ impl Clone for ClientError {
 }
 
 impl ErrorDiagnostic for ClientError {
-    fn typ(&self) -> ResultType {
-        ResultType::ServiceError
-    }
-
     fn signature(&self) -> &'static str {
         match self {
             ClientError::Protocol(err) => err.signature(),

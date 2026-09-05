@@ -93,10 +93,6 @@ impl ConnectionError {
 }
 
 impl ErrorDiagnostic for ConnectionError {
-    fn typ(&self) -> ResultType {
-        ResultType::ServiceError
-    }
-
     fn signature(&self) -> &'static str {
         match self {
             ConnectionError::GoAway(_) => "h2-conn-GoAway",
@@ -177,10 +173,6 @@ impl StreamError {
 }
 
 impl ErrorDiagnostic for StreamError {
-    fn typ(&self) -> ResultType {
-        ResultType::ServiceError
-    }
-
     fn signature(&self) -> &'static str {
         match self {
             StreamError::Idle(_) => "h2-stream-Idle",
@@ -242,10 +234,6 @@ pub enum OperationError {
 }
 
 impl ErrorDiagnostic for OperationError {
-    fn typ(&self) -> ResultType {
-        ResultType::ServiceError
-    }
-
     fn signature(&self) -> &'static str {
         match self {
             OperationError::Stream(err) => err.signature(),
