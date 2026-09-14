@@ -1,8 +1,8 @@
 # Changes
 
-## [4.0.0-beta.0] - 2026-08-24
+## [4.0.0] - 2026-09-14
 
-* Upgrade to ntex 5
+* Upgrade to ntex-service 5
 
 * Service is used for Connector type
 
