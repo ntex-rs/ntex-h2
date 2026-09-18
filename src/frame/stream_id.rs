@@ -1,4 +1,4 @@
-/// A stream identifier, as described in [Section 5.1.1] of RFC 7540.
+/// A stream identifier, as described in [Section 5.1.1] of RFC 9113.
 ///
 /// Streams are identified with an unsigned 31-bit integer. Streams
 /// initiated by a client MUST use odd-numbered stream identifiers; those
@@ -7,10 +7,11 @@
 /// messages; the stream identifier of zero cannot be used to establish a
 /// new stream.
 ///
-/// [Section 5.1.1]: https://tools.ietf.org/html/rfc7540#section-5.1.1
+/// [Section 5.1.1]: https://www.rfc-editor.org/rfc/rfc9113#section-5.1.1
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct StreamId(u32);
 
+/// Error returned when no further stream identifier is available.
 #[derive(Debug, Copy, Clone)]
 pub struct StreamIdOverflow;
 
@@ -26,7 +27,7 @@ impl StreamId {
     /// The maximum allowed stream ID.
     pub const MAX: StreamId = StreamId(u32::MAX >> 1);
 
-    /// Parse the stream ID
+    /// Parses a stream identifier and its reserved high bit.
     #[inline]
     pub fn parse(buf: &[u8]) -> (StreamId, bool) {
         let mut ubuf = [0; 4];
@@ -39,27 +40,27 @@ impl StreamId {
         (StreamId(unpacked & !STREAM_ID_MASK), flag)
     }
 
-    /// Returns true if this stream ID corresponds to a stream that
+    /// Returns `true` if this stream ID corresponds to a stream that
     /// was initiated by the client.
     pub const fn is_client_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && !id.is_multiple_of(2)
     }
 
-    /// Returns true if this stream ID corresponds to a stream that
+    /// Returns `true` if this stream ID corresponds to a stream that
     /// was initiated by the server.
     pub const fn is_server_initiated(&self) -> bool {
         let id = self.0;
         id != 0 && id.is_multiple_of(2)
     }
 
-    /// Return a new `StreamId` for stream 0.
+    /// Returns the connection-control stream identifier, zero.
     #[inline]
     pub const fn zero() -> StreamId {
         StreamId::CON
     }
 
-    /// Returns true if this stream ID is zero.
+    /// Returns `true` if this stream ID is zero.
     pub const fn is_zero(&self) -> bool {
         self.0 == 0
     }

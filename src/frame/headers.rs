@@ -8,7 +8,7 @@ use crate::hpack;
 use super::priority::StreamDependency;
 use super::{Frame, FrameError, Head, Kind, Protocol, StreamId, util};
 
-/// Header frame
+/// HTTP/2 HEADERS frame.
 ///
 /// This could be either a request or a response.
 #[derive(Clone, PartialEq, Eq)]
@@ -23,9 +23,11 @@ pub struct Headers {
     flags: HeadersFlag,
 }
 
+/// Flags carried by a HEADERS frame.
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
+/// Decoded HTTP/2 pseudo-header fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PseudoHeaders {
     // Request
@@ -66,7 +68,7 @@ const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 // ===== impl Headers =====
 
 impl Headers {
-    /// Create a new HEADERS frame
+    /// Creates a HEADERS frame.
     pub fn new(stream_id: StreamId, pseudo: PseudoHeaders, fields: HeaderMap, eof: bool) -> Self {
         let mut flags = HeadersFlag::default();
         if eof {
@@ -79,6 +81,7 @@ impl Headers {
         }
     }
 
+    /// Creates an end-of-stream trailers frame.
     pub fn trailers(stream_id: StreamId, fields: HeaderMap) -> Self {
         let mut flags = HeadersFlag::default();
         flags.set_end_stream();
@@ -158,38 +161,47 @@ impl Headers {
         self.header_block.load(self.stream_id, src, decoder, max_headers)
     }
 
+    /// Returns the associated stream identifier.
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
+    /// Returns whether the complete header block ends in this frame sequence.
     pub fn is_end_headers(&self) -> bool {
         self.flags.is_end_headers()
     }
 
+    /// Marks the header block as complete.
     pub fn set_end_headers(&mut self) {
         self.flags.set_end_headers();
     }
 
+    /// Returns whether these headers close the sending side of the stream.
     pub fn is_end_stream(&self) -> bool {
         self.flags.is_end_stream()
     }
 
+    /// Marks these headers as closing the sending side of the stream.
     pub fn set_end_stream(&mut self) {
         self.flags.set_end_stream();
     }
 
+    /// Splits pseudo-headers and regular header fields.
     pub fn into_parts(self) -> (PseudoHeaders, HeaderMap) {
         (self.header_block.pseudo, self.header_block.fields)
     }
 
+    /// Returns the regular header fields.
     pub fn fields(&self) -> &HeaderMap {
         &self.header_block.fields
     }
 
+    /// Returns the pseudo-header fields.
     pub fn pseudo(&self) -> &PseudoHeaders {
         &self.header_block.pseudo
     }
 
+    /// Returns the regular header fields.
     pub fn into_fields(self) -> HeaderMap {
         self.header_block.fields
     }

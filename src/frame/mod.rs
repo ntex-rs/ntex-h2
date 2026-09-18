@@ -1,3 +1,5 @@
+//! HTTP/2 frame types, constants, and parsing errors.
+
 use std::fmt;
 
 /// A helper macro that unpacks a sequence of 4 bytes found in the buffer with
@@ -66,20 +68,32 @@ pub use self::settings::{
 
 use crate::hpack;
 
+/// HTTP/2 frame payload length type.
 pub type FrameSize = u32;
+/// HTTP/2 flow-control window size type.
 pub type WindowSize = u32;
 
+/// Encoded HTTP/2 frame header length in bytes.
 pub const HEADER_LEN: usize = 9;
 
+/// Decoded HTTP/2 frame.
 #[derive(Clone, PartialEq, Eq)]
 pub enum Frame {
+    /// DATA frame.
     Data(Data),
+    /// HEADERS frame.
     Headers(Headers),
+    /// PRIORITY frame.
     Priority(Priority),
+    /// SETTINGS frame.
     Settings(Settings),
+    /// PING frame.
     Ping(Ping),
+    /// GOAWAY frame.
     GoAway(GoAway),
+    /// WINDOW_UPDATE frame.
     WindowUpdate(WindowUpdate),
+    /// RST_STREAM frame.
     Reset(Reset),
 }
 
@@ -168,6 +182,7 @@ pub enum FrameError {
     Hpack(#[from] hpack::DecoderError),
 }
 
+/// Errors involving a HEADERS/CONTINUATION frame sequence.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FrameContinuationError {
     /// Continuation frame is expected

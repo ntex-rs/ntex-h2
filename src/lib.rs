@@ -11,7 +11,7 @@
 //!
 //! ```toml
 //! [dependencies]
-//! ntex-h2 = "3"
+//! ntex-h2 = "4"
 //! ```
 //!
 //! # Layout
@@ -19,35 +19,36 @@
 //! The crate is split into [`client`] and [`server`] modules. Types that are
 //! common to both clients and servers are located at the root of the crate.
 //!
-//! See module level documentation for more details on how to use `h2`.
+//! Use [`server::Server`] to accept HTTP/2 connections, [`client::Client`] for
+//! pooled client connections, or [`client::SimpleClient`] for one established
+//! transport.
 //!
 //! # Handshake
 //!
-//! Both the client and the server require a connection to already be in a state
-//! ready to start the HTTP/2 handshake. This library does not provide
-//! facilities to do this.
+//! Both clients and servers require a transport that is already ready for the
+//! HTTP/2 connection preface. The caller is responsible for negotiating HTTP/2
+//! before passing the transport to this crate.
 //!
 //! There are three ways to reach an appropriate state to start the HTTP/2
 //! handshake.
 //!
-//! * Opening an HTTP/1.1 connection and performing an [upgrade].
-//! * Opening a connection with TLS and use ALPN to negotiate the protocol.
-//! * Open a connection with prior knowledge, i.e. both the client and the
+//! * Open an HTTP/1.1 connection and perform an [upgrade].
+//! * Open a TLS connection and use ALPN to negotiate HTTP/2.
+//! * Open a connection with prior knowledge, where both the client and the
 //!   server assume that the connection is immediately ready to start the
 //!   HTTP/2 handshake once opened.
 //!
-//! Once the connection is ready to start the HTTP/2 handshake, it can be
-//! passed to [`server::handshake`] or [`client::handshake`]. At this point, the
-//! library will start the handshake process, which consists of:
+//! Once the transport is ready, pass it to [`server::Server`] or construct a
+//! [`client::SimpleClient`]. The connection setup consists of:
 //!
 //! * The client sends the connection preface (a predefined sequence of 24 octets).
-//! * Both the client and the server sending a SETTINGS frame.
+//! * Both endpoints send a SETTINGS frame.
 //!
 //! See the [Starting HTTP/2] in the specification for more details.
 //!
 //! # Flow control
 //!
-//! [Flow control] is a fundamental feature of HTTP/2. The `h2` library
+//! [Flow control] is a fundamental feature of HTTP/2. This crate
 //! exposes flow control to the user.
 //!
 //! An HTTP/2 client or server may not send unlimited data to the peer. When a
@@ -61,14 +62,16 @@
 //! There is also a **connection level** window governing data sent across all
 //! streams.
 //!
-//! Managing flow control for inbound data is done through [`FlowControl`].
-//! Managing flow control for outbound data is done through [`SendStream`]. See
-//! the struct level documentation for those two types for more details.
+//! Inbound flow-control capacity is represented by [`Capacity`]. Consuming or
+//! dropping a capacity value releases receive-window capacity to the peer.
+//! Outbound flow control is handled by [`StreamRef::send_capacity`] and
+//! [`client::SendStream::send_capacity`].
 //!
-//! [HTTP/2]: https://http2.github.io/
+//! [HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113
 //! [futures]: https://docs.rs/futures/
-//! [Starting HTTP/2]: http://httpwg.org/specs/rfc7540.html#starting
-//! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Protocol_upgrade_mechanism
+//! [Starting HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113#section-3
+//! [Flow control]: https://www.rfc-editor.org/rfc/rfc9113#section-5.2
+//! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Protocol_upgrade_mechanism
 #![deny(clippy::pedantic)]
 #![allow(
     clippy::cast_sign_loss,

@@ -14,7 +14,7 @@ use crate::{config::ServiceConfig, consts, dispatcher::Dispatcher, frame, messag
 use super::ServerError;
 
 #[derive(Debug)]
-/// Http/2 server factory
+/// HTTP/2 server service factory.
 pub struct Server<Req, Pub, Err>
 where
     Req: RequestState<IoBoxed>,
@@ -33,7 +33,7 @@ where
     Pub::Error: fmt::Debug,
     Pub::InitError: Into<Box<dyn Error>>,
 {
-    /// Create new instance of Server factory
+    /// Creates a server with the specified request service factory.
     pub fn new(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self {
         Self {
             publish: publish.into_factory(),
@@ -52,7 +52,7 @@ where
     Pub::InitError: Into<Box<dyn Error>>,
     Err: 'static,
 {
-    /// Service to handle control frames
+    /// Sets the service used to handle connection control events.
     #[must_use]
     pub fn control<S>(
         self,
@@ -78,6 +78,7 @@ where
     Pub::InitError: Into<Box<dyn Error>>,
     Err: 'static,
 {
+    /// Runs one HTTP/2 server connection.
     pub async fn run(&self, req: Req) -> Result<(), ServerError<Err>> {
         let (st, io) = req.unpack();
 
@@ -167,7 +168,7 @@ async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
     }
 }
 
-/// Handle io object.
+/// Serves one established HTTP/2 transport with existing service pipelines.
 pub async fn handle_one<Err: 'static, PErr: 'static>(
     io: IoBoxed,
     pub_svc: Pipeline<Message, (), PErr>,

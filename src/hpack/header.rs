@@ -3,28 +3,42 @@ use ntex_http::{HeaderName, HeaderValue, Method, StatusCode};
 
 use super::{DecoderError, NeedMore};
 
-/// HTTP/2 Header
+/// Header field represented for HPACK encoding or decoding.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Header<T = HeaderName> {
+    /// Regular header field.
     Field { name: T, value: HeaderValue },
     // TODO: Change these types to `http::uri` types.
+    /// `:authority` pseudo-header.
     Authority(ByteString),
+    /// `:method` pseudo-header.
     Method(Method),
+    /// `:scheme` pseudo-header.
     Scheme(ByteString),
+    /// `:path` pseudo-header.
     Path(ByteString),
+    /// `:protocol` pseudo-header.
     Protocol(ByteString),
+    /// `:status` pseudo-header.
     Status(StatusCode),
 }
 
-/// The header field name
+/// Header or pseudo-header name.
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub enum Name<'a> {
+    /// Regular header name.
     Field(&'a HeaderName),
+    /// `:authority`.
     Authority,
+    /// `:method`.
     Method,
+    /// `:scheme`.
     Scheme,
+    /// `:path`.
     Path,
+    /// `:protocol`.
     Protocol,
+    /// `:status`.
     Status,
 }
 
@@ -34,6 +48,7 @@ pub(super) fn len(name: &HeaderName, value: &HeaderValue) -> usize {
 }
 
 impl Header<Option<HeaderName>> {
+    /// Resolves an optional repeated name into a complete header.
     pub fn reify(self) -> Result<Header, HeaderValue> {
         Ok(match self {
             Header::Field { name: Some(n), value } => Header::Field { name: n, value },
@@ -49,6 +64,7 @@ impl Header<Option<HeaderName>> {
 }
 
 impl Header {
+    /// Parses a header name and value.
     pub fn new(name: &Bytes, value: Bytes) -> Result<Header, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
@@ -72,6 +88,7 @@ impl Header {
         }
     }
 
+    /// Returns the HPACK table size of this header.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
@@ -85,7 +102,7 @@ impl Header {
         }
     }
 
-    /// Returns the header name
+    /// Returns the header name.
     pub fn name(&self) -> Name<'_> {
         match self {
             Header::Field { name, .. } => Name::Field(name),
@@ -98,6 +115,7 @@ impl Header {
         }
     }
 
+    /// Returns the encoded header value.
     pub fn value_slice(&self) -> &[u8] {
         match self {
             Header::Field { value, .. } => value.as_ref(),
@@ -109,6 +127,7 @@ impl Header {
         }
     }
 
+    /// Returns whether both headers have the same kind and value.
     pub fn value_eq(&self, other: &Header) -> bool {
         match (self, other) {
             (Header::Field { value: a, .. }, Header::Field { value: b, .. }) => a == b,
@@ -121,6 +140,7 @@ impl Header {
         }
     }
 
+    /// Returns whether the header value is marked sensitive.
     pub fn is_sensitive(&self) -> bool {
         if let Header::Field { value, .. } = self {
             value.is_sensitive()
@@ -130,6 +150,7 @@ impl Header {
         }
     }
 
+    /// Returns whether the value should be omitted from the dynamic table.
     pub fn skip_value_index(&self) -> bool {
         use ntex_http::header;
 
@@ -171,6 +192,7 @@ impl From<Header> for Header<Option<HeaderName>> {
 }
 
 impl Name<'_> {
+    /// Combines this name with a decoded value.
     pub fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
         match self {
             Name::Field(name) => Ok(Header::Field {
@@ -192,6 +214,7 @@ impl Name<'_> {
         }
     }
 
+    /// Returns the encoded header name.
     pub fn as_slice(&self) -> &[u8] {
         match *self {
             Name::Field(ref name) => name.as_ref(),

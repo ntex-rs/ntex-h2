@@ -6,28 +6,43 @@ use crate::error::{OperationError, StreamError};
 use crate::frame::{PseudoHeaders, StreamId};
 use crate::stream::{Capacity, StreamRef};
 
+/// Message delivered by an HTTP/2 connection dispatcher.
 #[derive(Debug)]
 pub struct Message {
+    /// Stream associated with this message.
     pub stream: StreamRef,
+    /// Message payload or lifecycle event.
     pub kind: MessageKind,
 }
 
+/// HTTP/2 stream message.
 #[derive(Debug)]
 pub enum MessageKind {
+    /// Initial request or response headers.
     Headers {
+        /// HTTP/2 pseudo-headers.
         pseudo: PseudoHeaders,
+        /// Regular HTTP headers.
         headers: HeaderMap,
+        /// Whether the peer closed its send side with these headers.
         eof: bool,
     },
+    /// Payload bytes and their receive-window capacity.
     Data(Bytes, Capacity),
+    /// End-of-stream data, trailers, or error.
     Eof(StreamEof),
+    /// Connection-level failure affecting the stream.
     Disconnect(Error<OperationError>),
 }
 
+/// Final event for an HTTP/2 stream.
 #[derive(Debug, Clone)]
 pub enum StreamEof {
+    /// Final payload bytes.
     Data(Bytes),
+    /// Trailing headers.
     Trailers(HeaderMap),
+    /// Stream-level error.
     Error(Error<StreamError>),
 }
 
@@ -74,16 +89,19 @@ impl Message {
         }
     }
 
+    /// Returns the associated stream identifier.
     #[inline]
     pub fn id(&self) -> StreamId {
         self.stream.id()
     }
 
+    /// Returns the message kind.
     #[inline]
     pub fn kind(&self) -> &MessageKind {
         &self.kind
     }
 
+    /// Returns the associated stream.
     #[inline]
     pub fn stream(&self) -> &StreamRef {
         &self.stream

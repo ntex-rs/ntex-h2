@@ -12,7 +12,7 @@ use ntex_util::time::Seconds;
 use crate::{consts, frame, frame::Settings, frame::WindowSize};
 
 #[derive(Debug)]
-/// Http2 connection configuration
+/// HTTP/2 connection and service configuration.
 pub struct ServiceConfig {
     pub(crate) settings: Settings,
     /// Initial window size of locally initiated streams
@@ -61,7 +61,7 @@ impl Configuration for ServiceConfig {
 }
 
 impl ServiceConfig {
-    /// Create configuration
+    /// Creates a configuration with HTTP/2 defaults.
     pub fn new() -> Self {
         let window_sz = frame::DEFAULT_INITIAL_WINDOW_SIZE;
         let window_sz_threshold = ((frame::DEFAULT_INITIAL_WINDOW_SIZE as f32) / 3.0) as u32;
@@ -119,9 +119,7 @@ impl ServiceConfig {
     /// The initial window of a connection is used as part of flow control. For more details,
     /// see [`FlowControl`].
     ///
-    /// The default value is 1Mb.
-    ///
-    /// [`FlowControl`]: ../struct.FlowControl.html
+    /// The default value is 1 MiB.
     pub fn set_initial_connection_window_size(mut self, size: i32) -> Self {
         assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
         self.connection_window_sz = size;
@@ -157,14 +155,14 @@ impl ServiceConfig {
     /// If server receives more headers than the buffer size, it resets
     /// stream with `REFUSED_STREAM` reason.
     ///
-    /// Default is set to 96
+    /// The default is 96.
     pub fn set_max_headers(mut self, val: usize) -> Self {
         self.max_headers = val;
         self
     }
 
     #[must_use]
-    /// Sets the max size of received header frames.
+    /// Sets the maximum decoded header-list size.
     ///
     /// This advisory setting informs a peer of the maximum size of header list
     /// that the sender is prepared to accept, in octets. The value is based on
@@ -174,16 +172,16 @@ impl ServiceConfig {
     /// This setting is also used to limit the maximum amount of data that is
     /// buffered to decode HEADERS frames.
     ///
-    /// By default value is set to 48Kb.
+    /// The default is 48 KiB.
     pub fn set_max_header_list_size(mut self, max: u32) -> Self {
         self.settings.set_max_header_list_size(Some(max));
         self
     }
 
     #[must_use]
-    /// Sets the max number of continuation frames for HEADERS
+    /// Sets the maximum number of continuation frames for one header block.
     ///
-    /// By default value is set to 5
+    /// The default is 5.
     pub fn set_max_header_continuation_frames(mut self, max: usize) -> Self {
         self.max_header_continuations = max;
         self
@@ -212,7 +210,7 @@ impl ServiceConfig {
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
-    /// [Section 5.1.2]: https://http2.github.io/http2-spec/#rfc.section.5.1.2
+    /// [Section 5.1.2]: https://www.rfc-editor.org/rfc/rfc9113#section-5.1.2
     pub fn set_max_concurrent_streams(mut self, max: u32) -> Self {
         self.remote_max_concurrent_streams = Some(max);
         self.settings.set_max_concurrent_streams(Some(max));
@@ -222,17 +220,15 @@ impl ServiceConfig {
     #[must_use]
     /// Sets the maximum number of concurrent locally reset streams.
     ///
-    /// When a stream is explicitly reset by either calling
-    /// [`SendResponse::send_reset`] or by dropping a [`SendResponse`] instance
-    /// before completing the stream, the HTTP/2 specification requires that
-    /// any further frames received for that stream must be ignored for "some
-    /// time".
+    /// When a stream is explicitly reset, or an unfinished stream handle is
+    /// dropped, HTTP/2 requires further frames for that stream to be ignored
+    /// for a period of time.
     ///
     /// In order to satisfy the specification, internal state must be maintained
     /// to implement the behavior. This state grows linearly with the number of
     /// streams that are locally reset.
     ///
-    /// The `max_concurrent_reset_streams` setting configures sets an upper
+    /// This setting configures an upper
     /// bound on the amount of state that is maintained. When this max value is
     /// reached, the oldest reset stream is purged from memory.
     ///
@@ -247,13 +243,11 @@ impl ServiceConfig {
     }
 
     #[must_use]
-    /// Sets the maximum number of concurrent locally reset streams.
+    /// Sets how long locally reset stream state is retained.
     ///
-    /// When a stream is explicitly reset by either calling
-    /// [`SendResponse::send_reset`] or by dropping a [`SendResponse`] instance
-    /// before completing the stream, the HTTP/2 specification requires that
-    /// any further frames received for that stream must be ignored for "some
-    /// time".
+    /// When a stream is explicitly reset, or an unfinished stream handle is
+    /// dropped, HTTP/2 requires further frames for that stream to be ignored
+    /// for a period of time.
     ///
     /// In order to satisfy the specification, internal state must be maintained
     /// to implement the behavior. This state grows linearly with the number of
@@ -284,29 +278,30 @@ impl ServiceConfig {
     // }
 
     #[must_use]
-    /// Set handshake timeout.
+    /// Sets the connection handshake timeout.
     ///
-    /// Hadnshake includes receiving preface and completing connection preparation.
+    /// The handshake includes receiving the client preface and preparing the
+    /// connection.
     ///
-    /// By default handshake timeuot is 5 seconds.
+    /// The default is 5 seconds.
     pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
     }
 
     #[must_use]
-    /// Set ping timeout.
+    /// Sets the keep-alive ping timeout.
     ///
-    /// By default ping time-out is set to 60 seconds.
+    /// The default is 10 seconds.
     pub fn set_ping_timeout(mut self, timeout: Seconds) -> Self {
         self.ping_timeout = timeout;
         self
     }
 
     #[must_use]
-    /// Set capacity availability timeout.
+    /// Sets the send-capacity availability timeout.
     ///
-    /// By default time-out is set to 3 seconds.
+    /// A zero duration disables the timeout. The default is 3 seconds.
     pub fn set_capacity_timeout(mut self, timeout: Seconds) -> Self {
         if timeout.is_zero() {
             self.capacity_timeout = None;
@@ -323,12 +318,12 @@ thread_local! {
 
 // Current limitation, shutdown is thread global
 impl ServiceConfig {
-    /// Check if service is shutting down.
+    /// Returns whether shutdown has been requested on the current thread.
     pub fn is_shutdown(&self) -> bool {
         SHUTDOWN.with(Cell::get)
     }
 
-    /// Set service shutdown.
+    /// Requests shutdown for services running on the current thread.
     pub fn shutdown() {
         SHUTDOWN.with(|v| v.set(true));
     }

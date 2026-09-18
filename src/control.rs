@@ -3,25 +3,27 @@ use std::io;
 use crate::frame::Frame;
 use crate::{error, frame, stream::StreamRef};
 
+/// Connection control event.
 #[derive(Debug)]
 pub enum Control<E> {
-    /// Connection is prepared to disconnect
+    /// The connection is preparing to disconnect.
     Disconnect(Reason<E>),
 }
 
 #[derive(Debug)]
-/// Disconnect reason
+/// Reason a connection is disconnecting.
 pub enum Reason<E> {
-    /// Application level error from publish service
+    /// Application-level request service error.
     Error(Error<E>),
-    /// Protocol level error
+    /// HTTP/2 connection protocol error.
     ProtocolError(ConnectionError),
-    /// Remote `GoAway` is received
+    /// A remote `GOAWAY` frame was received.
     GoAway(GoAway),
-    /// Peer is gone
+    /// The peer disconnected.
     PeerGone(PeerGone),
 }
 
+/// Response from a connection control service.
 #[derive(Clone, Debug)]
 pub struct ControlAck {
     pub(crate) frame: Option<Frame>,
@@ -48,7 +50,7 @@ impl<E> Control<E> {
         Control::Disconnect(Reason::ProtocolError(ConnectionError::new(err)))
     }
 
-    /// Default ack impl
+    /// Returns the default acknowledgment for this event.
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Disconnect(item) => item.ack(),
@@ -57,7 +59,7 @@ impl<E> Control<E> {
 }
 
 impl<E> Reason<E> {
-    /// Default ack impl
+    /// Returns the default acknowledgment for this reason.
     pub fn ack(self) -> ControlAck {
         match self {
             Reason::Error(item) => item.ack(),
@@ -68,7 +70,7 @@ impl<E> Reason<E> {
     }
 }
 
-/// Application level error
+/// Application-level service error control event.
 #[derive(Debug)]
 pub struct Error<E> {
     err: E,
@@ -87,21 +89,21 @@ impl<E> Error<E> {
     }
 
     #[inline]
-    /// Returns reference to mqtt error
+    /// Returns the application error.
     pub fn get_ref(&self) -> &E {
         &self.err
     }
 
     #[inline]
     #[must_use]
-    /// Set reason code for go away packet
+    /// Sets the reason code for the generated `GOAWAY` frame.
     pub fn reason(mut self, reason: frame::Reason) -> Self {
         self.goaway = self.goaway.set_reason(reason);
         self
     }
 
     #[inline]
-    /// Ack service error, return disconnect packet and close connection.
+    /// Acknowledges the error and returns a `GOAWAY` response.
     pub fn ack(self) -> ControlAck {
         ControlAck {
             frame: Some(self.goaway.into()),
@@ -109,19 +111,19 @@ impl<E> Error<E> {
     }
 }
 
-/// Dispatcher has been terminated
+/// Notification that the dispatcher has terminated.
 #[derive(Debug)]
 pub struct Terminated;
 
 impl Terminated {
     #[inline]
-    /// convert packet to a result
+    /// Acknowledges termination without sending a frame.
     pub fn ack(self) -> ControlAck {
         ControlAck { frame: None }
     }
 }
 
-/// Protocol level error
+/// HTTP/2 connection protocol error control event.
 #[derive(Debug)]
 pub struct ConnectionError {
     err: ntex_error::Error<error::ConnectionError>,
@@ -129,6 +131,7 @@ pub struct ConnectionError {
 }
 
 impl ConnectionError {
+    /// Creates a protocol error event.
     pub fn new(err: ntex_error::Error<error::ConnectionError>) -> Self {
         Self {
             frm: err.to_goaway(),
@@ -137,21 +140,21 @@ impl ConnectionError {
     }
 
     #[inline]
-    /// Returns reference to a protocol error
+    /// Returns the protocol error.
     pub fn get_ref(&self) -> &ntex_error::Error<error::ConnectionError> {
         &self.err
     }
 
     #[inline]
     #[must_use]
-    /// Set reason code for go away packet
+    /// Overrides the reason code for the generated `GOAWAY` frame.
     pub fn reason(mut self, reason: frame::Reason) -> Self {
         self.frm = self.frm.set_reason(reason);
         self
     }
 
     #[inline]
-    /// Ack protocol error, return disconnect packet and close connection.
+    /// Acknowledges the error and returns a `GOAWAY` response.
     pub fn ack(self) -> ControlAck {
         ControlAck {
             frame: Some(self.frm.into()),
@@ -159,34 +162,38 @@ impl ConnectionError {
     }
 }
 
+/// Notification that the peer disconnected.
 #[derive(Debug)]
 pub struct PeerGone(pub(super) Option<io::Error>);
 
 impl PeerGone {
-    /// Returns error reference
+    /// Returns the underlying I/O error, if available.
     pub fn err(&self) -> Option<&io::Error> {
         self.0.as_ref()
     }
 
-    /// Take error
+    /// Removes and returns the underlying I/O error.
     pub fn take(&mut self) -> Option<io::Error> {
         self.0.take()
     }
 
+    /// Acknowledges the event without sending a frame.
     pub fn ack(self) -> ControlAck {
         ControlAck { frame: None }
     }
 }
 
+/// A `GOAWAY` frame received from the peer.
 #[derive(Debug)]
 pub struct GoAway(frame::GoAway);
 
 impl GoAway {
-    /// Returns error reference
+    /// Returns the received `GOAWAY` frame.
     pub fn frame(&self) -> &frame::GoAway {
         &self.0
     }
 
+    /// Acknowledges the event without sending a frame.
     pub fn ack(self) -> ControlAck {
         ControlAck { frame: None }
     }

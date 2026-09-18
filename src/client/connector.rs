@@ -12,7 +12,7 @@ use crate::client::{ClientError, SimpleClient, stream::InflightStorage};
 use crate::config::ServiceConfig;
 
 #[derive(Debug)]
-/// Http2 client connector
+/// Service that establishes an HTTP/2 client connection.
 pub struct Connector<A: Address, S> {
     svc: S,
     scheme: Scheme,
@@ -24,7 +24,7 @@ impl<A> Default for Connector<A, DefaultConnector<A>>
 where
     A: Address,
 {
-    /// Create new h2 connector
+    /// Creates a connector with default settings.
     fn default() -> Self {
         Self::new()
     }
@@ -34,7 +34,7 @@ impl<A> Connector<A, DefaultConnector<A>>
 where
     A: Address,
 {
-    /// Create new http2 connector
+    /// Creates a connector using the default TCP connector.
     pub fn new() -> Self {
         Connector {
             svc: DefaultConnector::new(),
@@ -50,14 +50,14 @@ where
     A: Address,
 {
     #[must_use]
-    /// Set scheme
+    /// Sets the request scheme used by the resulting client.
     pub fn scheme(mut self, scheme: Scheme) -> Self {
         self.scheme = scheme;
         self
     }
 
     #[must_use]
-    /// Use custom connector
+    /// Replaces the underlying transport connector.
     pub fn connector<U>(self, svc: impl IntoService<U, SharedCfg, Connect<A>>) -> Connector<A, U>
     where
         U: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>>,
@@ -81,7 +81,7 @@ where
     type Res = SimpleClient;
     type Error = Error<ClientError>;
 
-    /// Connect to http2 server
+    /// Connects to an HTTP/2 server.
     async fn call(&self, req: A, ctx: Ctx<'_, Self, SharedCfg>) -> Result<Self::Res, Self::Error> {
         let authority = ByteString::from(req.host());
 
