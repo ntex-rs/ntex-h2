@@ -1,3 +1,8 @@
+//! HPACK header compression primitives.
+//!
+//! [`Encoder`] and [`Decoder`] maintain the dynamic table state for one
+//! HTTP/2 connection.
+
 mod decoder;
 mod encoder;
 pub(crate) mod header;

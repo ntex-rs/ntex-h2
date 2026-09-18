@@ -9,12 +9,12 @@ use std::fmt;
 ///
 /// Error codes share a common code space. Some error codes apply only to
 /// streams, others apply only to connections, and others may apply to either.
-/// See [RFC 7540] for more information.
+/// See [RFC 9113] for more information.
 ///
 /// See [Error Codes in the spec][spec].
 ///
-/// [spec]: http://httpwg.org/specs/rfc7540.html#ErrorCodes
-/// [`SendStream::send_reset`]: struct.SendStream.html#method.send_reset
+/// [spec]: https://www.rfc-editor.org/rfc/rfc9113#section-7
+/// [`SendStream::send_reset`]: crate::client::SendStream::reset
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct Reason(u32);
 
@@ -59,7 +59,7 @@ impl Reason {
     /// The endpoint requires that HTTP/1.1 be used instead of HTTP/2.
     pub const HTTP_1_1_REQUIRED: Reason = Reason(13);
 
-    /// Get a string description of the error code.
+    /// Returns a human-readable description of the error code.
     pub fn description(&self) -> &str {
         match self.0 {
             0 => "not a result of an error",

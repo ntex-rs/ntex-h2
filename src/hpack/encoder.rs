@@ -3,6 +3,7 @@ use ntex_http::header::{HeaderName, HeaderValue};
 
 use super::{Header, huffman, table::Index, table::Table};
 
+/// Stateful HPACK header encoder.
 #[derive(Debug)]
 pub struct Encoder {
     table: Table,
@@ -16,6 +17,7 @@ enum SizeUpdate {
 }
 
 impl Encoder {
+    /// Creates an encoder with the specified table size and storage capacity.
     pub fn new(max_size: usize, capacity: usize) -> Encoder {
         Encoder {
             table: Table::new(max_size, capacity),
@@ -23,7 +25,7 @@ impl Encoder {
         }
     }
 
-    /// Queues a max size update.
+    /// Queues a maximum dynamic table size update.
     ///
     /// The next call to `encode` will include a dynamic size update frame.
     pub fn update_max_size(&mut self, val: usize) {
@@ -57,7 +59,7 @@ impl Encoder {
     }
 
     #[allow(clippy::missing_panics_doc)]
-    /// Encode a set of headers into the provide buffer
+    /// Encodes a set of headers into `dst`.
     pub fn encode<I>(&mut self, headers: I, dst: &mut BytesMut)
     where
         I: IntoIterator<Item = Header<Option<HeaderName>>>,

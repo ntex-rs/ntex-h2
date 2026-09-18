@@ -5,47 +5,58 @@ pub use crate::codec::EncoderError;
 use crate::frame::{self, GoAway, Reason, StreamId};
 use crate::stream::StreamRef;
 
+/// HTTP/2 connection-level protocol error.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConnectionError {
+    /// The connection is closing with the specified reason.
     #[error("Go away: {0}")]
     GoAway(Reason),
+    /// A frame referenced an unknown stream.
     #[error("Unknown stream id in {0} frame")]
     UnknownStream(&'static str),
+    /// Frame encoding failed.
     #[error("Encoder error: {0}")]
     Encoder(#[from] EncoderError),
+    /// Frame decoding failed.
     #[error("Decoder error: {0}")]
     Decoder(#[from] frame::FrameError),
+    /// A frame was received for a closed stream.
     #[error("{0:?} is closed, {1}")]
     StreamClosed(StreamId, &'static str),
     /// An invalid stream identifier was provided
     #[error("An invalid stream identifier was provided: {0}")]
     InvalidStreamId(&'static str),
+    /// A SETTINGS acknowledgment was not expected.
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
-    /// Missing pseudo header
+    /// A required pseudo-header is missing.
     #[error("Missing pseudo header {0:?}")]
     MissingPseudo(&'static str),
-    /// Missing pseudo header
+    /// A pseudo-header is not valid in this message.
     #[error("Unexpected pseudo header {0:?}")]
     UnexpectedPseudo(&'static str),
-    /// Window update value is zero
+    /// A WINDOW_UPDATE increment was zero.
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
+    /// A flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowValueOverflow,
+    /// The peer exceeded the concurrent stream limit.
     #[error("Max concurrent streams count achieved")]
     ConcurrencyOverflow,
+    /// The peer exceeded the rapid-reset limit.
     #[error("Stream rapid reset count achieved")]
     StreamResetsLimit,
-    /// Keep-alive timeout
+    /// Keep-alive ping timed out.
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
-    /// Read timeout
+    /// Frame reading timed out.
     #[error("Read timeout")]
     ReadTimeout,
 }
 
 impl ConnectionError {
+    /// Converts this error into a `GOAWAY` frame for connection shutdown.
     pub fn to_goaway(&self) -> GoAway {
         match self {
             ConnectionError::GoAway(reason) => GoAway::new(*reason),
@@ -131,26 +142,37 @@ impl StreamErrorInner {
     }
 }
 
+/// HTTP/2 stream-level protocol error.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StreamError {
+    /// A frame or operation is invalid for an idle stream.
     #[error("Stream in idle state: {0}")]
     Idle(&'static str),
+    /// The stream is closed.
     #[error("Stream is closed")]
     Closed,
+    /// The stream flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowOverflowed,
+    /// A stream WINDOW_UPDATE increment was zero.
     #[error("Zero value for window")]
     WindowZeroUpdateValue,
+    /// Trailers were received without END_STREAM.
     #[error("Trailers headers without end of stream flags")]
     TrailersWithoutEos,
+    /// The content-length header is invalid.
     #[error("Invalid content length")]
     InvalidContentLength,
+    /// Payload size does not match the content-length header.
     #[error("Payload length does not match content-length header")]
     WrongPayloadLength,
+    /// A HEAD response contained payload bytes.
     #[error("Non-empty payload for HEAD response")]
     NonEmptyPayload,
+    /// Waiting for send capacity timed out.
     #[error("Capacity availability timeout")]
     CapacityTimeout,
+    /// The stream was reset with the specified reason.
     #[error("Stream has been reset with {0}")]
     Reset(Reason),
 }
@@ -189,12 +211,14 @@ impl ErrorDiagnostic for StreamError {
     }
 }
 
-/// Operation errors
+/// Errors returned by stream and connection operations.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum OperationError {
+    /// Stream-level protocol error.
     #[error("{0:?}")]
     Stream(#[from] StreamError),
 
+    /// Connection-level protocol error.
     #[error("{0}")]
     Connection(#[from] ConnectionError),
 

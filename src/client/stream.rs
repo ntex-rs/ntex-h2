@@ -62,7 +62,9 @@ impl Inflight {
 }
 
 #[derive(Debug)]
-/// Send part of the client stream
+/// Sending half of a client-initiated HTTP/2 stream.
+///
+/// Dropping an unfinished send stream resets it with [`Reason::CANCEL`].
 pub struct SendStream(StreamRef, ());
 
 impl Drop for SendStream {
@@ -79,36 +81,37 @@ impl Drop for SendStream {
 
 impl SendStream {
     #[inline]
-    /// Get stream id
+    /// Returns the stream identifier.
     pub fn id(&self) -> StreamId {
         self.0.id()
     }
 
     #[inline]
-    /// Get io tag
+    /// Returns the connection's shared configuration tag.
     pub fn tag(&self) -> &'static str {
         self.0.tag()
     }
 
     #[inline]
+    /// Returns the underlying stream reference.
     pub fn stream(&self) -> &StreamRef {
         &self.0
     }
 
     #[inline]
-    /// Get available capacity
+    /// Returns the currently available send capacity.
     pub fn available_send_capacity(&self) -> WindowSize {
         self.0.available_send_capacity()
     }
 
     #[inline]
-    /// Wait for available capacity
+    /// Waits until send capacity is available.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         self.0.send_capacity().await
     }
 
     #[inline]
-    /// Send payload
+    /// Sends payload bytes.
     pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         Bytes: From<D>,
@@ -117,7 +120,7 @@ impl SendStream {
     }
 
     #[inline]
-    /// Send payload
+    /// Sends paged payload data.
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
@@ -126,12 +129,12 @@ impl SendStream {
     }
 
     #[inline]
-    /// Send trailers
+    /// Sends trailers and closes the local side of the stream.
     pub fn send_trailers(&self, map: HeaderMap) {
         self.0.send_trailers(map);
     }
 
-    /// Reset stream
+    /// Resets the stream with the specified reason.
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
     /// has been sent to the peer.
@@ -141,13 +144,13 @@ impl SendStream {
     }
 
     #[inline]
-    /// Disconnect connection on stream drop
+    /// Configures the connection to disconnect after this stream is dropped.
     pub fn disconnect_on_drop(&self) {
         self.0.disconnect_on_drop();
     }
 
     #[inline]
-    /// Check for available send capacity
+    /// Polls for available send capacity.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
@@ -156,48 +159,49 @@ impl SendStream {
     }
 
     #[inline]
-    /// Check if send part of stream get reset
+    /// Polls until the local send side closes or the stream fails.
     pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
         self.0.poll_send_reset(cx)
     }
 }
 
 #[derive(Debug)]
-/// Receiving part of the client stream
+/// Receiving half of a client-initiated HTTP/2 stream.
+///
+/// Dropping an unfinished receive stream resets it with [`Reason::CANCEL`].
 pub struct RecvStream(StreamRef, InflightStorage);
 
 impl RecvStream {
     #[inline]
-    /// Get stream id
+    /// Returns the stream identifier.
     pub fn id(&self) -> StreamId {
         self.0.id()
     }
 
     #[inline]
-    /// Get io tag
+    /// Returns the connection's shared configuration tag.
     pub fn tag(&self) -> &'static str {
         self.0.tag()
     }
 
     #[inline]
+    /// Returns the underlying stream reference.
     pub fn stream(&self) -> &StreamRef {
         &self.0
     }
 
     #[inline]
-    /// Disconnect connection on stream drop
+    /// Configures the connection to disconnect after this stream is dropped.
     pub fn disconnect_on_drop(&self) {
         self.0.disconnect_on_drop();
     }
 
-    /// Attempt to pull out the next value of http/2 stream
+    /// Waits for the next message from the stream.
     pub async fn recv(&self) -> Option<Message> {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
-    /// Attempt to pull out the next value of this http/2 stream, registering
-    /// the current task for wakeup if the value is not yet available,
-    /// and returning None if the stream is exhausted.
+    /// Polls the next message, returning `None` after the receive side closes.
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         if let Some(inflight) = self.1.0.inflight.borrow_mut().get_mut(&self.0.id()) {
             if let Some(msg) = inflight.pop() {

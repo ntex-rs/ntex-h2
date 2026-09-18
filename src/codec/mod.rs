@@ -14,6 +14,9 @@ use crate::{consts, frame, frame::Frame, frame::Kind, hpack};
 // Push promise frame kind
 const PUSH_PROMISE: u8 = 5;
 
+/// Stateful HTTP/2 frame encoder and decoder.
+///
+/// Clones share HPACK and frame-size state.
 #[derive(Clone, Debug)]
 pub struct Codec(Rc<RefCell<CodecInner>>);
 
@@ -45,7 +48,7 @@ struct CodecInner {
 
 impl Default for Codec {
     #[inline]
-    /// Returns a new `Codec` with the default max frame size
+    /// Creates a codec with default HTTP/2 limits.
     fn default() -> Self {
         // Delimit the frames
         let decoder = self::length_delimited::Builder::new()
@@ -88,33 +91,33 @@ impl Codec {
         self.0.borrow_mut().decoder.set_max_frame_length(val);
     }
 
-    /// Local max frame size.
+    /// Returns the maximum frame size accepted from the peer.
     pub fn recv_frame_size(&self) -> u32 {
         self.0.borrow_mut().decoder.max_frame_length() as u32
     }
 
-    /// Set the max header list size that can be received.
+    /// Sets the maximum decoded header-list size.
     ///
-    /// By default value is set to 48kb
+    /// The default is 48 KiB.
     pub fn set_recv_header_list_size(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_list_size = val;
     }
 
-    /// Set the max headers.
+    /// Sets the maximum number of decoded headers.
     ///
-    /// By default value is set to 96
+    /// The default is 96.
     pub fn set_max_headers(&self, val: usize) {
         self.0.borrow_mut().decoder_max_headers = val;
     }
 
-    /// Set the max header continuation frames.
+    /// Sets the maximum continuation frames for one header block.
     ///
-    /// By default value is set to 5
+    /// The default is 5.
     pub fn set_max_header_continuations(&self, val: usize) {
         self.0.borrow_mut().decoder_max_header_continuations = val;
     }
 
-    /// Set the peer's max frame size.
+    /// Sets the maximum frame payload sent to the peer.
     ///
     /// # Panics
     ///
@@ -124,12 +127,12 @@ impl Codec {
         self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
     }
 
-    /// Set the peer's header table size size.
+    /// Sets the peer's HPACK header table size.
     pub fn set_send_header_table_size(&self, val: usize) {
         self.0.borrow_mut().encoder_hpack.update_max_size(val);
     }
 
-    /// Remote max frame size.
+    /// Returns the maximum frame payload sent to the peer.
     pub fn send_frame_size(&self) -> u32 {
         self.0.borrow_mut().encoder_max_frame_size
     }

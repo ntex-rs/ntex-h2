@@ -4,6 +4,7 @@ use ntex_bytes::{BufMut, BytePages};
 
 use crate::frame::{Frame, FrameError, FrameSize, Head, Kind, StreamId, util};
 
+/// HTTP/2 SETTINGS frame.
 #[derive(Copy, Clone, Default, Eq, PartialEq)]
 pub struct Settings {
     flags: SettingsFlags,
@@ -32,6 +33,7 @@ pub(super) enum Setting {
     EnableConnectProtocol(u32),
 }
 
+/// Flags carried by a SETTINGS frame.
 #[derive(Copy, Clone, Eq, PartialEq, Default)]
 pub struct SettingsFlags(u8);
 
@@ -56,6 +58,7 @@ pub const MAX_MAX_FRAME_SIZE: FrameSize = (1 << 24) - 1;
 // ===== impl Settings =====
 
 impl Settings {
+    /// Creates a SETTINGS acknowledgment frame.
     pub fn ack() -> Settings {
         Settings {
             flags: SettingsFlags::ack(),
@@ -63,65 +66,78 @@ impl Settings {
         }
     }
 
+    /// Returns `true` if this is a SETTINGS acknowledgment.
     pub fn is_ack(&self) -> bool {
         self.flags.is_ack()
     }
 
+    /// Returns the advertised initial stream window size.
     #[allow(clippy::cast_possible_wrap)]
     pub fn initial_window_size(&self) -> Option<i32> {
         self.initial_window_size.map(|v| v as i32)
     }
 
+    /// Sets the advertised initial stream window size.
     pub fn set_initial_window_size(&mut self, size: Option<u32>) {
         self.initial_window_size = size;
     }
 
+    /// Returns the advertised maximum concurrent stream count.
     pub fn max_concurrent_streams(&self) -> Option<u32> {
         self.max_concurrent_streams
     }
 
+    /// Sets the advertised maximum concurrent stream count.
     pub fn set_max_concurrent_streams(&mut self, max: Option<u32>) {
         self.max_concurrent_streams = max;
     }
 
+    /// Returns the advertised maximum frame size.
     pub fn max_frame_size(&self) -> Option<u32> {
         self.max_frame_size
     }
 
-    /// Set max frame size
+    /// Sets the advertised maximum frame size.
     ///
     /// # Panics
     ///
-    /// Value must be in range 16kb..
+    /// Panics unless `size` is between 16,384 and 16,777,215.
     pub fn set_max_frame_size(&mut self, size: u32) {
         assert!((DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&size));
         self.max_frame_size = Some(size);
     }
 
+    /// Returns the advertised maximum header-list size.
     pub fn max_header_list_size(&self) -> Option<u32> {
         self.max_header_list_size
     }
 
+    /// Sets the advertised maximum header-list size.
     pub fn set_max_header_list_size(&mut self, size: Option<u32>) {
         self.max_header_list_size = size;
     }
 
+    /// Returns whether server push is enabled, if explicitly configured.
     pub fn is_push_enabled(&self) -> Option<bool> {
         self.enable_push.map(|val| val != 0)
     }
 
+    /// Enables or disables server push.
     pub fn set_enable_push(&mut self, enable: bool) {
         self.enable_push = Some(u32::from(enable));
     }
 
+    /// Returns whether extended CONNECT is enabled, if explicitly configured.
     pub fn is_extended_connect_protocol_enabled(&self) -> Option<bool> {
         self.enable_connect_protocol.map(|val| val != 0)
     }
 
+    /// Sets the extended CONNECT setting.
     pub fn set_enable_connect_protocol(&mut self, val: Option<u32>) {
         self.enable_connect_protocol = val;
     }
 
+    /// Returns the advertised HPACK header table size.
     pub fn header_table_size(&self) -> Option<u32> {
         self.header_table_size
     }

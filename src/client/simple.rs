@@ -14,11 +14,11 @@ use crate::{connection::Connection, default::DefaultControlService, dispatcher::
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
-/// Http2 client
+/// Client for HTTP/2 connection.
 #[derive(Clone)]
 pub struct SimpleClient(Rc<ClientRef>);
 
-/// Http2 client
+/// Shared state for an HTTP/2 client connection.
 struct ClientRef {
     id: ByteString,
     con: Connection,
@@ -28,7 +28,7 @@ struct ClientRef {
 }
 
 impl SimpleClient {
-    /// Construct new `Client` instance.
+    /// Creates a client over an established HTTP/2 transport.
     #[allow(clippy::needless_pass_by_value)]
     pub fn new<T>(io: T, scheme: Scheme, authority: ByteString) -> Self
     where
@@ -86,31 +86,31 @@ impl SimpleClient {
     }
 
     #[inline]
-    /// Get client id
+    /// Returns the generated client identifier.
     pub fn id(&self) -> &ByteString {
         &self.0.id
     }
 
     #[inline]
-    /// Get io tag
+    /// Returns the connection's shared configuration tag.
     pub fn tag(&self) -> &'static str {
         self.0.con.tag()
     }
 
     #[inline]
-    /// Get io service
+    /// Returns the connection's service name.
     pub fn service(&self) -> &'static str {
         self.0.con.service()
     }
 
     #[inline]
-    /// Created time
+    /// Returns when this client was created.
     pub fn created(&self) -> SystemTime {
         self.0.created
     }
 
     #[inline]
-    /// Send request to the peer
+    /// Opens a stream and sends request headers to the peer.
     pub async fn send(
         &self,
         method: Method,
@@ -128,15 +128,16 @@ impl SimpleClient {
     }
 
     #[inline]
-    /// Check if client is allowed to send new request
+    /// Returns whether the connection can open another stream.
     ///
-    /// Readiness depends on number of opened streams and max concurrency setting
+    /// Readiness depends on the active stream count and the peer's concurrency
+    /// setting.
     pub fn is_ready(&self) -> bool {
         self.0.con.can_create_new_stream()
     }
 
     #[inline]
-    /// Check client readiness
+    /// Waits until the connection can open another stream.
     ///
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) -> Result<(), Error<OperationError>> {
@@ -144,56 +145,57 @@ impl SimpleClient {
     }
 
     #[inline]
-    /// Gracefully close connection
+    /// Starts graceful connection shutdown.
     pub fn close(&self) {
         log::debug!("Closing client");
         self.0.con.disconnect_when_ready();
     }
 
     #[inline]
-    /// Close connection
+    /// Closes the connection immediately.
     pub fn force_close(&self) {
         self.0.con.close();
     }
 
     #[inline]
-    /// Gracefully disconnect connection
+    /// Starts graceful shutdown and returns a completion future.
     ///
-    /// Connection force closes if `ClientDisconnect` get dropped
+    /// Dropping the returned [`ClientDisconnect`] before completion force-closes
+    /// the connection.
     pub fn disconnect(&self) -> ClientDisconnect {
         ClientDisconnect::new(self.clone())
     }
 
     #[inline]
-    /// Check if connection is closed
+    /// Returns whether the connection is closed.
     pub fn is_closed(&self) -> bool {
         self.0.con.is_closed()
     }
 
     #[inline]
-    /// Check if connection is disconnecting
+    /// Returns whether graceful shutdown is in progress.
     pub fn is_disconnecting(&self) -> bool {
         self.0.con.is_disconnecting()
     }
 
     #[inline]
-    /// Notify when connection get closed
+    /// Returns a notification future for connection closure.
     pub fn on_disconnect(&self) -> OnDisconnect {
         self.0.con.io().on_disconnect()
     }
 
     #[inline]
-    /// Client's authority
+    /// Returns the authority used for requests.
     pub fn authority(&self) -> &ByteString {
         &self.0.authority
     }
 
-    /// Get max number of active streams
+    /// Returns the peer's maximum concurrent stream count, if known.
     pub fn max_streams(&self) -> Option<u32> {
         self.0.con.max_streams()
     }
 
-    /// Get number of active streams
+    /// Returns the number of active streams.
     pub fn active_streams(&self) -> u32 {
         self.0.con.active_streams()
     }
@@ -234,6 +236,7 @@ impl fmt::Debug for SimpleClient {
     }
 }
 
+/// Future that completes when a client connection disconnects.
 #[derive(Debug)]
 pub struct ClientDisconnect {
     client: SimpleClient,
@@ -253,6 +256,7 @@ impl ClientDisconnect {
         }
     }
 
+    /// Sets the maximum time to wait for graceful disconnection.
     pub fn disconnect_timeout<T>(mut self, timeout: T) -> Self
     where
         Millis: From<T>,

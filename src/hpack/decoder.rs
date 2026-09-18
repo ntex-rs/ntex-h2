@@ -5,7 +5,7 @@ use ntex_http::{Method, StatusCode, compat, header};
 
 use super::{Header, huffman};
 
-/// Decodes headers using HPACK
+/// Stateful HPACK header decoder.
 #[derive(Debug)]
 pub struct Decoder {
     // Protocol indicated that the max table size will update
@@ -19,34 +19,48 @@ pub struct Decoder {
 /// of an HPACK header set.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DecoderError {
+    /// The encoded header representation is invalid.
     #[error("InvalidRepresentation")]
     InvalidRepresentation,
+    /// An integer uses an invalid prefix.
     #[error("InvalidIntegerPrefix")]
     InvalidIntegerPrefix,
+    /// A table index is invalid.
     #[error("InvalidTableIndex")]
     InvalidTableIndex,
+    /// A Huffman-encoded string is invalid.
     #[error("InvalidHuffmanCode")]
     InvalidHuffmanCode,
+    /// A pseudo-header string is not valid UTF-8.
     #[error("InvalidUtf8")]
     InvalidUtf8,
+    /// A status pseudo-header is invalid.
     #[error("InvalidStatusCode")]
     InvalidStatusCode,
+    /// A pseudo-header name is invalid.
     #[error("InvalidPseudoheader")]
     InvalidPseudoheader,
+    /// A dynamic table size update exceeds the configured maximum.
     #[error("InvalidMaxDynamicSize")]
     InvalidMaxDynamicSize,
+    /// An encoded integer overflowed.
     #[error("IntegerOverflow")]
     IntegerOverflow,
+    /// More bytes are required to finish decoding.
     #[error("{0}")]
     NeedMore(NeedMore),
 }
 
+/// Reason an HPACK representation needs more input.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum NeedMore {
+    /// The input ended before a representation was complete.
     #[error("Unexpected end of stream")]
     UnexpectedEndOfStream,
+    /// The input ended while decoding an integer.
     #[error("Integer underflow")]
     IntegerUnderflow,
+    /// The input ended while decoding a string.
     #[error("String underflow")]
     StringUnderflow,
 }
@@ -158,7 +172,7 @@ struct StringMarker {
 // ===== impl Decoder =====
 
 impl Decoder {
-    /// Creates a new `Decoder` with all settings set to default values.
+    /// Creates a decoder with the specified maximum dynamic table size.
     pub fn new(size: usize) -> Decoder {
         Decoder {
             max_size_update: None,
@@ -168,7 +182,7 @@ impl Decoder {
         }
     }
 
-    /// Queues a potential size update
+    /// Queues a maximum dynamic table size update.
     #[allow(dead_code)]
     pub fn queue_size_update(&mut self, size: usize) {
         let size = match self.max_size_update {
@@ -179,7 +193,7 @@ impl Decoder {
         self.max_size_update = Some(size);
     }
 
-    /// Decodes the headers found in the given buffer.
+    /// Decodes one HPACK header block and invokes `f` for each header.
     pub fn decode<F>(&mut self, src: &mut Cursor<&mut Bytes>, mut f: F) -> Result<(), DecoderError>
     where
         F: FnMut(Header),
@@ -494,8 +508,9 @@ impl Table {
     /// entries belong to the static table, followed by entries in the dynamic
     /// table. They are merged into a single index address space, though.
     ///
-    /// This is according to the [HPACK spec, section 2.3.3.]
-    /// `<http://http2.github.io/http2-spec/compression.html#index.address.space>`
+    /// This follows [HPACK section 2.3.3].
+    ///
+    /// [HPACK section 2.3.3]: https://www.rfc-editor.org/rfc/rfc7541#section-2.3.3
     pub(super) fn get(&self, index: usize) -> Result<Header, DecoderError> {
         if index == 0 {
             return Err(DecoderError::InvalidTableIndex);

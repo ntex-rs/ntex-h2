@@ -18,7 +18,7 @@ type Fut = BoxFuture<'static, Result<IoBoxed, Error<ConnectError>>>;
 type Connector = Box<dyn Fn() -> Fut>;
 
 #[derive(Clone)]
-/// Manages http client network connectivity.
+/// Connections pool for HTTP/2 clients.
 pub struct Client {
     inner: Rc<Inner>,
     waiters: Rc<RefCell<VecDeque<pool::Sender<()>>>>,
@@ -43,7 +43,7 @@ fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
 
 impl Client {
     #[inline]
-    /// Configure and build client
+    /// Creates a client-pool builder for a remote address.
     pub fn builder<A, U>(addr: U) -> ClientBuilder<A, DefaultConnector<A>>
     where
         A: Address + Clone,
@@ -52,7 +52,7 @@ impl Client {
         ClientBuilder::new(addr)
     }
 
-    /// Send request to the peer
+    /// Sends a request using an available connection.
     pub async fn send(
         &self,
         method: Method,
@@ -67,7 +67,7 @@ impl Client {
             .map_err(|e| e.map(ClientError::from))
     }
 
-    /// Get client from the pool
+    /// Returns a connection that can open stream.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
@@ -217,9 +217,9 @@ impl Client {
     }
 
     #[inline]
-    /// Check if client is allowed to send new request
+    /// Returns whether a request can be started without waiting.
     ///
-    /// Readiness depends on number of opened streams and max concurrency setting
+    /// Readiness depends on connection limits and available stream capacity.
     pub fn is_ready(&self) -> bool {
         let connections = self.inner.config.connections.borrow();
         for client in &*connections {
@@ -232,7 +232,7 @@ impl Client {
     }
 
     #[inline]
-    /// Check client readiness
+    /// Waits until the pool can start another request.
     ///
     /// Client is ready when it is possible to start new stream
     pub async fn ready(&self) {
@@ -276,10 +276,10 @@ impl Client {
     }
 }
 
-/// Manages http client network connectivity.
+/// Builder for an HTTP/2 clients pool.
 ///
 /// The `ClientBuilder` type uses a builder-like combinator pattern for service
-/// construction that finishes by calling the `.finish()` method.
+/// construction that finishes by calling [`ClientBuilder::build`].
 pub struct ClientBuilder<A, S> {
     connect: Connect<A>,
     connector: S,
@@ -309,6 +309,7 @@ impl<A> ClientBuilder<A, DefaultConnector<A>>
 where
     A: Address + Clone,
 {
+    /// Creates a builder using the default transport connector.
     pub fn new<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
@@ -345,6 +346,7 @@ impl<A> ClientBuilder<A, DefaultConnector<A>>
 where
     A: Address + Clone,
 {
+    /// Creates a builder using the default transport connector.
     pub fn with_default<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
@@ -358,14 +360,14 @@ where
     A: Address + Clone,
 {
     #[must_use]
-    /// Set client's connection scheme
+    /// Sets the request scheme.
     pub fn scheme(mut self, scheme: Scheme) -> Self {
         self.inner.scheme = scheme;
         self
     }
 
     #[must_use]
-    /// Set total number of simultaneous streams per connection.
+    /// Sets the streams limit per connection.
     ///
     /// If limit is 0, the connector uses `MAX_CONCURRENT_STREAMS` config
     /// from connection settings.
@@ -386,7 +388,7 @@ where
     }
 
     #[must_use]
-    /// Set max lifetime period for connection.
+    /// Sets the maximum lifetime of a connection.
     ///
     /// Connection lifetime is max lifetime of any opened connection
     /// until it is closed regardless of keep-alive period.
@@ -402,7 +404,7 @@ where
     #[must_use]
     /// Sets the minimum concurrent connections.
     ///
-    /// By default min connections is set to a 1.
+    /// The default is one connection.
     pub fn minconn(mut self, num: usize) -> Self {
         self.inner.minconn = num;
         self
@@ -411,13 +413,13 @@ where
     #[must_use]
     /// Sets the maximum concurrent connections.
     ///
-    /// By default max connections is set to a 16.
+    /// The default is 16 connections.
     pub fn maxconn(mut self, num: usize) -> Self {
         self.inner.maxconn = num;
         self
     }
 
-    /// Use custom connector
+    /// Replaces the underlying transport connector.
     pub fn connector<U>(self, f: impl IntoService<U, SharedCfg, Connect<A>>) -> ClientBuilder<A, U>
     where
         U: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
@@ -438,7 +440,7 @@ where
     S: Service<SharedCfg, Connect<A>, Error = Error<ConnectError>> + 'static,
     IoBoxed: From<S::Res>,
 {
-    /// Finish configuration process and create connections pool.
+    /// Builds the connection pool with shared service configuration.
     pub fn build(self, cfg: impl Into<SharedCfg>) -> Client {
         let cfg = cfg.into();
         let tag = cfg.tag();

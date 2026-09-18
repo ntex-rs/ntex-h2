@@ -20,7 +20,7 @@ impl Protocol {
         }
     }
 
-    /// Returns a str representation of the header.
+    /// Returns the protocol name as a string slice.
     #[inline]
     pub fn as_str(&self) -> &str {
         self.value.as_ref()

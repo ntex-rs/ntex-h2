@@ -11,10 +11,15 @@ use crate::frame::{
 };
 use crate::{connection::Connection, frame, message::Message, timer, window::Window};
 
-/// HTTP/2 Stream
+/// Owned HTTP/2 stream handle.
+///
+/// Dropping this handle resets an unfinished stream with [`Reason::CANCEL`].
 pub struct Stream(StreamRef);
 
-/// Stream capacity information
+/// Receive-window capacity associated with one HTTP/2 stream.
+///
+/// Consuming or dropping this value releases capacity and may cause a
+/// `WINDOW_UPDATE` frame to be sent.
 #[derive(Debug)]
 pub struct Capacity {
     size: Cell<u32>,
@@ -34,16 +39,16 @@ impl Capacity {
     }
 
     #[inline]
-    /// Size of capacity
+    /// Returns the unconsumed capacity in bytes.
     pub fn size(&self) -> usize {
         self.size.get() as usize
     }
 
-    /// Consume specified amount of capacity.
+    /// Releases `sz` bytes of receive-window capacity.
     ///
     /// # Panics
     ///
-    /// Panics if provided size larger than capacity.
+    /// Panics if `sz` exceeds the remaining capacity.
     pub fn consume(&self, sz: u32) {
         let size = self.size.get();
         if let Some(sz) = size.checked_sub(sz) {
@@ -61,7 +66,11 @@ impl Capacity {
     }
 }
 
-/// Panics if capacity belongs to different streams
+/// Combines capacity values belonging to the same stream.
+///
+/// # Panics
+///
+/// Panics if the values belong to different streams.
 impl ops::Add for Capacity {
     type Output = Self;
 
@@ -80,7 +89,11 @@ impl ops::Add for Capacity {
     }
 }
 
-/// Panics if capacity belongs to different streams
+/// Adds capacity belonging to the same stream.
+///
+/// # Panics
+///
+/// Panics if the values belong to different streams.
 impl ops::AddAssign for Capacity {
     fn add_assign(&mut self, other: Self) {
         if Rc::ptr_eq(&self.stream, &other.stream) {
@@ -110,6 +123,7 @@ pub(super) enum ContentLength {
     Remaining(u64),
 }
 
+/// Cloneable reference to an HTTP/2 stream.
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
@@ -353,23 +367,25 @@ impl StreamRef {
         }))
     }
 
+    /// Returns the HTTP/2 stream identifier.
     #[inline]
     pub fn id(&self) -> StreamId {
         self.0.id
     }
 
+    /// Returns the shared configuration tag for this connection.
     #[inline]
     pub fn tag(&self) -> &'static str {
         self.0.con.tag()
     }
 
-    /// Check if stream has been opened from remote side
+    /// Returns `true` if the peer initiated this stream.
     #[inline]
     pub fn is_remote(&self) -> bool {
         self.0.flags.get().contains(StreamFlags::REMOTE)
     }
 
-    /// Check if stream has failed
+    /// Returns `true` if the stream has entered a failed state.
     #[inline]
     pub fn is_failed(&self) -> bool {
         self.0.flags.get().contains(StreamFlags::FAILED)
@@ -395,7 +411,7 @@ impl StreamRef {
         self.0.flags.get().contains(StreamFlags::DISCONNECT_ON_DROP)
     }
 
-    /// Reset stream
+    /// Resets the stream with the specified HTTP/2 reason.
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
     /// has been sent to the peer.
@@ -410,7 +426,7 @@ impl StreamRef {
         }
     }
 
-    /// Get capacity instance for current stream
+    /// Creates an empty capacity value associated with this stream.
     #[inline]
     pub fn empty_capacity(&self) -> Capacity {
         Capacity {
@@ -635,7 +651,7 @@ impl StreamRef {
         }
     }
 
-    /// Send stream response
+    /// Sends response headers.
     pub fn send_response(
         &self,
         status: StatusCode,
@@ -663,7 +679,7 @@ impl StreamRef {
         }
     }
 
-    /// Send payload
+    /// Sends payload bytes, waiting for flow-control capacity as needed.
     pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         Bytes: From<D>,
@@ -671,7 +687,7 @@ impl StreamRef {
         self.send_pages(Bytes::from(data), eof).await
     }
 
-    /// Send payload
+    /// Sends paged payload data, waiting for flow-control capacity as needed.
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
@@ -756,7 +772,7 @@ impl StreamRef {
         }
     }
 
-    /// Send client trailers and close stream
+    /// Sends trailers and closes the local side of the stream.
     pub fn send_trailers(&self, map: HeaderMap) {
         if self.0.send.get() == HalfState::Payload {
             let mut hdrs = Headers::trailers(self.0.id, map);
@@ -767,6 +783,7 @@ impl StreamRef {
         }
     }
 
+    /// Returns the currently available stream and connection send capacity.
     pub fn available_send_capacity(&self) -> WindowSize {
         cmp::min(
             self.0.send_window.get().window_size(),
@@ -788,11 +805,12 @@ impl StreamRef {
         self.0.con.capacity_timeout(self.0.id);
     }
 
+    /// Waits until send capacity is available.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
-    /// Check for available send capacity
+    /// Polls for available send capacity.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
@@ -811,7 +829,7 @@ impl StreamRef {
         }
     }
 
-    /// Check if send part of stream get reset
+    /// Polls until the local send side closes or the stream fails.
     pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
         if self.0.send.get().is_closed() {
             Poll::Ready(Ok(()))

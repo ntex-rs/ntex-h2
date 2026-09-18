@@ -1,4 +1,8 @@
-//! Http2 client
+//! HTTP/2 clients and connections pool.
+//!
+//! [`SimpleClient`] manages one established HTTP/2 connection. [`Client`]
+//! maintains a pool of connections, while [`Connector`] adapts an ntex
+//! connector service into a `SimpleClient`.
 use std::io;
 
 use ntex_error::ErrorDiagnostic;
@@ -17,7 +21,7 @@ pub use self::pool::{Client, ClientBuilder};
 pub use self::simple::SimpleClient;
 pub use self::stream::{RecvStream, SendStream};
 
-/// Errors which can occur when attempting to handle http2 client connection.
+/// Errors that can occur while establishing or operating an HTTP/2 client.
 #[derive(thiserror::Error, Debug)]
 pub enum ClientError {
     /// Protocol error
@@ -30,7 +34,7 @@ pub enum ClientError {
         #[source]
         OperationError,
     ),
-    /// Http/2 frame codec error
+    /// HTTP/2 frame codec error.
     #[error("Http/2 codec error: {0}")]
     Frame(#[from] frame::FrameError),
     /// Handshake timeout
