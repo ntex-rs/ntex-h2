@@ -11,7 +11,7 @@ keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
 exclude = ["fixtures/**", "util/**", "fuzz/**"]
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.97"
 
 [features]
 default = []
@@ -55,8 +55,8 @@ walkdir = "2.3.2"
 serde = "1"
 serde_json = "1"
 
-ntex = { version = "4.0.0-beta.11", features = ["openssl"] }
-ntex-tls = { version = "4.0.0-beta.0", features = ["openssl"] }
+ntex = { version = "4.0.0-beta.13", features = ["openssl"] }
+ntex-tls = { version = "4.0.0", features = ["openssl"] }
 openssl = "0.10"
 
 # Examples
