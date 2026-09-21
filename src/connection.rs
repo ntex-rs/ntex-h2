@@ -229,7 +229,7 @@ impl Connection {
     where
         F: FnOnce(&mut BytePages) -> R,
     {
-        self.0.io.with_write_buf(f)
+        self.0.io.with_write_src(f)
     }
 
     pub(crate) fn check_error(&self) -> Result<(), Error<OperationError>> {
@@ -1166,7 +1166,7 @@ mod tests {
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr.clone()).await.unwrap();
         let codec = Codec::default();
-        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
         let settings = frame::Settings::default();
         io.encode(settings.into(), &codec).unwrap();
@@ -1215,7 +1215,7 @@ mod tests {
         // SECOND connection
         let io = ntex::connect::connect(addr).await.unwrap();
         let codec = Codec::default();
-        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
         let settings = frame::Settings::default();
         io.encode(settings.into(), &codec).unwrap();

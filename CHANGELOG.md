@@ -1,5 +1,9 @@
 # Changes
 
+## [4.1.0] - 2026-09-22
+
+* Use update ntex-io api
+
 ## [4.0.1] - 2026-09-18
 
 * Update api docs

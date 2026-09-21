@@ -157,7 +157,7 @@ where
 
 async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
     let mut buf = [0; consts::PREFACE_LEN];
-    io.read(&mut buf).await?;
+    io.read_exact(&mut buf).await?;
 
     if buf == consts::PREFACE {
         log::debug!("Preface has been received");
