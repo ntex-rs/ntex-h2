@@ -259,6 +259,13 @@ where
                 );
                 control(Control::peer_gone(err), &self.inner).await
             }
+            DispatchItem::Stop(DispReason::Service) => {
+                self.inner.connection.encode(
+                    GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(self.inner.last_stream_id),
+                );
+                self.inner.connection.close();
+                Ok(None)
+            }
             DispatchItem::Control(_) => Ok(None),
         }
     }
