@@ -240,6 +240,17 @@ where
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await
             }
+            DispatchItem::Stop(DispReason::WriteTimeout) => {
+                log::warn!(
+                    "{}: did not send write buffer in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.read_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::WriteTimeout, self.connection.service());
+                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                control(Control::proto_error(err), &self.inner).await
+            }
             DispatchItem::Stop(DispReason::Io(err)) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(

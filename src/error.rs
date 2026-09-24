@@ -53,6 +53,9 @@ pub enum ConnectionError {
     /// Frame reading timed out.
     #[error("Read timeout")]
     ReadTimeout,
+    /// Frame write timed out.
+    #[error("Write timeout")]
+    WriteTimeout,
 }
 
 impl ConnectionError {
@@ -99,6 +102,9 @@ impl ConnectionError {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
             ConnectionError::ReadTimeout => GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout"),
+            ConnectionError::WriteTimeout => {
+                GoAway::new(Reason::NO_ERROR).set_data("Frame write timeout")
+            }
         }
     }
 }
@@ -121,6 +127,7 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
             ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
             ConnectionError::ReadTimeout => "h2-conn-ReadTimeout",
+            ConnectionError::WriteTimeout => "h2-conn-WriteTimeout",
         }
     }
 }
