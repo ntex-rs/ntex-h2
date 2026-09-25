@@ -45,6 +45,8 @@ struct ConnectionState {
     active_remote_streams: Cell<u32>,
     active_local_streams: Cell<u32>,
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
+    // capacity change notification
+    on_capacity: Cell<Option<Rc<dyn Fn()>>>,
 
     rst_count: Cell<u32>,
     streams_count: Cell<u32>,
@@ -137,6 +139,7 @@ impl Connection {
             pings_count: Cell::new(0),
             last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
+            on_capacity: Cell::new(None),
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
@@ -291,6 +294,11 @@ impl Connection {
         self.0.active_local_streams.get()
     }
 
+    /// Sets a callback that is called when the connection's capacity for local streams changes.
+    pub(crate) fn set_on_capacity(&self, f: Option<Rc<dyn Fn()>>) {
+        self.0.on_capacity.set(f);
+    }
+
     pub(crate) fn can_create_new_stream(&self) -> bool {
         if let Some(max) = self.0.local_max_concurrent_streams.get() {
             self.0.active_local_streams.get() < max
@@ -441,7 +449,15 @@ impl ConnectionState {
         self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
     }
 
+    fn notify_capacity(&self) {
+        if let Some(f) = self.on_capacity.take() {
+            self.on_capacity.set(Some(f.clone()));
+            f();
+        }
+    }
+
     fn drop_stream(&self, id: StreamId) {
+        let mut released = false;
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
@@ -457,6 +473,7 @@ impl ConnectionState {
                 } else {
                     let local = self.active_local_streams.get();
                     self.active_local_streams.set(local - 1);
+                    released = true;
                     if let Some(max) = self.local_max_concurrent_streams.get()
                         && local == max
                     {
@@ -471,6 +488,9 @@ impl ConnectionState {
             }
             streams.is_empty()
         };
+        if released {
+            self.notify_capacity();
+        }
         let flags = self.flags.get();
 
         // Close connection
@@ -715,6 +735,7 @@ impl RecvHalfConnection {
                 for tx in mem::take(&mut *self.0.readiness.borrow_mut()) {
                     let _ = tx.send(());
                 }
+                self.0.notify_capacity();
             }
 
             // RFC 7540 §6.9.2
@@ -854,6 +875,7 @@ impl RecvHalfConnection {
         for stream in streams.values() {
             stream.set_go_away(reason);
         }
+        self.0.notify_capacity();
         streams
     }
 
@@ -868,6 +890,7 @@ impl RecvHalfConnection {
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
         self.0.io.close();
+        self.0.notify_capacity();
         streams
     }
 
@@ -882,6 +905,7 @@ impl RecvHalfConnection {
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
         self.0.io.close();
+        self.0.notify_capacity();
         streams
     }
 
@@ -894,6 +918,7 @@ impl RecvHalfConnection {
         for stream in &mut streams.values() {
             stream.set_failed_stream(err.clone());
         }
+        self.0.notify_capacity();
         streams
     }
 
@@ -910,6 +935,7 @@ impl RecvHalfConnection {
         for stream in streams.values() {
             stream.set_failed_stream(Error::new(OperationError::Disconnected, self.service()));
         }
+        self.0.notify_capacity();
         streams
     }
 }

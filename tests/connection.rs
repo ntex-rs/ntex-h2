@@ -273,6 +273,40 @@ async fn test_max_concurrent_streams_reset() {
     assert_eq!(opened.get(), 3);
 }
 
+#[ntex::test]
+async fn test_on_capacity() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let cnt = Rc::new(Cell::new(0));
+    let cnt2 = cnt.clone();
+    client.on_capacity(move || cnt2.set(cnt2.get() + 1));
+
+    // peer settings
+    sleep(Millis(150)).await;
+    assert_eq!(client.max_streams(), Some(1));
+    assert_eq!(cnt.get(), 1);
+
+    let (stream, recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    assert_eq!(cnt.get(), 1);
+
+    // stream is released after response
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    assert_eq!(cnt.get(), 2);
+
+    // connection is closed
+    client.force_close();
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+    assert!(cnt.get() > 2);
+}
+
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]
@@ -282,7 +316,7 @@ async fn test_goaway_on_overflow() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -326,7 +360,7 @@ async fn test_stream_cancel() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -362,7 +396,7 @@ async fn test_goaway_on_reset() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -413,7 +447,7 @@ async fn test_goaway_on_reset2() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -487,7 +521,7 @@ async fn test_ping_timeout_on_idle() {
     let addr = srv.addr();
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -551,7 +585,7 @@ async fn test_capacity_timeout() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let mut settings = frame::Settings::default();
     settings.set_initial_window_size(Some(1));

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Add `SimpleClient::on_capacity()`, a callback called when a client stream is released,
+  the peer changes its concurrent stream limit, or the connection is closed
+
 * Fix `SimpleClient::active_streams()` returning `0` until the peer sends `MAX_CONCURRENT_STREAMS`
 
 * Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration

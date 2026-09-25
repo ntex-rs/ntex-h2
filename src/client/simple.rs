@@ -203,6 +203,21 @@ impl SimpleClient {
         self.0.con.active_streams()
     }
 
+    /// Sets a callback that is called when the connection's stream capacity changes.
+    ///
+    /// The callback is called when a client-initiated stream is released,
+    /// when the peer changes its maximum concurrent stream count, and when
+    /// the connection fails or is closed. It runs inside the connection's
+    /// dispatcher, so it should only schedule work, for example wake a task.
+    /// Setting a new callback replaces the previous one. The callback must
+    /// not hold the client, it would keep the connection alive.
+    pub fn on_capacity<F>(&self, f: F)
+    where
+        F: Fn() + 'static,
+    {
+        self.0.con.set_on_capacity(Some(Rc::new(f)));
+    }
+
     #[doc(hidden)]
     /// Get number of active streams
     pub fn pings_count(&self) -> u16 {
