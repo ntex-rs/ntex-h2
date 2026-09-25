@@ -44,6 +44,8 @@ struct ConnectionState {
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
     active_local_streams: Cell<u32>,
+    // reserved local streams, not opened yet
+    reserved_streams: Cell<u32>,
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
     // capacity change notification
     on_capacity: Cell<Option<Rc<dyn Fn()>>>,
@@ -134,6 +136,7 @@ impl Connection {
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
+            reserved_streams: Cell::new(0),
             rst_count: Cell::new(0),
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
@@ -328,7 +331,7 @@ impl Connection {
     }
 
     pub(crate) fn disconnect_when_ready(&self) {
-        if self.0.streams.borrow().is_empty() {
+        if self.0.streams.borrow().is_empty() && self.0.reserved_streams.get() == 0 {
             log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
         } else {
@@ -373,17 +376,30 @@ impl Connection {
             self.0
                 .active_local_streams
                 .set(self.0.active_local_streams.get() + 1);
+            self.0.reserved_streams.set(self.0.reserved_streams.get() + 1);
             true
         }
     }
 
     /// Releases a reserved stream that has not been opened.
     pub(crate) fn release_reserved_stream(&self) {
+        let reserved = self.0.reserved_streams.get().saturating_sub(1);
+        self.0.reserved_streams.set(reserved);
         self.0.release_local_stream();
         self.0.notify_capacity();
+
+        if reserved == 0
+            && self.0.streams.borrow().is_empty()
+            && self.flags().contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
+            log::trace!("{}: All streams are closed, disconnecting", self.tag());
+            self.0.io.close();
+        }
     }
 
     /// Opens a stream using a reservation.
+    ///
+    /// Reserved stream can be opened while graceful disconnect is in progress.
     pub(crate) fn send_reserved_request(
         &self,
         authority: ByteString,
@@ -392,8 +408,15 @@ impl Connection {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, Error<OperationError>> {
-        self.check_error_with_disconnect()?;
-        self.open_stream(authority, method, path, headers, eof)
+        self.check_error()?;
+        if self.is_closed() {
+            return Err(Error::new(OperationError::Disconnected, self.service()));
+        }
+        let stream = self.open_stream(authority, method, path, headers, eof)?;
+        self.0
+            .reserved_streams
+            .set(self.0.reserved_streams.get().saturating_sub(1));
+        Ok(stream)
     }
 
     // stream must be counted in `active_local_streams`
@@ -546,7 +569,10 @@ impl ConnectionState {
         let flags = self.flags.get();
 
         // Close connection
-        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
+        if empty
+            && self.reserved_streams.get() == 0
+            && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
             log::trace!("{}: All streams are closed, disconnecting", self.io.tag());
             self.io.close();
             return;

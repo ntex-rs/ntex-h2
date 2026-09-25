@@ -133,6 +133,9 @@ impl SimpleClient {
     /// until the reservation is dropped or the request's stream is closed.
     /// Returns `None` if the peer's concurrent stream limit is reached, or the
     /// connection is failed or disconnecting.
+    ///
+    /// Graceful disconnect waits for outstanding reservations, a reserved
+    /// stream can be opened after [`close`](Self::close) is called.
     pub fn reserve(&self) -> Option<StreamReservation> {
         if self.0.con.reserve_stream() {
             Some(StreamReservation(Some(self.clone())))

@@ -358,6 +358,76 @@ async fn test_stream_reservation() {
     assert!(client.reserve().is_none());
 }
 
+#[ntex::test]
+async fn test_stream_reservation_graceful_disconnect() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    // reserved stream can be used during graceful disconnect
+    let reservation = client.reserve().unwrap();
+    client.close();
+    sleep(Millis(50)).await;
+    assert!(client.is_disconnecting());
+    assert!(client.reserve().is_none());
+
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    let msg = recv_stream.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { .. }));
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+
+    // dropped reservation completes graceful disconnect
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+    let reservation = client.reserve().unwrap();
+    client.close();
+    sleep(Millis(50)).await;
+    assert!(!client.is_closed());
+    drop(reservation);
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+
+    // completed stream does not close connection with reserved stream
+    let srv = test::server_with_config(
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |mut req: http::Request| {
+                    let mut pl = req.take_payload();
+                    pl.recv().await;
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(2)),
+    );
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+    let (stream, recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let reservation = client.reserve().unwrap();
+    client.close();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(!client.is_closed());
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+}
+
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]

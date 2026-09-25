@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Graceful disconnect waits for outstanding stream reservations, a reserved stream
+  can be opened during graceful disconnect
+
 * Add `SimpleClient::reserve()` and `StreamReservation`, a stream counted as active until
   the reservation is dropped or its request's stream is closed
 
