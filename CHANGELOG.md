@@ -1,5 +1,9 @@
 # Changes
 
+## [Unreleased]
+
+* Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration
+
 ## [4.1.0] - 2026-09-22
 
 * Use update ntex-io api

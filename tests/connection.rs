@@ -144,7 +144,7 @@ async fn test_max_concurrent_streams_pool() {
     assert!(format!("{:?}", client).contains("ClientBuilder"));
 
     let client = client
-        .maxconn(1)
+        .connection_limit(1)
         .scheme(Scheme::HTTPS)
         .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
         .build(SharedCfg::default());
@@ -184,7 +184,7 @@ async fn test_max_concurrent_streams_pool2() {
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
     let client = Client::builder("localhost")
-        .maxconn(2)
+        .connection_limit(2)
         .connector(async move |_| {
             cnt2.set(cnt2.get() + 1);
             Ok(connect(addr).await)
