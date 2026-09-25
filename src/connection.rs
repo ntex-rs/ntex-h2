@@ -288,11 +288,7 @@ impl Connection {
     }
 
     pub(crate) fn active_streams(&self) -> u32 {
-        if self.0.local_max_concurrent_streams.get().is_some() {
-            self.0.active_local_streams.get()
-        } else {
-            0
-        }
+        self.0.active_local_streams.get()
     }
 
     pub(crate) fn can_create_new_stream(&self) -> bool {

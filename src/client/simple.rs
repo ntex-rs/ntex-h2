@@ -195,7 +195,10 @@ impl SimpleClient {
         self.0.con.max_streams()
     }
 
-    /// Returns the number of active streams.
+    /// Returns the number of active client-initiated streams.
+    ///
+    /// A stream is active from [`send`](Self::send) until both of its sides
+    /// are closed or it is reset.
     pub fn active_streams(&self) -> u32 {
         self.0.con.active_streams()
     }

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Fix `SimpleClient::active_streams()` returning `0` until the peer sends `MAX_CONCURRENT_STREAMS`
+
 * Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration
 
 ## [4.1.0] - 2026-09-22
