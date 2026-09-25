@@ -355,16 +355,64 @@ impl Connection {
             self.ready().await?;
         }
 
-        let stream = {
-            let id = self.0.next_stream_id.get();
-            let stream = StreamRef::new(id, false, self.clone());
-            self.0.streams.borrow_mut().insert(id, stream.clone());
+        self.0
+            .active_local_streams
+            .set(self.0.active_local_streams.get() + 1);
+        let result = self.open_stream(authority, method, path, headers, eof);
+        if result.is_err() {
+            self.0.release_local_stream();
+        }
+        result
+    }
+
+    /// Reserves a local stream, the stream is counted as active.
+    pub(crate) fn reserve_stream(&self) -> bool {
+        if self.check_error_with_disconnect().is_err() || !self.can_create_new_stream() {
+            false
+        } else {
             self.0
                 .active_local_streams
                 .set(self.0.active_local_streams.get() + 1);
-            self.0
-                .next_stream_id
-                .set(id.next_id().map_err(|_| OperationError::OverflowedStreamId)?);
+            true
+        }
+    }
+
+    /// Releases a reserved stream that has not been opened.
+    pub(crate) fn release_reserved_stream(&self) {
+        self.0.release_local_stream();
+        self.0.notify_capacity();
+    }
+
+    /// Opens a stream using a reservation.
+    pub(crate) fn send_reserved_request(
+        &self,
+        authority: ByteString,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<Stream, Error<OperationError>> {
+        self.check_error_with_disconnect()?;
+        self.open_stream(authority, method, path, headers, eof)
+    }
+
+    // stream must be counted in `active_local_streams`
+    fn open_stream(
+        &self,
+        authority: ByteString,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<Stream, Error<OperationError>> {
+        let stream = {
+            let id = self.0.next_stream_id.get();
+            let next_id = id
+                .next_id()
+                .map_err(|_| Error::new(OperationError::OverflowedStreamId, self.service()))?;
+            self.0.next_stream_id.set(next_id);
+            let stream = StreamRef::new(id, false, self.clone());
+            self.0.streams.borrow_mut().insert(id, stream.clone());
             stream
         };
 
@@ -456,6 +504,21 @@ impl ConnectionState {
         }
     }
 
+    fn release_local_stream(&self) {
+        let local = self.active_local_streams.get();
+        self.active_local_streams.set(local.saturating_sub(1));
+        if let Some(max) = self.local_max_concurrent_streams.get()
+            && local == max
+        {
+            while let Some(tx) = self.readiness.borrow_mut().pop_front() {
+                if !tx.is_canceled() {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        }
+    }
+
     fn drop_stream(&self, id: StreamId) {
         let mut released = false;
         let empty = {
@@ -471,19 +534,8 @@ impl ConnectionState {
                     self.active_remote_streams
                         .set(self.active_remote_streams.get() - 1);
                 } else {
-                    let local = self.active_local_streams.get();
-                    self.active_local_streams.set(local - 1);
+                    self.release_local_stream();
                     released = true;
-                    if let Some(max) = self.local_max_concurrent_streams.get()
-                        && local == max
-                    {
-                        while let Some(tx) = self.readiness.borrow_mut().pop_front() {
-                            if !tx.is_canceled() {
-                                let _ = tx.send(());
-                                break;
-                            }
-                        }
-                    }
                 }
             }
             streams.is_empty()

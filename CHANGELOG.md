@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Add `SimpleClient::reserve()` and `StreamReservation`, a stream counted as active until
+  the reservation is dropped or its request's stream is closed
+
 * Add `SimpleClient::on_capacity()`, a callback called when a client stream is released,
   the peer changes its concurrent stream limit, or the connection is closed
 

@@ -127,6 +127,20 @@ impl SimpleClient {
         Ok(self.0.storage.inflight(stream))
     }
 
+    /// Reserves a stream for a later request.
+    ///
+    /// The reserved stream is counted by [`active_streams`](Self::active_streams)
+    /// until the reservation is dropped or the request's stream is closed.
+    /// Returns `None` if the peer's concurrent stream limit is reached, or the
+    /// connection is failed or disconnecting.
+    pub fn reserve(&self) -> Option<StreamReservation> {
+        if self.0.con.reserve_stream() {
+            Some(StreamReservation(Some(self.clone())))
+        } else {
+            None
+        }
+    }
+
     #[inline]
     /// Returns whether the connection can open another stream.
     ///
@@ -242,6 +256,50 @@ impl Drop for SimpleClient {
         if Rc::strong_count(&self.0) == 1 {
             self.0.con.disconnect_when_ready();
         }
+    }
+}
+
+/// Reserved stream of an HTTP/2 client connection.
+///
+/// Created by [`SimpleClient::reserve`]. Dropping the reservation without
+/// sending a request releases the stream.
+pub struct StreamReservation(Option<SimpleClient>);
+
+impl StreamReservation {
+    /// Opens the reserved stream and sends request headers to the peer.
+    pub fn send(
+        mut self,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
+        let client = self.0.take().unwrap();
+        match client
+            .0
+            .con
+            .send_reserved_request(client.0.authority.clone(), method, path, headers, eof)
+        {
+            Ok(stream) => Ok(client.0.storage.inflight(stream)),
+            Err(err) => {
+                client.0.con.release_reserved_stream();
+                Err(err)
+            }
+        }
+    }
+}
+
+impl Drop for StreamReservation {
+    fn drop(&mut self) {
+        if let Some(client) = self.0.take() {
+            client.0.con.release_reserved_stream();
+        }
+    }
+}
+
+impl fmt::Debug for StreamReservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ntex_h2::StreamReservation").finish()
     }
 }
 

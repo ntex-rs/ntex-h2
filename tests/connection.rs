@@ -307,6 +307,57 @@ async fn test_on_capacity() {
     assert!(cnt.get() > 2);
 }
 
+#[ntex::test]
+async fn test_stream_reservation() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let cnt = Rc::new(Cell::new(0));
+    let cnt2 = cnt.clone();
+    client.on_capacity(move || cnt2.set(cnt2.get() + 1));
+    sleep(Millis(150)).await;
+    assert_eq!(client.max_streams(), Some(1));
+    let base = cnt.get();
+
+    // reserved stream is counted
+    let reservation = client.reserve().unwrap();
+    assert!(format!("{reservation:?}").contains("StreamReservation"));
+    assert_eq!(client.active_streams(), 1);
+    assert!(!client.is_ready());
+    assert!(client.reserve().is_none());
+
+    // dropped reservation releases the stream
+    drop(reservation);
+    assert_eq!(client.active_streams(), 0);
+    assert!(client.is_ready());
+    assert_eq!(cnt.get(), base + 1);
+
+    // reserved stream is used by the request
+    let reservation = client.reserve().unwrap();
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    assert_eq!(client.active_streams(), 1);
+    assert_eq!(cnt.get(), base + 1);
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    assert_eq!(cnt.get(), base + 2);
+
+    // failed request releases the reservation
+    let reservation = client.reserve().unwrap();
+    client.force_close();
+    sleep(Millis(50)).await;
+    assert!(
+        reservation
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .is_err()
+    );
+    assert_eq!(client.active_streams(), 0);
+    assert!(client.reserve().is_none());
+}
+
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]
