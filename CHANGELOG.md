@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Wake a pending `RecvStream::recv()` when `SendStream` resets the stream, is dropped
+  unfinished, or fails to send
+
 * Apply the capacity timeout to `send_capacity()` and `poll_send_capacity()`, not only to
   payload sending, a stale capacity timer of a closed stream is ignored
 

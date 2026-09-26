@@ -481,6 +481,49 @@ async fn test_client_send_capacity_wait_timeout() {
 }
 
 #[ntex::test]
+async fn test_recv_woken_by_local_reset() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let recv = ntex::rt::spawn(async move { recv_stream.recv().await.is_none() });
+    sleep(Millis(100)).await;
+
+    // dropping unfinished send stream resets the stream
+    drop(stream);
+    let res = ntex::time::timeout(Millis(1000), recv).await;
+    assert!(res.unwrap().unwrap());
+}
+
+#[ntex::test]
+async fn test_recv_woken_by_capacity_timeout() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer sets zero stream window and never updates it
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let recv = ntex::rt::spawn(async move { recv_stream.recv().await.is_none() });
+
+    assert!(stream.send_payload("test", true).await.is_err());
+    let res = ntex::time::timeout(Millis(500), recv).await;
+    assert!(res.unwrap().unwrap());
+}
+
+#[ntex::test]
 async fn test_send_after_response() {
     let srv = start_server().await;
     let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
