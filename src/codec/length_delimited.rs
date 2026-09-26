@@ -1,7 +1,7 @@
 //! Frame a stream of bytes based on a length prefix
 use std::{cell::Cell, cmp, error::Error as StdError, fmt, io::Cursor};
 
-use ntex_bytes::{Buf, BufMut, Bytes, BytesMut};
+use ntex_bytes::{Buf, BufMut, BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 /// Configure length delimited `LengthDelimitedCodec`s.
@@ -146,7 +146,7 @@ impl Encoder for LengthDelimitedCodec {
     type Item = Bytes;
     type Error = LengthDelimitedCodecError;
 
-    fn encode(&self, data: Bytes, dst: &mut BytesMut) -> Result<(), Self::Error> {
+    fn encode(&self, data: Bytes, dst: &mut BytePages) -> Result<(), Self::Error> {
         let n = data.len();
 
         if n > self.builder.max_frame_len {
@@ -162,14 +162,8 @@ impl Encoder for LengthDelimitedCodec {
 
         let n = n.ok_or(LengthDelimitedCodecError::Adjusted)?;
 
-        // Reserve capacity in the destination buffer to fit the frame and
-        // length field (plus adjustment).
-        dst.reserve(self.builder.length_field_len + n);
-
         dst.put_uint(n as u64, self.builder.length_field_len);
-
-        // Write the frame to the buffer
-        dst.extend_from_slice(&data[..]);
+        dst.append(data);
 
         Ok(())
     }

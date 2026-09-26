@@ -127,6 +127,23 @@ impl SimpleClient {
         Ok(self.0.storage.inflight(stream))
     }
 
+    /// Reserves a stream for a later request.
+    ///
+    /// The reserved stream is counted by [`active_streams`](Self::active_streams)
+    /// until the reservation is dropped or the request's stream is closed.
+    /// Returns `None` if the peer's concurrent stream limit is reached, or the
+    /// connection is failed or disconnecting.
+    ///
+    /// Graceful disconnect waits for outstanding reservations, a reserved
+    /// stream can be opened after [`close`](Self::close) is called.
+    pub fn reserve(&self) -> Option<StreamReservation> {
+        if self.0.con.reserve_stream() {
+            Some(StreamReservation(Some(self.clone())))
+        } else {
+            None
+        }
+    }
+
     #[inline]
     /// Returns whether the connection can open another stream.
     ///
@@ -195,9 +212,27 @@ impl SimpleClient {
         self.0.con.max_streams()
     }
 
-    /// Returns the number of active streams.
+    /// Returns the number of active client-initiated streams.
+    ///
+    /// A stream is active from [`send`](Self::send) until both of its sides
+    /// are closed or it is reset.
     pub fn active_streams(&self) -> u32 {
         self.0.con.active_streams()
+    }
+
+    /// Sets a callback that is called when the connection's stream capacity changes.
+    ///
+    /// The callback is called when a client-initiated stream is released,
+    /// when the peer changes its maximum concurrent stream count, and when
+    /// the connection fails or is closed. It runs inside the connection's
+    /// dispatcher, so it should only schedule work, for example wake a task.
+    /// Setting a new callback replaces the previous one. The callback must
+    /// not hold the client, it would keep the connection alive.
+    pub fn on_capacity<F>(&self, f: F)
+    where
+        F: Fn() + 'static,
+    {
+        self.0.con.set_on_capacity(Some(Rc::new(f)));
     }
 
     #[doc(hidden)]
@@ -224,6 +259,50 @@ impl Drop for SimpleClient {
         if Rc::strong_count(&self.0) == 1 {
             self.0.con.disconnect_when_ready();
         }
+    }
+}
+
+/// Reserved stream of an HTTP/2 client connection.
+///
+/// Created by [`SimpleClient::reserve`]. Dropping the reservation without
+/// sending a request releases the stream.
+pub struct StreamReservation(Option<SimpleClient>);
+
+impl StreamReservation {
+    /// Opens the reserved stream and sends request headers to the peer.
+    pub fn send(
+        mut self,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
+        let Some(client) = self.0.take() else { unreachable!() };
+        match client
+            .0
+            .con
+            .send_reserved_request(client.0.authority.clone(), method, path, headers, eof)
+        {
+            Ok(stream) => Ok(client.0.storage.inflight(stream)),
+            Err(err) => {
+                client.0.con.release_reserved_stream();
+                Err(err)
+            }
+        }
+    }
+}
+
+impl Drop for StreamReservation {
+    fn drop(&mut self) {
+        if let Some(client) = self.0.take() {
+            client.0.con.release_reserved_stream();
+        }
+    }
+}
+
+impl fmt::Debug for StreamReservation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ntex_h2::StreamReservation").finish()
     }
 }
 
@@ -256,6 +335,7 @@ impl ClientDisconnect {
         }
     }
 
+    #[must_use]
     /// Sets the maximum time to wait for graceful disconnection.
     pub fn disconnect_timeout<T>(mut self, timeout: T) -> Self
     where

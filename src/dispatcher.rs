@@ -218,7 +218,7 @@ where
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await
             }
-            DispatchItem::Stop(DispReason::KeepAliveTimeout) => {
+            DispatchItem::Stop(DispReason::KeepAlive) => {
                 log::warn!(
                     "{}: did not receive pong response in time, closing connection",
                     self.connection.tag(),
@@ -240,6 +240,17 @@ where
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await
             }
+            DispatchItem::Stop(DispReason::WriteTimeout) => {
+                log::warn!(
+                    "{}: did not send write buffer in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.read_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::WriteTimeout, self.connection.service());
+                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                control(Control::proto_error(err), &self.inner).await
+            }
             DispatchItem::Stop(DispReason::Io(err)) => {
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(
@@ -247,6 +258,13 @@ where
                     Error::new(OperationError::Disconnected, self.connection.service()),
                 );
                 control(Control::peer_gone(err), &self.inner).await
+            }
+            DispatchItem::Stop(DispReason::Service) => {
+                self.inner.connection.encode(
+                    GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(self.inner.last_stream_id),
+                );
+                self.inner.connection.close();
+                Ok(None)
             }
             DispatchItem::Control(_) => Ok(None),
         }

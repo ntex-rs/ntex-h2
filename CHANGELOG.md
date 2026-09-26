@@ -1,5 +1,37 @@
 # Changes
 
+## [Unreleased]
+
+* Update to ntex-codec 2.0
+
+* Export `client::ClientDisconnect`, the future returned by `SimpleClient::disconnect()`
+
+* Wake a pending `RecvStream::recv()` when `SendStream` resets the stream, is dropped
+  unfinished, or fails to send
+
+* Apply the capacity timeout to `send_capacity()` and `poll_send_capacity()`, not only to
+  payload sending, a stale capacity timer of a closed stream is ignored
+
+* Client `SendStream` is not cancelled when `RecvStream` is dropped, the request body
+  can be sent after the response is received
+
+* Graceful disconnect waits for outstanding stream reservations, a reserved stream
+  can be opened during graceful disconnect
+
+* Add `SimpleClient::reserve()` and `StreamReservation`, a stream counted as active until
+  the reservation is dropped or its request's stream is closed
+
+* Add `SimpleClient::on_capacity()`, a callback called when a client stream is released,
+  the peer changes its concurrent stream limit, or the connection is closed
+
+* Fix `SimpleClient::active_streams()` returning `0` until the peer sends `MAX_CONCURRENT_STREAMS`
+
+* Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration
+
+## [4.1.0] - 2026-09-22
+
+* Use update ntex-io api
+
 ## [4.0.1] - 2026-09-18
 
 * Update api docs

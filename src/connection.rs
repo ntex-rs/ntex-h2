@@ -44,7 +44,11 @@ struct ConnectionState {
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
     active_local_streams: Cell<u32>,
+    // reserved local streams, not opened yet
+    reserved_streams: Cell<u32>,
     readiness: RefCell<VecDeque<pool::Sender<()>>>,
+    // capacity change notification
+    on_capacity: Cell<Option<Rc<dyn Fn()>>>,
 
     rst_count: Cell<u32>,
     streams_count: Cell<u32>,
@@ -132,11 +136,13 @@ impl Connection {
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
+            reserved_streams: Cell::new(0),
             rst_count: Cell::new(0),
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
             last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
+            on_capacity: Cell::new(None),
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
             local_max_concurrent_streams: Cell::new(None),
@@ -229,7 +235,7 @@ impl Connection {
     where
         F: FnOnce(&mut BytePages) -> R,
     {
-        self.0.io.with_write_buf(f)
+        self.0.io.with_write_src(f)
     }
 
     pub(crate) fn check_error(&self) -> Result<(), Error<OperationError>> {
@@ -288,11 +294,12 @@ impl Connection {
     }
 
     pub(crate) fn active_streams(&self) -> u32 {
-        if self.0.local_max_concurrent_streams.get().is_some() {
-            self.0.active_local_streams.get()
-        } else {
-            0
-        }
+        self.0.active_local_streams.get()
+    }
+
+    /// Sets a callback that is called when the connection's capacity for local streams changes.
+    pub(crate) fn set_on_capacity(&self, f: Option<Rc<dyn Fn()>>) {
+        self.0.on_capacity.set(f);
     }
 
     pub(crate) fn can_create_new_stream(&self) -> bool {
@@ -324,7 +331,7 @@ impl Connection {
     }
 
     pub(crate) fn disconnect_when_ready(&self) {
-        if self.0.streams.borrow().is_empty() {
+        if self.0.streams.borrow().is_empty() && self.0.reserved_streams.get() == 0 {
             log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
         } else {
@@ -351,16 +358,84 @@ impl Connection {
             self.ready().await?;
         }
 
-        let stream = {
-            let id = self.0.next_stream_id.get();
-            let stream = StreamRef::new(id, false, self.clone());
-            self.0.streams.borrow_mut().insert(id, stream.clone());
+        self.0
+            .active_local_streams
+            .set(self.0.active_local_streams.get() + 1);
+        let result = self.open_stream(authority, method, path, headers, eof);
+        if result.is_err() {
+            self.0.release_local_stream();
+        }
+        result
+    }
+
+    /// Reserves a local stream, the stream is counted as active.
+    pub(crate) fn reserve_stream(&self) -> bool {
+        if self.check_error_with_disconnect().is_err() || !self.can_create_new_stream() {
+            false
+        } else {
             self.0
                 .active_local_streams
                 .set(self.0.active_local_streams.get() + 1);
-            self.0
-                .next_stream_id
-                .set(id.next_id().map_err(|_| OperationError::OverflowedStreamId)?);
+            self.0.reserved_streams.set(self.0.reserved_streams.get() + 1);
+            true
+        }
+    }
+
+    /// Releases a reserved stream that has not been opened.
+    pub(crate) fn release_reserved_stream(&self) {
+        let reserved = self.0.reserved_streams.get().saturating_sub(1);
+        self.0.reserved_streams.set(reserved);
+        self.0.release_local_stream();
+        self.0.notify_capacity();
+
+        if reserved == 0
+            && self.0.streams.borrow().is_empty()
+            && self.flags().contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
+            log::trace!("{}: All streams are closed, disconnecting", self.tag());
+            self.0.io.close();
+        }
+    }
+
+    /// Opens a stream using a reservation.
+    ///
+    /// Reserved stream can be opened while graceful disconnect is in progress.
+    pub(crate) fn send_reserved_request(
+        &self,
+        authority: ByteString,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<Stream, Error<OperationError>> {
+        self.check_error()?;
+        if self.is_closed() {
+            return Err(Error::new(OperationError::Disconnected, self.service()));
+        }
+        let stream = self.open_stream(authority, method, path, headers, eof)?;
+        self.0
+            .reserved_streams
+            .set(self.0.reserved_streams.get().saturating_sub(1));
+        Ok(stream)
+    }
+
+    // stream must be counted in `active_local_streams`
+    fn open_stream(
+        &self,
+        authority: ByteString,
+        method: Method,
+        path: ByteString,
+        headers: HeaderMap,
+        eof: bool,
+    ) -> Result<Stream, Error<OperationError>> {
+        let stream = {
+            let id = self.0.next_stream_id.get();
+            let next_id = id
+                .next_id()
+                .map_err(|_| Error::new(OperationError::OverflowedStreamId, self.service()))?;
+            self.0.next_stream_id.set(next_id);
+            let stream = StreamRef::new(id, false, self.clone());
+            self.0.streams.borrow_mut().insert(id, stream.clone());
             stream
         };
 
@@ -445,7 +520,30 @@ impl ConnectionState {
         self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
     }
 
+    fn notify_capacity(&self) {
+        if let Some(f) = self.on_capacity.take() {
+            self.on_capacity.set(Some(f.clone()));
+            f();
+        }
+    }
+
+    fn release_local_stream(&self) {
+        let local = self.active_local_streams.get();
+        self.active_local_streams.set(local.saturating_sub(1));
+        if let Some(max) = self.local_max_concurrent_streams.get()
+            && local == max
+        {
+            while let Some(tx) = self.readiness.borrow_mut().pop_front() {
+                if !tx.is_canceled() {
+                    let _ = tx.send(());
+                    break;
+                }
+            }
+        }
+    }
+
     fn drop_stream(&self, id: StreamId) {
+        let mut released = false;
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
@@ -459,26 +557,22 @@ impl ConnectionState {
                     self.active_remote_streams
                         .set(self.active_remote_streams.get() - 1);
                 } else {
-                    let local = self.active_local_streams.get();
-                    self.active_local_streams.set(local - 1);
-                    if let Some(max) = self.local_max_concurrent_streams.get()
-                        && local == max
-                    {
-                        while let Some(tx) = self.readiness.borrow_mut().pop_front() {
-                            if !tx.is_canceled() {
-                                let _ = tx.send(());
-                                break;
-                            }
-                        }
-                    }
+                    self.release_local_stream();
+                    released = true;
                 }
             }
             streams.is_empty()
         };
+        if released {
+            self.notify_capacity();
+        }
         let flags = self.flags.get();
 
         // Close connection
-        if empty && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY) {
+        if empty
+            && self.reserved_streams.get() == 0
+            && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
             log::trace!("{}: All streams are closed, disconnecting", self.io.tag());
             self.io.close();
             return;
@@ -719,6 +813,7 @@ impl RecvHalfConnection {
                 for tx in mem::take(&mut *self.0.readiness.borrow_mut()) {
                     let _ = tx.send(());
                 }
+                self.0.notify_capacity();
             }
 
             // RFC 7540 §6.9.2
@@ -858,6 +953,7 @@ impl RecvHalfConnection {
         for stream in streams.values() {
             stream.set_go_away(reason);
         }
+        self.0.notify_capacity();
         streams
     }
 
@@ -872,6 +968,7 @@ impl RecvHalfConnection {
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
         self.0.io.close();
+        self.0.notify_capacity();
         streams
     }
 
@@ -886,6 +983,7 @@ impl RecvHalfConnection {
 
         self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
         self.0.io.close();
+        self.0.notify_capacity();
         streams
     }
 
@@ -898,6 +996,7 @@ impl RecvHalfConnection {
         for stream in &mut streams.values() {
             stream.set_failed_stream(err.clone());
         }
+        self.0.notify_capacity();
         streams
     }
 
@@ -914,6 +1013,7 @@ impl RecvHalfConnection {
         for stream in streams.values() {
             stream.set_failed_stream(Error::new(OperationError::Disconnected, self.service()));
         }
+        self.0.notify_capacity();
         streams
     }
 }
@@ -1166,7 +1266,7 @@ mod tests {
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr.clone()).await.unwrap();
         let codec = Codec::default();
-        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
         let settings = frame::Settings::default();
         io.encode(settings.into(), &codec).unwrap();
@@ -1215,7 +1315,7 @@ mod tests {
         // SECOND connection
         let io = ntex::connect::connect(addr).await.unwrap();
         let codec = Codec::default();
-        let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
         let settings = frame::Settings::default();
         io.encode(settings.into(), &codec).unwrap();

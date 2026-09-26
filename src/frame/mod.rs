@@ -89,11 +89,11 @@ pub enum Frame {
     Settings(Settings),
     /// PING frame.
     Ping(Ping),
-    /// GOAWAY frame.
+    /// `GOAWAY` frame.
     GoAway(GoAway),
-    /// WINDOW_UPDATE frame.
+    /// `WINDOW_UPDATE` frame.
     WindowUpdate(WindowUpdate),
-    /// RST_STREAM frame.
+    /// `RST_STREAM` frame.
     Reset(Reset),
 }
 

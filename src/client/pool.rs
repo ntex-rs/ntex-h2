@@ -411,10 +411,11 @@ where
     }
 
     #[must_use]
-    /// Sets the maximum concurrent connections.
+    /// Sets the maximum number of simultaneous connections.
     ///
-    /// The default is 16 connections.
-    pub fn maxconn(mut self, num: usize) -> Self {
+    /// A new connection is opened only when every existing connection has
+    /// reached its stream limit. The default is 16 connections.
+    pub fn connection_limit(mut self, num: usize) -> Self {
         self.inner.maxconn = num;
         self
     }
@@ -474,7 +475,7 @@ impl fmt::Debug for Client {
             .field("conn_lifetime", &self.inner.config.conn_lifetime)
             .field("disconnect_timeout", &self.inner.config.disconnect_timeout)
             .field("minconn", &self.inner.config.minconn)
-            .field("maxconn", &self.inner.config.maxconn)
+            .field("connection_limit", &self.inner.config.maxconn)
             .field("max-streams", &self.inner.config.max_streams)
             .finish()
     }
@@ -489,7 +490,7 @@ impl<A, S> fmt::Debug for ClientBuilder<A, S> {
             .field("conn_lifetime", &self.inner.conn_lifetime)
             .field("disconnect_timeout", &self.inner.disconnect_timeout)
             .field("minconn", &self.inner.minconn)
-            .field("maxconn", &self.inner.maxconn)
+            .field("connection_limit", &self.inner.maxconn)
             .field("max-streams", &self.inner.max_streams)
             .finish()
     }

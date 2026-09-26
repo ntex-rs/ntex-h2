@@ -134,6 +134,8 @@ bitflags::bitflags! {
         const FAILED = 0b0000_0010;
         const DISCONNECT_ON_DROP = 0b0000_0100;
         const WAIT_FOR_CAPACITY  = 0b0000_1000;
+        const NO_RESET_ON_DROP   = 0b0001_0000;
+        const CAPACITY_TIMER     = 0b0010_0000;
     }
 }
 
@@ -411,6 +413,15 @@ impl StreamRef {
         self.0.flags.get().contains(StreamFlags::DISCONNECT_ON_DROP)
     }
 
+    /// Controls whether dropping the owning [`Stream`] resets the stream.
+    pub(crate) fn set_reset_on_drop(&self, reset: bool) {
+        if reset {
+            self.0.remove_flag(StreamFlags::NO_RESET_ON_DROP);
+        } else {
+            self.0.insert_flag(StreamFlags::NO_RESET_ON_DROP);
+        }
+    }
+
     /// Resets the stream with the specified HTTP/2 reason.
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
@@ -576,11 +587,7 @@ impl StreamRef {
         let window = self.0.send_window.get();
         if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
             self.0.send_cap.wake();
-
-            // remove capacity timeout
-            if self.0.con.config().capacity_timeout.is_some() {
-                timer::unregister(self);
-            }
+            self.stop_capacity_timer();
         }
     }
 
@@ -596,11 +603,7 @@ impl StreamRef {
 
             if window.available() {
                 self.0.send_cap.wake();
-
-                // remove capacity timeout
-                if !orig.available() && self.0.con.config().capacity_timeout.is_some() {
-                    timer::unregister(self);
-                }
+                self.stop_capacity_timer();
             }
             Ok(())
         }
@@ -755,11 +758,6 @@ impl StreamRef {
                             data.len()
                         );
 
-                        // start capacity timeout
-                        if let Some(to) = self.0.con.config().capacity_timeout {
-                            timer::register(to, self);
-                        }
-
                         // wait for available send window
                         self.send_capacity().await?;
                     }
@@ -791,7 +789,32 @@ impl StreamRef {
         )
     }
 
+    fn start_capacity_timer(&self) {
+        if !self.0.flags.get().contains(StreamFlags::CAPACITY_TIMER)
+            && let Some(to) = self.0.con.config().capacity_timeout
+        {
+            self.0.insert_flag(StreamFlags::CAPACITY_TIMER);
+            timer::register(to, self);
+        }
+    }
+
+    fn stop_capacity_timer(&self) {
+        if self.0.flags.get().contains(StreamFlags::CAPACITY_TIMER) {
+            self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
+            timer::unregister(self);
+        }
+    }
+
     pub(crate) fn capacity_timeout(&self) {
+        self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
+
+        // stream is already closed or capacity is available
+        if (self.0.recv.get().is_closed() && self.0.send.get().is_closed())
+            || self.available_send_capacity() > 0
+        {
+            return;
+        }
+
         log::warn!(
             "{}: Capacity availability timed-out for {:?}",
             self.0.tag(),
@@ -806,11 +829,17 @@ impl StreamRef {
     }
 
     /// Waits until send capacity is available.
+    ///
+    /// Fails with [`StreamError::CapacityTimeout`] and resets the stream if
+    /// capacity is not available within the configured capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
     /// Polls for available send capacity.
+    ///
+    /// Starts the capacity timeout while capacity is unavailable, see
+    /// [`StreamRef::send_capacity`].
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
@@ -821,10 +850,12 @@ impl StreamRef {
         let win = self.available_send_capacity();
         if win > 0 {
             self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
+            self.stop_capacity_timer();
             Poll::Ready(Ok(win))
         } else {
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
             self.0.send_cap.register(cx.waker());
+            self.start_capacity_timer();
             Poll::Pending
         }
     }
@@ -867,7 +898,9 @@ impl ops::Deref for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.0.reset(Reason::CANCEL);
+        if !self.0.0.flags.get().contains(StreamFlags::NO_RESET_ON_DROP) {
+            self.0.reset(Reason::CANCEL);
+        }
     }
 }
 

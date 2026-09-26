@@ -144,7 +144,7 @@ async fn test_max_concurrent_streams_pool() {
     assert!(format!("{:?}", client).contains("ClientBuilder"));
 
     let client = client
-        .maxconn(1)
+        .connection_limit(1)
         .scheme(Scheme::HTTPS)
         .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
         .build(SharedCfg::default());
@@ -184,7 +184,7 @@ async fn test_max_concurrent_streams_pool2() {
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
     let client = Client::builder("localhost")
-        .maxconn(2)
+        .connection_limit(2)
         .connector(async move |_| {
             cnt2.set(cnt2.get() + 1);
             Ok(connect(addr).await)
@@ -273,6 +273,316 @@ async fn test_max_concurrent_streams_reset() {
     assert_eq!(opened.get(), 3);
 }
 
+#[ntex::test]
+async fn test_on_capacity() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let cnt = Rc::new(Cell::new(0));
+    let cnt2 = cnt.clone();
+    client.on_capacity(move || cnt2.set(cnt2.get() + 1));
+
+    // peer settings
+    sleep(Millis(150)).await;
+    assert_eq!(client.max_streams(), Some(1));
+    assert_eq!(cnt.get(), 1);
+
+    let (stream, recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    assert_eq!(cnt.get(), 1);
+
+    // stream is released after response
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    assert_eq!(cnt.get(), 2);
+
+    // connection is closed
+    client.force_close();
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+    assert!(cnt.get() > 2);
+}
+
+#[ntex::test]
+async fn test_stream_reservation() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let cnt = Rc::new(Cell::new(0));
+    let cnt2 = cnt.clone();
+    client.on_capacity(move || cnt2.set(cnt2.get() + 1));
+    sleep(Millis(150)).await;
+    assert_eq!(client.max_streams(), Some(1));
+    let base = cnt.get();
+
+    // reserved stream is counted
+    let reservation = client.reserve().unwrap();
+    assert!(format!("{reservation:?}").contains("StreamReservation"));
+    assert_eq!(client.active_streams(), 1);
+    assert!(!client.is_ready());
+    assert!(client.reserve().is_none());
+
+    // dropped reservation releases the stream
+    drop(reservation);
+    assert_eq!(client.active_streams(), 0);
+    assert!(client.is_ready());
+    assert_eq!(cnt.get(), base + 1);
+
+    // reserved stream is used by the request
+    let reservation = client.reserve().unwrap();
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    assert_eq!(client.active_streams(), 1);
+    assert_eq!(cnt.get(), base + 1);
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    assert_eq!(cnt.get(), base + 2);
+
+    // failed request releases the reservation
+    let reservation = client.reserve().unwrap();
+    client.force_close();
+    sleep(Millis(50)).await;
+    assert!(
+        reservation
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .is_err()
+    );
+    assert_eq!(client.active_streams(), 0);
+    assert!(client.reserve().is_none());
+}
+
+#[ntex::test]
+async fn test_stream_reservation_graceful_disconnect() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    // reserved stream can be used during graceful disconnect
+    let reservation = client.reserve().unwrap();
+    client.close();
+    sleep(Millis(50)).await;
+    assert!(client.is_disconnecting());
+    assert!(client.reserve().is_none());
+
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    let msg = recv_stream.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { .. }));
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+
+    // dropped reservation completes graceful disconnect
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+    let reservation = client.reserve().unwrap();
+    client.close();
+    sleep(Millis(50)).await;
+    assert!(!client.is_closed());
+    drop(reservation);
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+
+    // completed stream does not close connection with reserved stream
+    let srv = test::server_with_config(
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |mut req: http::Request| {
+                    let mut pl = req.take_payload();
+                    pl.recv().await;
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(2)),
+    );
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+    let (stream, recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let reservation = client.reserve().unwrap();
+    client.close();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(!client.is_closed());
+    let (stream, recv_stream) = reservation
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .unwrap();
+    stream.send_payload(Bytes::new(), true).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+}
+
+#[ntex::test]
+async fn test_client_send_capacity_timeout() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer allows 1 byte per stream and never updates the window
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1]);
+    sleep(Millis(50)).await;
+
+    let (stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let res = ntex::time::timeout(Millis(3000), stream.send_payload("test", true))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &*res.unwrap_err(),
+        ntex_h2::OperationError::Stream(ntex_h2::StreamError::CapacityTimeout)
+    ));
+}
+
+#[ntex::test]
+async fn test_client_send_capacity_wait_timeout() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer sets zero stream window and never updates it
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let (stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let res = ntex::time::timeout(Millis(3000), stream.send_capacity())
+        .await
+        .unwrap();
+    assert!(matches!(
+        &*res.unwrap_err(),
+        ntex_h2::OperationError::Stream(ntex_h2::StreamError::CapacityTimeout)
+    ));
+}
+
+#[ntex::test]
+async fn test_recv_woken_by_local_reset() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let recv = ntex::rt::spawn(async move { recv_stream.recv().await.is_none() });
+    sleep(Millis(100)).await;
+
+    // dropping unfinished send stream resets the stream
+    drop(stream);
+    let res = ntex::time::timeout(Millis(1000), recv).await;
+    assert!(res.unwrap().unwrap());
+}
+
+#[ntex::test]
+async fn test_recv_woken_by_capacity_timeout() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer sets zero stream window and never updates it
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let recv = ntex::rt::spawn(async move { recv_stream.recv().await.is_none() });
+
+    assert!(stream.send_payload("test", true).await.is_err());
+    let res = ntex::time::timeout(Millis(500), recv).await;
+    assert!(res.unwrap().unwrap());
+}
+
+#[ntex::test]
+async fn test_stale_capacity_timeout_ignored() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer sets zero stream window and never updates it
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let (stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+
+    // start capacity timer, then close the stream
+    assert!(
+        ntex::time::timeout(Millis(100), stream.send_capacity())
+            .await
+            .is_err()
+    );
+    assert!(stream.reset(Reason::CANCEL));
+
+    // capacity timer fires for the closed stream
+    sleep(Millis(2500)).await;
+    assert!(matches!(
+        &*stream.send_capacity().await.unwrap_err(),
+        ntex_h2::OperationError::LocalReset(Reason::CANCEL)
+    ));
+    assert!(!client.is_closed());
+}
+
+#[ntex::test]
+async fn test_send_after_response() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    // server responds after the first chunk
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    stream.send_payload("chunk", false).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    drop(recv_stream);
+    sleep(Millis(50)).await;
+
+    // request body is not cancelled
+    assert_eq!(client.active_streams(), 1);
+    stream.send_payload("chunk", true).await.unwrap();
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    drop(stream);
+    assert!(!client.is_closed());
+}
+
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]
@@ -282,7 +592,7 @@ async fn test_goaway_on_overflow() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -326,7 +636,7 @@ async fn test_stream_cancel() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -362,7 +672,7 @@ async fn test_goaway_on_reset() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -413,7 +723,7 @@ async fn test_goaway_on_reset2() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -487,7 +797,7 @@ async fn test_ping_timeout_on_idle() {
     let addr = srv.addr();
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let settings = frame::Settings::default();
     io.encode(settings.into(), &codec).unwrap();
@@ -551,7 +861,7 @@ async fn test_capacity_timeout() {
 
     let io = connect(addr).await;
     let codec = Codec::default();
-    let _ = io.with_write_buf(|buf| buf.extend_from_slice(&PREFACE));
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
     let mut settings = frame::Settings::default();
     settings.set_initial_window_size(Some(1));
