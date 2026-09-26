@@ -428,6 +428,57 @@ async fn test_stream_reservation_graceful_disconnect() {
     assert!(client.is_closed());
 }
 
+#[ntex::test]
+async fn test_client_send_capacity_timeout() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer allows 1 byte per stream and never updates the window
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1]);
+    sleep(Millis(50)).await;
+
+    let (stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    let res = ntex::time::timeout(Millis(3000), stream.send_payload("test", true))
+        .await
+        .unwrap();
+    assert!(matches!(
+        &*res.unwrap_err(),
+        ntex_h2::OperationError::Stream(ntex_h2::StreamError::CapacityTimeout)
+    ));
+}
+
+#[ntex::test]
+async fn test_send_after_response() {
+    let srv = start_server().await;
+    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+
+    // server responds after the first chunk
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    stream.send_payload("chunk", false).await.unwrap();
+    while recv_stream.recv().await.is_some() {}
+    drop(recv_stream);
+    sleep(Millis(50)).await;
+
+    // request body is not cancelled
+    assert_eq!(client.active_streams(), 1);
+    stream.send_payload("chunk", true).await.unwrap();
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+    drop(stream);
+    assert!(!client.is_closed());
+}
+
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[ntex::test]

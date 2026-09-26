@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Client `SendStream` is not cancelled when `RecvStream` is dropped, the request body
+  can be sent after the response is received
+
 * Graceful disconnect waits for outstanding stream reservations, a reserved stream
   can be opened during graceful disconnect
 

@@ -277,7 +277,7 @@ impl StreamReservation {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
-        let client = self.0.take().unwrap();
+        let Some(client) = self.0.take() else { unreachable!() };
         match client
             .0
             .con

@@ -134,6 +134,7 @@ bitflags::bitflags! {
         const FAILED = 0b0000_0010;
         const DISCONNECT_ON_DROP = 0b0000_0100;
         const WAIT_FOR_CAPACITY  = 0b0000_1000;
+        const NO_RESET_ON_DROP   = 0b0001_0000;
     }
 }
 
@@ -409,6 +410,15 @@ impl StreamRef {
 
     pub(crate) fn is_disconnect_on_drop(&self) -> bool {
         self.0.flags.get().contains(StreamFlags::DISCONNECT_ON_DROP)
+    }
+
+    /// Controls whether dropping the owning [`Stream`] resets the stream.
+    pub(crate) fn set_reset_on_drop(&self, reset: bool) {
+        if reset {
+            self.0.remove_flag(StreamFlags::NO_RESET_ON_DROP);
+        } else {
+            self.0.insert_flag(StreamFlags::NO_RESET_ON_DROP);
+        }
     }
 
     /// Resets the stream with the specified HTTP/2 reason.
@@ -867,7 +877,9 @@ impl ops::Deref for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.0.reset(Reason::CANCEL);
+        if !self.0.0.flags.get().contains(StreamFlags::NO_RESET_ON_DROP) {
+            self.0.reset(Reason::CANCEL);
+        }
     }
 }
 

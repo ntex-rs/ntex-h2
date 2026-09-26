@@ -65,10 +65,12 @@ impl Inflight {
 /// Sending half of a client-initiated HTTP/2 stream.
 ///
 /// Dropping an unfinished send stream resets it with [`Reason::CANCEL`].
+/// Sending can continue after the [`RecvStream`] is dropped.
 pub struct SendStream(StreamRef, ());
 
 impl Drop for SendStream {
     fn drop(&mut self) {
+        self.0.set_reset_on_drop(true);
         if !self.0.send_state().is_closed() {
             self.0.reset(Reason::CANCEL);
 
@@ -296,6 +298,8 @@ impl InflightStorage {
 
     pub(super) fn inflight(&self, stream: Stream) -> (SendStream, RecvStream) {
         let id = stream.id();
+        // the send half resets the stream on drop
+        stream.set_reset_on_drop(false);
         let snd = SendStream(stream.clone(), ());
         let rcv = RecvStream(stream.clone(), self.clone());
         let inflight = Inflight {
