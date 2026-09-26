@@ -108,6 +108,10 @@ impl SendStream {
 
     #[inline]
     /// Waits until send capacity is available.
+    ///
+    /// Fails with [`StreamError::CapacityTimeout`](crate::StreamError::CapacityTimeout)
+    /// and resets the stream if capacity is not available within the configured
+    /// capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         self.0.send_capacity().await
     }
@@ -153,6 +157,9 @@ impl SendStream {
 
     #[inline]
     /// Polls for available send capacity.
+    ///
+    /// Starts the capacity timeout while capacity is unavailable, see
+    /// [`SendStream::send_capacity`].
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,

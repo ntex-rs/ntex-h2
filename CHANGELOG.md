@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Apply the capacity timeout to `send_capacity()` and `poll_send_capacity()`, not only to
+  payload sending, a stale capacity timer of a closed stream is ignored
+
 * Client `SendStream` is not cancelled when `RecvStream` is dropped, the request body
   can be sent after the response is received
 
