@@ -218,7 +218,7 @@ where
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await
             }
-            DispatchItem::Stop(DispReason::KeepAliveTimeout) => {
+            DispatchItem::Stop(DispReason::KeepAlive) => {
                 log::warn!(
                     "{}: did not receive pong response in time, closing connection",
                     self.connection.tag(),
