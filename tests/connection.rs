@@ -524,6 +524,41 @@ async fn test_recv_woken_by_capacity_timeout() {
 }
 
 #[ntex::test]
+async fn test_stale_capacity_timeout_ignored() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let cfg = SharedCfg::new("CLI")
+        .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+        .build();
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+    // peer sets zero stream window and never updates it
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let (stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+
+    // start capacity timer, then close the stream
+    assert!(
+        ntex::time::timeout(Millis(100), stream.send_capacity())
+            .await
+            .is_err()
+    );
+    assert!(stream.reset(Reason::CANCEL));
+
+    // capacity timer fires for the closed stream
+    sleep(Millis(2500)).await;
+    assert!(matches!(
+        &*stream.send_capacity().await.unwrap_err(),
+        ntex_h2::OperationError::LocalReset(Reason::CANCEL)
+    ));
+    assert!(!client.is_closed());
+}
+
+#[ntex::test]
 async fn test_send_after_response() {
     let srv = start_server().await;
     let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
