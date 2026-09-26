@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Update to ntex-codec 2.0
+
 * Export `client::ClientDisconnect`, the future returned by `SimpleClient::disconnect()`
 
 * Wake a pending `RecvStream::recv()` when `SendStream` resets the stream, is dropped

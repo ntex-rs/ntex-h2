@@ -372,7 +372,7 @@ impl Encoder for Codec {
     type Item = Frame;
     type Error = error::EncoderError;
 
-    fn encodev(&self, item: Frame, buf: &mut BytePages) -> Result<(), error::EncoderError> {
+    fn encode(&self, item: Frame, buf: &mut BytePages) -> Result<(), error::EncoderError> {
         // Ensure that we have enough capacity to accept the write.
         // log::debug!(frame = ?item, "send");
 

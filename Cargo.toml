@@ -27,7 +27,7 @@ features = []
 
 [dependencies]
 ntex-bytes = "1.9.0"
-ntex-codec = "1.2"
+ntex-codec = "2.0"
 ntex-dispatcher = "4.1.0"
 ntex-error = "2.6"
 ntex-http = "1.2"
