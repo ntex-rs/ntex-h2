@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Export `client::ClientDisconnect`, the future returned by `SimpleClient::disconnect()`
+
 * Wake a pending `RecvStream::recv()` when `SendStream` resets the stream, is dropped
   unfinished, or fails to send
 

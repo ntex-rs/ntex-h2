@@ -335,6 +335,7 @@ impl ClientDisconnect {
         }
     }
 
+    #[must_use]
     /// Sets the maximum time to wait for graceful disconnection.
     pub fn disconnect_timeout<T>(mut self, timeout: T) -> Self
     where

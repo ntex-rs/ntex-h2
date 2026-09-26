@@ -35,7 +35,7 @@ pub enum ConnectionError {
     /// A pseudo-header is not valid in this message.
     #[error("Unexpected pseudo header {0:?}")]
     UnexpectedPseudo(&'static str),
-    /// A WINDOW_UPDATE increment was zero.
+    /// A `WINDOW_UPDATE` increment was zero.
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
     /// A flow-control window overflowed.
@@ -161,10 +161,10 @@ pub enum StreamError {
     /// The stream flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowOverflowed,
-    /// A stream WINDOW_UPDATE increment was zero.
+    /// A stream `WINDOW_UPDATE` increment was zero.
     #[error("Zero value for window")]
     WindowZeroUpdateValue,
-    /// Trailers were received without END_STREAM.
+    /// Trailers were received without `END_STREAM`.
     #[error("Trailers headers without end of stream flags")]
     TrailersWithoutEos,
     /// The content-length header is invalid.

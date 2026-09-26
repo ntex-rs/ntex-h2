@@ -99,7 +99,7 @@ impl ServiceConfig {
     /// flow control for received data.
     ///
     /// The initial window of a stream is used as part of flow control. For more
-    /// details, see [`FlowControl`].
+    /// details, see [flow control](https://www.rfc-editor.org/rfc/rfc9113#section-5.2).
     ///
     /// The default value is 65,535.
     pub fn set_initial_window_size(mut self, size: i32) -> Self {
@@ -117,7 +117,7 @@ impl ServiceConfig {
     /// for received data.
     ///
     /// The initial window of a connection is used as part of flow control. For more details,
-    /// see [`FlowControl`].
+    /// see [flow control](https://www.rfc-editor.org/rfc/rfc9113#section-5.2).
     ///
     /// The default value is 1 MiB.
     pub fn set_initial_connection_window_size(mut self, size: i32) -> Self {

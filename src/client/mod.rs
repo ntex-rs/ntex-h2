@@ -18,7 +18,7 @@ use crate::{error::ConnectionError, error::OperationError, frame};
 
 pub use self::connector::Connector;
 pub use self::pool::{Client, ClientBuilder};
-pub use self::simple::{SimpleClient, StreamReservation};
+pub use self::simple::{ClientDisconnect, SimpleClient, StreamReservation};
 pub use self::stream::{RecvStream, SendStream};
 
 /// Errors that can occur while establishing or operating an HTTP/2 client.
