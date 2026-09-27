@@ -902,21 +902,19 @@ impl RecvHalfConnection {
                 self.0.remote_window_sz.set(val);
                 log::trace!("Update remote initial window size to {val} from {old_val}");
 
-                let mut stream_errors = Vec::new();
-
+                // RFC 9113 §6.9.2, a window overflow caused by the change is
+                // a connection error of type FLOW_CONTROL_ERROR
                 let upd = val - old_val;
                 if upd != 0 {
                     for stream in self.0.streams.borrow().values() {
-                        if let Err(kind) = stream.update_send_window(upd) {
-                            stream_errors.push(StreamErrorInner::new(stream.clone(), kind));
+                        if stream.update_send_window(upd).is_err() {
+                            proto_err!(conn: "initial window size overflows {:?}", stream.id());
+                            return Err(Either::Left(Error::new(
+                                ConnectionError::WindowValueOverflow,
+                                self.service(),
+                            )));
                         }
                     }
-                }
-
-                if !stream_errors.is_empty() {
-                    // settings are applied, stream errors are reported after the ack
-                    self.encode(frame::Settings::ack());
-                    return Err(Either::Right(stream_errors));
                 }
             }
 

@@ -787,6 +787,29 @@ async fn open_raw_stream(srv: &test::TestServer) -> (IoBoxed, Codec) {
     (io, codec)
 }
 
+/// SETTINGS_INITIAL_WINDOW_SIZE that overflows a stream window is
+/// a connection error, the settings are not acknowledged.
+#[ntex::test]
+async fn test_settings_window_overflow() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    // grow the server's send window of the stream to the maximum
+    let upd = frame::WindowUpdate::new(
+        frame::StreamId::CLIENT,
+        frame::MAX_INITIAL_WINDOW_SIZE as u32 - frame::DEFAULT_INITIAL_WINDOW_SIZE as u32,
+    );
+    io.send(upd.into(), &codec).await.unwrap();
+
+    let mut settings = frame::Settings::default();
+    settings.set_initial_window_size(Some(frame::DEFAULT_INITIAL_WINDOW_SIZE as u32 + 1));
+    io.send(settings.into(), &codec).await.unwrap();
+
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert!(io.recv(&codec).await.unwrap().is_none());
+}
+
 /// Sends `count` DATA frames of `size` bytes on the client stream.
 async fn send_data(io: &IoBoxed, codec: &Codec, count: usize, size: usize) {
     for _ in 0..count {

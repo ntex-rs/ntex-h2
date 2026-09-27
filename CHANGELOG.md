@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* `SETTINGS_INITIAL_WINDOW_SIZE` that overflows a stream send window is a connection
+  `FLOW_CONTROL_ERROR`, instead of a stream reset
+
 * Send the SETTINGS ACK after the peer's settings are applied
 
 * The first frame from the peer must be SETTINGS, otherwise the connection is closed
