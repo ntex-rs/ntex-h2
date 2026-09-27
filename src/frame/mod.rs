@@ -96,6 +96,11 @@ pub enum Frame {
     WindowUpdate(WindowUpdate),
     /// `RST_STREAM` frame.
     Reset(Reset),
+    /// A received frame that is invalid for its stream only.
+    ///
+    /// The codec reports stream-level errors as this frame instead of a
+    /// decode error, the connection remains usable.
+    Invalid(InvalidFrame),
 }
 
 impl fmt::Debug for Frame {
@@ -109,7 +114,50 @@ impl fmt::Debug for Frame {
             Frame::GoAway(frame) => fmt::Debug::fmt(frame, fmt),
             Frame::WindowUpdate(frame) => fmt::Debug::fmt(frame, fmt),
             Frame::Reset(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Invalid(frame) => fmt::Debug::fmt(frame, fmt),
         }
+    }
+}
+
+/// A received frame that is invalid for its stream only (RFC 9113 §5.4.2).
+///
+/// The HPACK state is updated before the frame is reported, so the
+/// connection can continue.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct InvalidFrame {
+    kind: Kind,
+    stream_id: StreamId,
+    error: FrameError,
+}
+
+impl InvalidFrame {
+    pub(crate) fn new(kind: Kind, stream_id: StreamId, error: FrameError) -> Self {
+        InvalidFrame {
+            kind,
+            stream_id,
+            error,
+        }
+    }
+
+    /// Returns the kind of the invalid frame.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Returns the stream identifier of the invalid frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    /// Returns the reason why the frame is invalid.
+    pub fn error(&self) -> FrameError {
+        self.error
+    }
+}
+
+impl From<InvalidFrame> for Frame {
+    fn from(src: InvalidFrame) -> Self {
+        Frame::Invalid(src)
     }
 }
 

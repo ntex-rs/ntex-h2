@@ -608,10 +608,6 @@ impl RecvHalfConnection {
         self.0.local_config.service()
     }
 
-    pub(crate) fn drop_stream(&self, id: StreamId) {
-        self.0.drop_stream(id);
-    }
-
     pub(crate) fn encode<T>(&self, item: T)
     where
         frame::Frame: From<T>,
@@ -735,6 +731,51 @@ impl RecvHalfConnection {
         }
     }
 
+    /// Handles a frame that is invalid for its stream only, the stream is
+    /// reset and the connection continues.
+    pub(crate) fn recv_invalid_frame(
+        &self,
+        frm: frame::InvalidFrame,
+    ) -> Result<Option<(StreamRef, Message)>, EitherError> {
+        let id = frm.stream_id();
+        log::debug!("{}: received invalid frame: {frm:?}", self.tag());
+
+        let err = Error::new(StreamError::InvalidFrame(frm.error()), self.service());
+        if let Some(stream) = self.query(id) {
+            self.update_rst_count().map_err(Either::Left)?;
+            return Err(Either::Right(StreamErrorInner::new(stream, err)));
+        }
+
+        // an invalid HEADERS frame still opens and closes the stream
+        if frm.kind() == frame::Kind::Headers {
+            if self.0.flags.get().contains(ConnectionFlags::SERVER) && !id.is_client_initiated() {
+                return Err(Either::Left(Error::new(
+                    ConnectionError::InvalidStreamId("Invalid id in received headers frame"),
+                    self.service(),
+                )));
+            }
+            if self.0.last_id.get() >= id {
+                return Err(Either::Left(Error::new(
+                    ConnectionError::InvalidStreamId(
+                        "Invalid id in received headers frame (stream closed or ID reused)",
+                    ),
+                    self.service(),
+                )));
+            }
+            self.0.last_id.set(id);
+            self.0.streams_count.set(self.0.streams_count.get() + 1);
+        }
+
+        self.update_rst_count().map_err(Either::Left)?;
+        self.encode(frame::Reset::new(id, err.reason()));
+
+        // the peer can still send frames for the stream before it sees the reset
+        if self.0.err_unknown_streams() {
+            self.0.local_pending_reset.add(id, &self.0.local_config);
+        }
+        Ok(None)
+    }
+
     pub(crate) fn recv_data(
         &self,
         frm: frame::Data,
@@ -751,8 +792,12 @@ impl RecvHalfConnection {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),
                 Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
-        } else if !self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(frm.stream_id())
-        {
+        } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
+            // the stream is reset already, frames sent before the peer saw
+            // the reset must be ignored (RFC 9113 §5.1)
+            self.0.data_received(frm.flow_controlled_len());
+            Ok(None)
+        } else if !self.0.err_unknown_streams() {
             // connection level recv window
             self.0.data_received(frm.flow_controlled_len());
 
@@ -1298,12 +1343,16 @@ mod tests {
         let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // server should keep reseted streams for some time
+        // server should keep reseted streams for some time,
+        // data for such streams is ignored
         let pl = frame::Data::new(id, Bytes::from_static(b"data"));
         io.send(pl.clone().into(), &codec).await.unwrap();
-
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+        let res = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+            "{res:?}"
+        );
 
         // reset queue cleared in 1 sec (for test)
         sleep(Millis(1100)).await;

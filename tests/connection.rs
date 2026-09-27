@@ -1017,6 +1017,102 @@ async fn test_max_headers() {
         err.into_error(),
         ntex_h2::StreamError::Reset(frame::Reason::REFUSED_STREAM)
     );
+
+    // the connection is still usable
+    let (_, rstream) = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    let r = ntex::time::timeout(Millis(5_000), rstream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(r.kind, MessageKind::Headers { .. }), "{r:?}");
+}
+
+/// A malformed request resets the stream, the connection stays usable.
+#[ntex::test]
+async fn test_malformed_headers_reset_stream() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(http::header::CONNECTION, "close".try_into().unwrap());
+    let id = frame::StreamId::from(3);
+    io.send(frame::Headers::new(id, pseudo, hdrs, true).into(), &codec)
+        .await
+        .unwrap();
+    assert_eq!(
+        io.recv(&codec).await.unwrap().unwrap(),
+        frame::Frame::Reset(frame::Reset::new(id, Reason::PROTOCOL_ERROR))
+    );
+
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame: {frm:?}"),
+    }
+}
+
+/// A response with too many headers fails the client stream, instead of
+/// closing the connection.
+#[ntex::test]
+async fn test_client_max_headers() {
+    let srv = test::server(async move |_| {
+        openssl(
+            ssl_acceptor(),
+            HttpService::h2(|req: http::Request| async move {
+                let mut resp = Response::Ok();
+                if req.path() == "/large" {
+                    for n in ["h1", "h2", "h3", "h4", "h5", "h6"] {
+                        resp.header(n, "123");
+                    }
+                }
+                Ok::<_, io::Error>(resp.body("test body"))
+            }),
+        )
+        .map_err(|_| ())
+    });
+
+    let addr = srv.addr();
+    let client = Client::builder("localhost")
+        .scheme(Scheme::HTTPS)
+        .connector(async move |_| Ok(connect(addr).await))
+        .build(SharedCfg::new("CLI").add(ServiceConfig::new().set_max_headers(5)));
+
+    let (_, rstream) = client
+        .send(Method::GET, "/large".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    let r = ntex::time::timeout(Millis(5_000), rstream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let id = r.id();
+    let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = r.kind else {
+        panic!("unexpected message: {r:?}")
+    };
+    assert_eq!(
+        err.into_error(),
+        ntex_h2::StreamError::InvalidFrame(frame::FrameError::TooManyHeaders(id))
+    );
+
+    let (_, rstream) = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    let r = ntex::time::timeout(Millis(5_000), rstream.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(r.kind, MessageKind::Headers { .. }), "{r:?}");
 }
 
 #[ntex::test]

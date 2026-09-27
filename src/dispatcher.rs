@@ -9,7 +9,7 @@ use ntex_util::{HashMap, future::Either, future::join, spawn};
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
 use crate::error::{ConnectionError, OperationError, StreamError};
-use crate::frame::{Frame, FrameError, GoAway, Ping, Reason, Reset, StreamId};
+use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
 use crate::{codec::Codec, message::Message, stream::StreamRef};
 
 /// Amqp server dispatcher service.
@@ -186,6 +186,7 @@ where
                     );
                     control(Control::go_away(frm), &self.inner).await
                 }
+                Frame::Invalid(frm) => self.handle_message(self.connection.recv_invalid_frame(frm)).await,
                 Frame::Priority(_prio) => {
                     #[cfg(feature = "trace")]
                     log::debug!(
@@ -202,18 +203,7 @@ where
                 control(Control::proto_error(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::Decoder(err)) => {
-                let err = if let FrameError::TooManyHeaders(id) = err {
-                    log::warn!("{}: TOO Many headers: {id:?}", self.connection.tag());
-                    self.connection.drop_stream(id);
-                    self.connection.encode(Reset::new(id, Reason::REFUSED_STREAM));
-                    if let Err(err) = self.connection.update_rst_count() {
-                        err
-                    } else {
-                        return Ok(None);
-                    }
-                } else {
-                    Error::new(ConnectionError::from(err), self.connection.service())
-                };
+                let err = Error::new(ConnectionError::from(err), self.connection.service());
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await

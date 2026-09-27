@@ -192,6 +192,10 @@ pub enum StreamError {
     /// The stream was reset with the specified reason.
     #[error("Stream has been reset with {0}")]
     Reset(Reason),
+    /// The peer sent an invalid frame for the stream, such as a malformed
+    /// or too large header block.
+    #[error("Invalid frame: {0}")]
+    InvalidFrame(frame::FrameError),
 }
 
 impl StreamError {
@@ -202,7 +206,9 @@ impl StreamError {
             StreamError::WindowOverflowed
             | StreamError::RecvWindowExceeded
             | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
+            StreamError::InvalidFrame(frame::FrameError::TooManyHeaders(_)) => Reason::REFUSED_STREAM,
             StreamError::Idle(_)
+            | StreamError::InvalidFrame(_)
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
             | StreamError::InvalidContentLength
@@ -227,6 +233,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::NonEmptyPayload => "h2-stream-NonEmptyPayload",
             StreamError::CapacityTimeout => "h2-stream-CapacityTimeout",
             StreamError::Reset(_) => "h2-stream-Reset",
+            StreamError::InvalidFrame(_) => "h2-stream-InvalidFrame",
         }
     }
 }

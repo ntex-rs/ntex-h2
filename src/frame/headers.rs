@@ -100,7 +100,19 @@ impl Headers {
     ///
     /// HPACK decoding is done in the `load_hpack` step.
     pub fn load(head: Head, src: &mut Bytes) -> Result<Self, FrameError> {
+        match Self::load_head(head, src)? {
+            (_, true) => Err(FrameError::InvalidDependencyId),
+            (frame, false) => Ok(frame),
+        }
+    }
+
+    /// Loads the header frame, also returns whether the stream depends on itself.
+    ///
+    /// A self dependency is a stream error, the header block still must be
+    /// decoded to keep the HPACK state in sync.
+    pub(crate) fn load_head(head: Head, src: &mut Bytes) -> Result<(Self, bool), FrameError> {
         let flags = HeadersFlag(head.flag());
+        let mut self_dependency = false;
 
         if head.stream_id().is_zero() {
             return Err(FrameError::InvalidStreamId);
@@ -127,9 +139,7 @@ impl Headers {
             }
             let stream_dep = StreamDependency::load(&src[..5])?;
 
-            if stream_dep.dependency_id() == head.stream_id() {
-                return Err(FrameError::InvalidDependencyId);
-            }
+            self_dependency = stream_dep.dependency_id() == head.stream_id();
 
             // Drop the next 5 bytes
             src.advance_to(5);
@@ -142,14 +152,15 @@ impl Headers {
             src.truncate(src.len() - pad);
         }
 
-        Ok(Headers {
+        let frame = Headers {
             flags,
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 pseudo: PseudoHeaders::default(),
             },
-        })
+        };
+        Ok((frame, self_dependency))
     }
 
     /// Returns the stream id and flags of a frame whose header block continues

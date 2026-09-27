@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+* Reset only the stream, instead of closing the connection, on malformed, too large or
+  self-dependent header blocks and self-dependent PRIORITY frames, add `Frame::Invalid`,
+  `frame::InvalidFrame` and `StreamError::InvalidFrame`
+
+* Ignore DATA frames received on streams that were reset locally, instead of replying
+  with `STREAM_CLOSED` resets
+
 * Enforce the header list size limit on decoded headers, `Headers::load_hpack()` accepts `max_list_size`
 
 * Count every header field toward `max_headers`, not only distinct names

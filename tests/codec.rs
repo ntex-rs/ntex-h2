@@ -376,6 +376,23 @@ fn literal_field(name: &[u8], value: &[u8]) -> Vec<u8> {
     buf
 }
 
+#[track_caller]
+fn assert_invalid(
+    res: Result<Option<frame::Frame>, FrameError>,
+    kind: frame::Kind,
+    id: u32,
+    error: FrameError,
+) {
+    match res {
+        Ok(Some(frame::Frame::Invalid(frm))) => {
+            assert_eq!(frm.kind(), kind);
+            assert_eq!(frm.stream_id(), id);
+            assert_eq!(frm.error(), error);
+        }
+        res => panic!("expected invalid frame; actual={res:?}"),
+    }
+}
+
 #[test]
 fn repeated_header_names_count_toward_max_headers() {
     let block = |n| {
@@ -394,9 +411,11 @@ fn repeated_header_names_count_toward_max_headers() {
         }
         res => panic!("unexpected result: {res:?}"),
     }
-    assert_eq!(
+    assert_invalid(
         codec.decode(&mut block(4)),
-        Err(FrameError::TooManyHeaders(1.into()))
+        frame::Kind::Headers,
+        1,
+        FrameError::TooManyHeaders(1.into()),
     );
 }
 
@@ -411,7 +430,12 @@ fn decoded_header_list_size_is_limited() {
 
     let codec = Codec::default();
     let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..]);
-    assert_eq!(codec.decode(&mut buf), Err(FrameError::TooManyHeaders(1.into())));
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        1,
+        FrameError::TooManyHeaders(1.into()),
+    );
 
     // the rejected block still updated the hpack state
     let mut block = REQUEST_PSEUDO.to_vec();
@@ -465,6 +489,69 @@ fn continuation_frames_keep_headers_flags() {
             assert!(hdrs.is_end_stream());
             assert!(hdrs.is_end_headers());
             assert_eq!(hdrs.pseudo().path, Some("/".into()));
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn stream_level_header_errors_keep_hpack_state() {
+    // `connection` header is not allowed, the block also adds `x: a` to the
+    // dynamic table
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.extend_from_slice(&[0x40, 1, b'x', 1, b'a']);
+    block.extend(literal_field(b"connection", b"close"));
+
+    let codec = Codec::default();
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        1,
+        FrameError::MalformedMessage,
+    );
+
+    // same block split into CONTINUATION frames, referencing the dynamic table
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.push(0xbe);
+    block.extend(literal_field(b"connection", b"close"));
+    let mut buf = BytesMut::from(&raw_frame(1, 0, 3, &block[..2])[..]);
+    buf.extend_from_slice(&raw_frame(9, END_HEADERS, 3, &block[2..]));
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        3,
+        FrameError::MalformedMessage,
+    );
+
+    // HEADERS depending on itself, with a valid block
+    let mut payload = vec![0, 0, 0, 5, 0];
+    payload.extend_from_slice(&REQUEST_PSEUDO);
+    payload.push(0xbe);
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS | 0x20, 5, &payload)[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        5,
+        FrameError::InvalidDependencyId,
+    );
+
+    // PRIORITY depending on itself
+    let mut buf = BytesMut::from(&raw_frame(2, 0, 7, &[0, 0, 0, 7, 0])[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Priority,
+        7,
+        FrameError::InvalidDependencyId,
+    );
+
+    // the hpack state is still in sync
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.push(0xbe);
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 9, &block)[..]);
+    match codec.decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.fields().get("x").unwrap(), "a");
         }
         res => panic!("unexpected result: {res:?}"),
     }
