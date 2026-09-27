@@ -862,9 +862,6 @@ impl RecvHalfConnection {
                 return Err(Either::Right(stream_errors));
             }
         } else {
-            // Ack settings to the peer
-            self.encode(frame::Settings::ack());
-
             if let Some(max) = settings.max_frame_size() {
                 self.0.codec.set_send_frame_size(max as usize);
                 self.0.remote_frame_size.set(max);
@@ -917,9 +914,14 @@ impl RecvHalfConnection {
                 }
 
                 if !stream_errors.is_empty() {
+                    // settings are applied, stream errors are reported after the ack
+                    self.encode(frame::Settings::ack());
                     return Err(Either::Right(stream_errors));
                 }
             }
+
+            // Ack settings to the peer once they are applied (RFC 9113 §6.5.3)
+            self.encode(frame::Settings::ack());
         }
         Ok(())
     }

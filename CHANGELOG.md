@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Send the SETTINGS ACK after the peer's settings are applied
+
 * The first frame from the peer must be SETTINGS, otherwise the connection is closed
   with `PROTOCOL_ERROR`. Add `ConnectionError::MissingSettings`
 
