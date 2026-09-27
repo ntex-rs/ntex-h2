@@ -1594,13 +1594,18 @@ async fn test_control_error_releases_streams() {
         .await;
     let _ = rx.recv().await.unwrap();
 
-    // stream 1 gets a disconnect message
-    let msg = ntex::time::timeout(Millis(1_000), rx.recv())
-        .await
-        .expect("stream 1 is not released")
-        .unwrap();
-    assert_eq!(msg.id(), frame::StreamId::CLIENT);
-    assert!(matches!(msg.kind, MessageKind::Disconnect(_)), "{msg:?}");
+    // stream 1 gets a disconnect message, stream 3 can get one too
+    ntex::time::timeout(Millis(1_000), async {
+        loop {
+            let msg = rx.recv().await.unwrap();
+            if msg.id() == frame::StreamId::CLIENT {
+                assert!(matches!(msg.kind, MessageKind::Disconnect(_)), "{msg:?}");
+                break;
+            }
+        }
+    })
+    .await
+    .expect("stream 1 is not released");
 
     // the dispatcher completes
     ntex::time::timeout(Millis(1_000), done_rx)

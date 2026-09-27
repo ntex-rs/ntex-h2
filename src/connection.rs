@@ -2228,6 +2228,68 @@ mod tests {
         assert_eq!(conn_window_updates(&srv, &codec), 30_000);
     }
 
+    /// Returns stream 1 window updates, consumes the data received by the client.
+    async fn stream_window_updates(reset: bool) -> i32 {
+        use ntex_codec::Decoder;
+
+        let (io, srv) = ntex::io::testing::IoTest::create();
+        srv.remote_buffer_cap(1024 * 1024);
+        let client = h2::client::SimpleClient::new(
+            Io::new(io, SharedCfg::default()),
+            Scheme::HTTP,
+            "localhost".into(),
+        );
+        srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        sleep(Millis(50)).await;
+
+        let (_stream, recv) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+        let _ = srv.read_any();
+
+        // response headers and 30000 bytes of data
+        srv.write([0, 0, 1, 1, 4, 0, 0, 0, 1, 0x88]);
+        for _ in 0..2 {
+            srv.write([0, 0x3a, 0x98, 0, 0, 0, 0, 0, 1]);
+            srv.write(vec![0; 15_000]);
+        }
+        let _hdrs = recv.recv().await.unwrap();
+        let msg1 = recv.recv().await.unwrap();
+        let msg2 = recv.recv().await.unwrap();
+        assert!(matches!(msg2.kind(), h2::MessageKind::Data(..)));
+
+        if reset {
+            // RST_STREAM(CANCEL)
+            srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
+        }
+        sleep(Millis(50)).await;
+        let _ = srv.read_any();
+
+        drop(msg1);
+        drop(msg2);
+        sleep(Millis(50)).await;
+
+        let codec = Codec::default();
+        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[..]);
+        let mut size = 0;
+        while let Some(frm) = codec.decode(&mut buf).unwrap() {
+            if let frame::Frame::WindowUpdate(upd) = frm
+                && upd.stream_id() == frame::StreamId::CLIENT
+            {
+                size += upd.size_increment();
+            }
+        }
+        size
+    }
+
+    #[ntex::test]
+    async fn test_no_window_update_for_closed_stream() {
+        assert!(stream_window_updates(false).await > 0);
+        assert_eq!(stream_window_updates(true).await, 0);
+    }
+
     #[ntex::test]
     async fn test_capacity_timeout_not_counted_as_reset() {
         use ntex_codec::Decoder;

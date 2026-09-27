@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Stream `WINDOW_UPDATE` is not sent for streams with a closed receive side, consumed data
+  still releases the connection window
+
 * Client does not fail a complete response on `RST_STREAM(NO_ERROR)`, the reset only stops
   the request body and is not counted as a reset
 

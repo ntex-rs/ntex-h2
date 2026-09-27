@@ -320,12 +320,16 @@ impl StreamState {
         );
 
         self.recv_size.set(size);
+
+        // the peer does not send data to a closed stream
         let mut window = self.recv_window.get();
-        if let Some(val) = window.update(
-            size,
-            self.con.config().window_sz,
-            self.con.config().window_sz_threshold,
-        ) {
+        if !self.recv.get().is_closed()
+            && let Some(val) = window.update(
+                size,
+                self.con.config().window_sz,
+                self.con.config().window_sz_threshold,
+            )
+        {
             #[cfg(feature = "trace")]
             log::trace!(
                 "{}: {:?} capacity decresed below threshold {} increase by {val} ({})",
@@ -596,7 +600,7 @@ impl StreamRef {
         // capacity is released immediately
         let len = data.payload().len() as u32;
         let cap = Capacity::new(data.flow_controlled_len(), &self.0);
-        if data.flow_controlled_len() > len {
+        if data.flow_controlled_len() > len && !data.is_end_stream() {
             cap.consume(data.flow_controlled_len() - len);
         }
         if exceeded {
@@ -708,6 +712,9 @@ impl StreamRef {
     }
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, Error<StreamError>> {
+        if self.0.recv.get().is_closed() {
+            return Ok(None);
+        }
         let mut window = match upd.cmp(&0) {
             cmp::Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
             cmp::Ordering::Greater => self
