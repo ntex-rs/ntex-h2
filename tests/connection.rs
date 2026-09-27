@@ -1548,3 +1548,65 @@ async fn test_client_connect_request() {
         kind => panic!("unexpected message: {kind:?}"),
     }
 }
+
+/// A control service failure must release the open streams (F9).
+#[ntex::test]
+async fn test_control_error_releases_streams() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Control, Message, server};
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let (tx, rx) = ntex::channel::mpsc::channel::<Message>();
+    let (done_tx, done_rx) = oneshot::channel();
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            let fail =
+                matches!(msg.kind, MessageKind::Headers { .. }) && msg.id() != frame::StreamId::CLIENT;
+            let _ = tx.send(msg);
+            if fail { Err(()) } else { Ok(()) }
+        })
+        .control(async move |msg: Control<()>| {
+            Err::<ntex_h2::ControlAck, _>(io::Error::other(format!("{msg:?}")))
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+        let _ = done_tx.send(());
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+
+    // stream 1 stays open, the server keeps it
+    let (_snd1, _rcv1) = client
+        .send(Method::POST, "/1".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    let msg = rx.recv().await.unwrap();
+    assert_eq!(msg.id(), frame::StreamId::CLIENT);
+
+    // stream 3 fails in the publish service, the control service fails too
+    let _ = client
+        .send(Method::GET, "/3".into(), HeaderMap::new(), true)
+        .await;
+    let _ = rx.recv().await.unwrap();
+
+    // stream 1 gets a disconnect message
+    let msg = ntex::time::timeout(Millis(1_000), rx.recv())
+        .await
+        .expect("stream 1 is not released")
+        .unwrap();
+    assert_eq!(msg.id(), frame::StreamId::CLIENT);
+    assert!(matches!(msg.kind, MessageKind::Disconnect(_)), "{msg:?}");
+
+    // the dispatcher completes
+    ntex::time::timeout(Millis(1_000), done_rx)
+        .await
+        .expect("dispatcher did not complete")
+        .unwrap();
+}

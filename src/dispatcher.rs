@@ -253,6 +253,13 @@ where
                 control(Control::peer_gone(err), &self.inner).await
             }
             DispatchItem::Stop(DispReason::Service) => {
+                // the dispatcher does not deliver any further items, release the
+                // open streams so pending handlers do not block the shutdown
+                let streams = self.connection.disconnect();
+                self.handle_connection_error(
+                    streams,
+                    Error::new(OperationError::Disconnected, self.connection.service()),
+                );
                 self.inner.connection.encode(
                     GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(self.inner.last_stream_id),
                 );

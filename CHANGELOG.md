@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Control service failure fails open streams and publishes `Disconnect` for them, pending
+  handlers do not block the connection shutdown
+
 * PRIORITY frame with an invalid length is a stream error `FRAME_SIZE_ERROR`
 
 * Accept `CONNECT` requests without `:scheme` and `:path`, reject them if present. Client omits
