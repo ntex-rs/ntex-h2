@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Client ignores late `HEADERS` for its closed streams without updating the last peer stream id,
+  `HEADERS` for an idle client stream is a connection error
+
 * Late frames for closed streams are not connection errors, `WINDOW_UPDATE` is ignored, `DATA`
   is reset with `STREAM_CLOSED`, trailers for a reset stream are ignored, frames for idle
   streams are still connection errors

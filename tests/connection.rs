@@ -1893,3 +1893,49 @@ async fn test_remote_reset_is_published() {
         "{msg:?}"
     );
 }
+
+/// Late HEADERS for closed client streams do not affect the connection,
+/// HEADERS for an idle client stream is a connection error (N5).
+#[ntex::test]
+async fn test_client_late_headers_for_closed_streams() {
+    let (client, srv) = limited_client(10);
+    sleep(Millis(50)).await;
+
+    // streams 1 and 3 are complete
+    let mut streams = Vec::new();
+    for _ in 0..2 {
+        streams.push(
+            client
+                .send(Method::GET, "/".into(), HeaderMap::new(), true)
+                .await
+                .unwrap(),
+        );
+    }
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 1, 0x88]);
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 3, 0x88]);
+    for (_, rcv) in &streams {
+        let msg = rcv.recv().await.unwrap();
+        assert!(matches!(msg.kind, MessageKind::Headers { eof: true, .. }));
+    }
+    drop(streams);
+    sleep(Millis(50)).await;
+    assert_eq!(client.active_streams(), 0);
+
+    // late HEADERS for stream 3, then for stream 1
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 3, 0x88]);
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 1, 0x88]);
+    sleep(Millis(50)).await;
+    assert!(!client.is_closed());
+    let (_snd, rcv) = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 5, 0x88]);
+    let msg = rcv.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { eof: true, .. }));
+
+    // HEADERS for idle client stream
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 101, 0x88]);
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+}

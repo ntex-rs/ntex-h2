@@ -687,6 +687,24 @@ impl RecvHalfConnection {
             }
         }
 
+        // a stream opened by the client itself, it is closed or idle,
+        // `last_id` tracks streams opened by the peer only
+        if !is_server && id.is_client_initiated() {
+            if id >= self.0.next_stream_id.get() && self.0.err_unknown_streams() {
+                return Err(Either::Left(Error::new(
+                    ConnectionError::InvalidStreamId(
+                        "Invalid id in received headers frame (idle stream)",
+                    ),
+                    self.service(),
+                )));
+            }
+            // frames sent before the peer saw the reset are ignored (RFC 9113 §5.1)
+            if !self.0.local_pending_reset.is_pending(id) {
+                self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
+            }
+            return Ok(None);
+        }
+
         // 3. Validation of RFC 5.1.1 for NEW streams
         // If we've arrived here, the stream does NOT exist on our map.
         // Therefore, it must be a newly created stream. The ID must be higher than the last one viewed.
