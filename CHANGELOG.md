@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* `Codec::set_send_frame_size()` panics unless the size is between 16,384 and 16,777,215,
+  a zero size made the encoder loop forever
+
 * Count DATA frame padding toward flow control, add `frame::Data::flow_controlled_len()`
 
 * Update to ntex-codec 2.0

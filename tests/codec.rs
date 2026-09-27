@@ -327,3 +327,26 @@ fn read_goaway_with_debug_data() {
 
 //     assert!(srv.accept().await.is_none());
 // }
+
+// ===== SETTINGS =====
+
+#[test]
+#[should_panic(expected = "frame size must be between 16384 and 16777215")]
+fn send_frame_size_zero_is_rejected() {
+    Codec::default().set_send_frame_size(0);
+}
+
+#[test]
+#[should_panic(expected = "frame size must be between 16384 and 16777215")]
+fn send_frame_size_below_minimum_is_rejected() {
+    Codec::default().set_send_frame_size(frame::DEFAULT_MAX_FRAME_SIZE as usize - 1);
+}
+
+#[test]
+fn send_frame_size_bounds_are_accepted() {
+    let codec = Codec::default();
+    codec.set_send_frame_size(frame::DEFAULT_MAX_FRAME_SIZE as usize);
+    assert_eq!(codec.send_frame_size(), frame::DEFAULT_MAX_FRAME_SIZE);
+    codec.set_send_frame_size(frame::MAX_MAX_FRAME_SIZE as usize);
+    assert_eq!(codec.send_frame_size(), frame::MAX_MAX_FRAME_SIZE);
+}

@@ -121,9 +121,12 @@ impl Codec {
     ///
     /// # Panics
     ///
-    /// Panics if size is greater than `16_777_215`.
+    /// Panics unless size is between `16_384` and `16_777_215`.
     pub fn set_send_frame_size(&self, val: usize) {
-        assert!(val <= frame::MAX_MAX_FRAME_SIZE as usize);
+        assert!(
+            (frame::DEFAULT_MAX_FRAME_SIZE as usize..=frame::MAX_MAX_FRAME_SIZE as usize).contains(&val),
+            "frame size must be between 16384 and 16777215"
+        );
         self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
     }
 
