@@ -5,6 +5,9 @@ use ntex_util::time::Seconds;
 pub(crate) const MAX_WINDOW_SIZE: i32 = i32::MAX;
 pub(crate) const DEFAULT_MAX_HEADERS: usize = 96;
 pub(crate) const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 256;
+// assumed peer limit until its SETTINGS arrive, RFC 9113 §6.5.2 recommends
+// no smaller than 100
+pub(crate) const DEFAULT_REMOTE_MAX_CONCURRENT_STREAMS: u32 = 100;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
 pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;

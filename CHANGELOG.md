@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Client assumes a limit of 100 concurrent streams until the peer's SETTINGS arrive,
+  instead of no limit
+
 * Wake streams waiting for send capacity when `SETTINGS_INITIAL_WINDOW_SIZE` grows the
   stream windows, senders stalled until the capacity timeout
 

@@ -207,7 +207,10 @@ impl SimpleClient {
         &self.0.authority
     }
 
-    /// Returns the peer's maximum concurrent stream count, if known.
+    /// Returns the peer's maximum concurrent stream count.
+    ///
+    /// Until the peer's settings are received the limit is assumed to be 100,
+    /// `None` means the peer has no limit.
     pub fn max_streams(&self) -> Option<u32> {
         self.0.con.max_streams()
     }

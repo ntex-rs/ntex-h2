@@ -23,7 +23,7 @@ pub(crate) struct RecvHalfConnection(Rc<ConnectionState>);
 
 bitflags::bitflags! {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub(crate) struct ConnectionFlags: u8 {
+    pub(crate) struct ConnectionFlags: u16 {
         const SERVER                  = 0b0000_0001;
         const SETTINGS_PROCESSED      = 0b0000_0010;
         const UNKNOWN_STREAMS         = 0b0000_0100;
@@ -32,6 +32,7 @@ bitflags::bitflags! {
         const STREAM_REFUSED          = 0b0010_0000;
         const KA_TIMER                = 0b0100_0000;
         const RECV_PONG               = 0b1000_0000;
+        const REMOTE_SETTINGS         = 0b0001_0000_0000;
     }
 }
 
@@ -145,7 +146,7 @@ impl Connection {
             on_capacity: Cell::new(None),
             next_stream_id: Cell::new(StreamId::CLIENT),
             local_config: config,
-            local_max_concurrent_streams: Cell::new(None),
+            local_max_concurrent_streams: Cell::new(Some(consts::DEFAULT_REMOTE_MAX_CONCURRENT_STREAMS)),
             local_pending_reset: Pending::default(),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
@@ -865,8 +866,13 @@ impl RecvHalfConnection {
             if let Some(max) = settings.header_table_size() {
                 self.0.codec.set_send_header_table_size(max as usize);
             }
-            if let Some(max) = settings.max_concurrent_streams() {
-                self.0.local_max_concurrent_streams.set(Some(max));
+            // until the first SETTINGS the peer's limit is assumed, without
+            // the setting the limit is removed
+            let first = !self.flags().contains(ConnectionFlags::REMOTE_SETTINGS);
+            self.set_flags(ConnectionFlags::REMOTE_SETTINGS);
+            let max = settings.max_concurrent_streams();
+            if max.is_some() || first {
+                self.0.local_max_concurrent_streams.set(max);
                 for tx in mem::take(&mut *self.0.readiness.borrow_mut()) {
                     let _ = tx.send(());
                 }
@@ -1348,6 +1354,63 @@ mod tests {
 
         let msg = rcv.recv().await.unwrap();
         assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
+    }
+
+    /// Until the peer's SETTINGS arrive, the client assumes a limit of
+    /// 100 concurrent streams.
+    #[ntex::test]
+    async fn test_assumed_max_concurrent_streams() {
+        let srv = test::server(async |()| {
+            fn_service(async move |io: Io<_>| {
+                let codec = Codec::default();
+                let mut preface = [0; 24];
+                io.read_exact(&mut preface).await.unwrap();
+
+                let mut streams = 0;
+                while let Ok(Some(frm)) = io.recv(&codec).await {
+                    if let frame::Frame::Headers(_) = frm {
+                        streams += 1;
+                        if streams == 100 {
+                            // settings without a concurrency limit
+                            sleep(Millis(250)).await;
+                            io.send(frame::Settings::default().into(), &codec).await.unwrap();
+                        }
+                    }
+                }
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        assert_eq!(client.max_streams(), Some(100));
+
+        let mut streams = Vec::new();
+        for _ in 0..100 {
+            streams.push(
+                client
+                    .send(Method::GET, "/".into(), HeaderMap::new(), true)
+                    .await
+                    .unwrap(),
+            );
+        }
+        assert!(!client.is_ready());
+
+        // waits for the peer's settings
+        let start = std::time::Instant::now();
+        let stream = ntex::time::timeout(
+            Millis(2_000),
+            client.send(Method::GET, "/".into(), HeaderMap::new(), true),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        streams.push(stream);
+
+        assert_eq!(client.max_streams(), None);
+        assert!(client.is_ready());
     }
 
     #[ntex::test]
