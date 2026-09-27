@@ -69,7 +69,7 @@ ntex = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-net = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-bytes = { git = "https://github.com/ntex-rs/ntex.git", branch = "bytes-optimizations" }
+ntex-bytes = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-codec = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-server = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-dispatcher = { git = "https://github.com/ntex-rs/ntex.git" }

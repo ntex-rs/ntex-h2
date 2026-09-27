@@ -280,12 +280,15 @@ where
     Err: 'static,
     PErr: 'static,
 {
-    let result = if stream.is_remote() {
+    // the final message of a reset stream is always published
+    let result = if stream.is_remote() && !stream.is_reset() {
         let result = {
             let fut = inner.publish.call(msg);
             let mut pinned = std::pin::pin!(fut);
             future::poll_fn(|cx| {
-                if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
+                // the stream is reset during the call, the request body
+                // can outlive the response
+                if stream.poll_reset(cx).is_ready() {
                     log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
                     return Poll::Ready(None);
                 }

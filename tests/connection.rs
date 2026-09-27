@@ -1795,3 +1795,101 @@ async fn test_no_error_reset_after_complete_response() {
     assert!(stream.send_payload("chunk", true).await.is_err());
     assert!(!client.is_closed());
 }
+
+/// Request body sent after a complete response reaches the application.
+#[ntex::test]
+async fn test_request_body_after_response_is_published() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, server};
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let (tx, rx) = ntex::channel::mpsc::channel::<Message>();
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            if matches!(msg.kind, MessageKind::Headers { .. }) {
+                // complete response, the request body is still open
+                msg.stream()
+                    .send_response(http::StatusCode::OK, HeaderMap::new(), true)
+                    .unwrap();
+            }
+            let _ = tx.send(msg);
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let (snd, rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    let msg = rcv.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { eof: true, .. }));
+
+    snd.send_payload("chunk", false).await.unwrap();
+    snd.send_payload("", true).await.unwrap();
+
+    let recv = async {
+        let mut msgs = Vec::new();
+        while msgs.len() < 3 {
+            msgs.push(rx.recv().await.unwrap().kind);
+        }
+        msgs
+    };
+    let msgs = ntex::time::timeout(Millis(1_000), recv)
+        .await
+        .expect("request body is not published");
+    assert!(matches!(msgs[1], MessageKind::Data(ref d, _) if d == "chunk"));
+    assert!(matches!(msgs[2], MessageKind::Eof(_)));
+}
+
+/// Remote reset of a server stream publishes the final error message.
+#[ntex::test]
+async fn test_remote_reset_is_published() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, StreamEof, server};
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let (tx, rx) = ntex::channel::mpsc::channel::<Message>();
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            let _ = tx.send(msg);
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let (snd, _rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    let msg = rx.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { .. }));
+
+    snd.reset(Reason::CANCEL);
+    let msg = ntex::time::timeout(Millis(1_000), rx.recv())
+        .await
+        .expect("reset is not published")
+        .unwrap();
+    assert!(
+        matches!(msg.kind, MessageKind::Eof(StreamEof::Error(_))),
+        "{msg:?}"
+    );
+}

@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* A publish call of a remote stream is cancelled only if the stream is reset during the call,
+  request data after a complete response and the final message of a reset stream are published
+
 * Document that a remote stream reset outside of a publish call does not get the final message
 
 * Stream `WINDOW_UPDATE` is not sent for streams with a closed receive side, consumed data

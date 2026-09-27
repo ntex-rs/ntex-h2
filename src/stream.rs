@@ -968,6 +968,21 @@ impl StreamRef {
         }
     }
 
+    /// Checks if the stream is reset or failed.
+    pub(crate) fn is_reset(&self) -> bool {
+        self.0.check_error().is_err() || self.0.con.check_error().is_err()
+    }
+
+    /// Polls until the stream is reset or failed.
+    pub(crate) fn poll_reset(&self, cx: &Context<'_>) -> Poll<()> {
+        if self.is_reset() {
+            Poll::Ready(())
+        } else {
+            self.0.send_reset.register(cx.waker());
+            Poll::Pending
+        }
+    }
+
     /// Polls until the local send side closes or the stream fails.
     pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
         if self.0.send.get().is_closed() {
