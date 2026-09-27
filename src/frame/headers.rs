@@ -424,8 +424,14 @@ impl fmt::Debug for HeadersFlag {
 
 // ===== HeaderBlock =====
 
+/// Initial capacity of the header encoding buffer.
+const HDRS_BUF_SIZE: usize = 1024;
+
+/// A larger header encoding buffer is released after use.
+const HDRS_BUF_MAX_RETAINED: usize = 64 * 1024;
+
 thread_local! {
-    static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(1024));
+    static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(HDRS_BUF_SIZE));
 }
 
 impl HeaderBlock {
@@ -553,6 +559,11 @@ impl HeaderBlock {
                     break;
                 }
             }
+
+            // do not keep the buffer of a rare large header block
+            if hpack.capacity() > HDRS_BUF_MAX_RETAINED {
+                **hpack = BytesMut::with_capacity(HDRS_BUF_SIZE);
+            }
         });
     }
 }
@@ -604,5 +615,36 @@ mod test {
     fn huff_decode(src: &[u8]) -> Bytes {
         let mut buf = BytesMut::new();
         huffman::decode(src, &mut buf).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_http::HeaderValue;
+
+    use super::*;
+
+    fn encode(value_len: usize) -> BytePages {
+        let mut fields = HeaderMap::new();
+        fields.insert(
+            HeaderName::from_static("x-large"),
+            HeaderValue::from_str(&"a".repeat(value_len)).unwrap(),
+        );
+        let hdrs = Headers::new(StreamId::from(1), PseudoHeaders::default(), fields, false);
+        let mut dst = BytePages::default();
+        hdrs.encode(&mut hpack::Encoder::default(), &mut dst, 16_384);
+        dst
+    }
+
+    #[test]
+    fn large_header_buffer_is_released() {
+        encode(100);
+        let cap = HDRS_BUF.with(|b| b.borrow().capacity());
+        assert!(cap <= HDRS_BUF_MAX_RETAINED);
+
+        let dst = encode(256 * 1024);
+        assert!(dst.len() > HDRS_BUF_MAX_RETAINED);
+        let cap = HDRS_BUF.with(|b| b.borrow().capacity());
+        assert!(cap <= HDRS_BUF_MAX_RETAINED, "retained {cap} bytes");
     }
 }
