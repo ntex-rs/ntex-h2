@@ -680,6 +680,120 @@ async fn test_padding_is_flow_controlled() {
     assert!(upd.size_increment() > 255);
 }
 
+/// Starts a server that never reads request payloads.
+async fn start_idle_server(cfg: ServiceConfig) -> test::TestServer {
+    test::server_with_config(
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |_: http::Request| {
+                    sleep(Millis(10_000)).await;
+                    Ok::<_, io::Error>(Response::Ok().build())
+                }),
+            )
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(cfg),
+    )
+}
+
+/// Opens a raw connection and a POST stream, acknowledges the server settings.
+async fn open_raw_stream(srv: &test::TestServer) -> (IoBoxed, Codec) {
+    let io = connect(srv.addr()).await;
+    let codec = Codec::default();
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    io.encode(frame::Settings::default().into(), &codec).unwrap();
+
+    // wait for the server settings and the ack of ours
+    let mut settings = false;
+    let mut ack = false;
+    while !(settings && ack) {
+        if let frame::Frame::Settings(s) = io.recv(&codec).await.unwrap().unwrap() {
+            if s.is_ack() {
+                ack = true;
+            } else {
+                settings = true;
+                io.encode(frame::Settings::ack().into(), &codec).unwrap();
+            }
+        }
+    }
+
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::POST),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo, HeaderMap::new(), false);
+    io.send(hdrs.into(), &codec).await.unwrap();
+    // let the server process the settings ack and the stream
+    sleep(Millis(50)).await;
+    (io, codec)
+}
+
+/// Sends `count` DATA frames of `size` bytes on the client stream.
+async fn send_data(io: &IoBoxed, codec: &Codec, count: usize, size: usize) {
+    for _ in 0..count {
+        let data = frame::Data::new(frame::StreamId::CLIENT, Bytes::from(vec![b'x'; size]));
+        io.encode(data.into(), codec).unwrap();
+    }
+    io.flush(true).await.unwrap();
+}
+
+/// Data beyond the stream receive window resets the stream.
+#[ntex::test]
+async fn test_stream_recv_window_exceeded() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    // 80 KiB exceeds the 64 KiB stream window, not the 1 MiB connection window
+    send_data(&io, &codec, 5, 16_384).await;
+
+    let rst = ntex::time::timeout(Millis(2000), async {
+        loop {
+            if let frame::Frame::Reset(rst) = io.recv(&codec).await.unwrap().unwrap() {
+                return rst;
+            }
+        }
+    })
+    .await
+    .expect("stream is not reset");
+    assert_eq!(rst.stream_id(), frame::StreamId::CLIENT);
+    assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
+}
+
+/// Data beyond the connection receive window closes the connection.
+#[ntex::test]
+async fn test_connection_recv_window_exceeded() {
+    let srv = start_idle_server(
+        ServiceConfig::new()
+            .set_initial_window_size(1_048_576)
+            .set_initial_connection_window_size(65_535)
+            .set_max_frame_size(1_048_576),
+    )
+    .await;
+    let (io, codec) = open_raw_stream(&srv).await;
+    codec.set_send_frame_size(1_048_576);
+
+    // the connection window is updated as data arrives, a single 80 KiB frame
+    // exceeds the 64 KiB connection window, not the 1 MiB stream window
+    send_data(&io, &codec, 1, 81_920).await;
+
+    let res = ntex::time::timeout(Millis(2000), async {
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::GoAway(res) => return res,
+                frame::Frame::Reset(rst) => panic!("unexpected {rst:?}"),
+                _ => (),
+            }
+        }
+    })
+    .await
+    .expect("connection is not closed");
+    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+}
+
 #[ntex::test]
 async fn test_stream_cancel() {
     let srv = start_server().await;

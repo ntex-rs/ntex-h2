@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+* Reject DATA frames that exceed the receive window, with a `FLOW_CONTROL_ERROR` stream
+  reset or connection error, add `StreamError::RecvWindowExceeded` and
+  `ConnectionError::RecvWindowExceeded`
+
 * `Codec::set_send_frame_size()` panics unless the size is between 16,384 and 16,777,215,
   a zero size made the encoder loop forever
 

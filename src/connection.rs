@@ -739,6 +739,13 @@ impl RecvHalfConnection {
         &self,
         frm: frame::Data,
     ) -> Result<Option<(StreamRef, Message)>, EitherError> {
+        if frm.flow_controlled_len().cast_signed() > self.0.recv_window.get().window_size {
+            return Err(Either::Left(Error::new(
+                ConnectionError::RecvWindowExceeded,
+                self.service(),
+            )));
+        }
+
         if let Some(stream) = self.query(frm.stream_id()) {
             match stream.recv_data(frm) {
                 Ok(item) => Ok(item.map(move |msg| (stream, msg))),

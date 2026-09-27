@@ -529,12 +529,19 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, Error<StreamError>> {
+        // the window can be negative after a SETTINGS change, the peer must
+        // not send data until it is positive again
+        let exceeded = data.flow_controlled_len().cast_signed() > self.0.recv_window.get().window_size;
+
         // padding counts toward flow control, it is not delivered, so its
         // capacity is released immediately
         let len = data.payload().len() as u32;
         let cap = Capacity::new(data.flow_controlled_len(), &self.0);
         if data.flow_controlled_len() > len {
             cap.consume(data.flow_controlled_len() - len);
+        }
+        if exceeded {
+            return Err(Error::new(StreamError::RecvWindowExceeded, self.service()));
         }
 
         #[cfg(feature = "trace")]

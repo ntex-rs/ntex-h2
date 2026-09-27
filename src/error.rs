@@ -41,6 +41,9 @@ pub enum ConnectionError {
     /// A flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowValueOverflow,
+    /// The peer sent more data than the connection receive window allows.
+    #[error("Connection receive window is exceeded")]
+    RecvWindowExceeded,
     /// The peer exceeded the concurrent stream limit.
     #[error("Max concurrent streams count achieved")]
     ConcurrencyOverflow,
@@ -92,6 +95,9 @@ impl ConnectionError {
             ConnectionError::WindowValueOverflow => {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Updated value for window is overflowed")
             }
+            ConnectionError::RecvWindowExceeded => {
+                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Connection receive window is exceeded")
+            }
             ConnectionError::ConcurrencyOverflow => {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Max concurrent streams count achieved")
             }
@@ -123,6 +129,7 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::UnexpectedPseudo(_) => "h2-conn-UnexpectedPseudo",
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
             ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
+            ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
             ConnectionError::ConcurrencyOverflow => "h2-conn-ConcurrencyOverflow",
             ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
             ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
@@ -161,6 +168,9 @@ pub enum StreamError {
     /// The stream flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowOverflowed,
+    /// The peer sent more data than the stream receive window allows.
+    #[error("Stream receive window is exceeded")]
+    RecvWindowExceeded,
     /// A stream `WINDOW_UPDATE` increment was zero.
     #[error("Zero value for window")]
     WindowZeroUpdateValue,
@@ -189,7 +199,9 @@ impl StreamError {
     pub(crate) fn reason(&self) -> Reason {
         match self {
             StreamError::Closed => Reason::STREAM_CLOSED,
-            StreamError::WindowOverflowed | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
+            StreamError::WindowOverflowed
+            | StreamError::RecvWindowExceeded
+            | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
             StreamError::Idle(_)
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
@@ -207,6 +219,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::Idle(_) => "h2-stream-Idle",
             StreamError::Closed => "h2-stream-Closed",
             StreamError::WindowOverflowed => "h2-stream-WindowOverflowed",
+            StreamError::RecvWindowExceeded => "h2-stream-RecvWindowExceeded",
             StreamError::WindowZeroUpdateValue => "h2-stream-WindowZeroUpdateValue",
             StreamError::TrailersWithoutEos => "h2-stream-TrailersWithoutEos",
             StreamError::InvalidContentLength => "h2-stream-InvalidContentLength",
