@@ -1039,7 +1039,15 @@ impl RecvHalfConnection {
                 self.service(),
             )))
         } else if let Some(stream) = self.query(id) {
+            // the response is complete, the server stops the request body,
+            // the final message is already published
+            let complete = !stream.is_remote()
+                && stream.recv_state().is_closed()
+                && frm.reason() == frame::Reason::NO_ERROR;
             stream.recv_rst_stream(frm);
+            if complete {
+                return Ok(());
+            }
             self.update_rst_count().map_err(Either::Left)?;
 
             Err(Either::Right(StreamErrorInner::new(

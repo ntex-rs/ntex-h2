@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Client does not fail a complete response on `RST_STREAM(NO_ERROR)`, the reset only stops
+  the request body and is not counted as a reset
+
 * Released stream slots wake a waiting request per free slot, a dropped woken request passes
   the wake up to the next waiting request
 

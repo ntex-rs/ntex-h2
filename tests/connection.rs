@@ -560,16 +560,17 @@ async fn test_stale_capacity_timeout_ignored() {
 
 #[ntex::test]
 async fn test_send_after_response() {
-    let srv = start_server().await;
-    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
-    sleep(Millis(150)).await;
+    let (client, srv) = limited_client(10);
+    sleep(Millis(50)).await;
 
-    // server responds after the first chunk
     let (stream, recv_stream) = client
         .send(Method::POST, "/".into(), HeaderMap::default(), false)
         .await
         .unwrap();
     stream.send_payload("chunk", false).await.unwrap();
+
+    // complete response, HEADERS(:status 200, END_STREAM)
+    srv.write([0, 0, 1, 1, 5, 0, 0, 0, 1, 0x88]);
     while recv_stream.recv().await.is_some() {}
     drop(recv_stream);
     sleep(Millis(50)).await;
@@ -755,7 +756,7 @@ async fn test_refuse_on_overflow() {
 /// though the padding is not delivered.
 #[ntex::test]
 async fn test_padding_is_flow_controlled() {
-    let srv = start_server().await;
+    let srv = start_idle_server(ServiceConfig::new()).await;
     let io = connect(srv.addr()).await;
     let codec = Codec::default();
     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
@@ -1755,4 +1756,37 @@ async fn test_dropped_stream_waiter_passes_wakeup() {
         .await
         .expect("waiter b is not woken")
         .unwrap();
+}
+
+/// `RST_STREAM(NO_ERROR)` after a complete response stops the request body,
+/// the response is not failed (N4).
+#[ntex::test]
+async fn test_no_error_reset_after_complete_response() {
+    let (client, srv) = limited_client(10);
+    sleep(Millis(50)).await;
+
+    let (stream, recv_stream) = client
+        .send(Method::POST, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+
+    // HEADERS(:status 200), DATA("ok", END_STREAM), RST_STREAM(NO_ERROR)
+    srv.write([0, 0, 1, 1, 4, 0, 0, 0, 1, 0x88]);
+    srv.write([0, 0, 2, 0, 1, 0, 0, 0, 1, b'o', b'k']);
+    srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+
+    let msg = recv_stream.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { eof: false, .. }));
+    let msg = recv_stream.recv().await.unwrap();
+    assert!(
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref d)) if d == "ok"),
+        "{msg:?}"
+    );
+    assert!(recv_stream.recv().await.is_none());
+
+    // request body is stopped, the connection is not affected
+    assert_eq!(client.active_streams(), 0);
+    assert!(stream.send_payload("chunk", true).await.is_err());
+    assert!(!client.is_closed());
 }
