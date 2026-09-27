@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Requests waiting for a stream slot fail on disconnect, keep-alive and read timeouts and
+  graceful disconnect instead of waiting forever
+
 * Capacity timeout resets the stream with `CANCEL` and does not count toward the stream resets
   limit. Default capacity timeout is 5 seconds
 

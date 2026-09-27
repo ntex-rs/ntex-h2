@@ -347,10 +347,12 @@ impl Connection {
                 } else {
                     let (tx, rx) = self.0.pool.channel();
                     self.0.readiness.borrow_mut().push_back(tx);
-                    match rx.await {
-                        Ok(()) => continue,
-                        Err(_) => Err(Error::new(OperationError::Disconnected, self.service())),
+                    if rx.await.is_ok() {
+                        continue;
                     }
+                    // waiters are dropped on connection failure or disconnect
+                    self.check_error_with_disconnect()?;
+                    Err(Error::new(OperationError::Disconnected, self.service()))
                 }
             } else {
                 Ok(())
@@ -359,6 +361,7 @@ impl Connection {
     }
 
     pub(crate) fn disconnect_when_ready(&self) {
+        self.0.readiness.borrow_mut().clear();
         if self.0.streams.borrow().is_empty() && self.0.reserved_streams.get() == 0 {
             log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
@@ -1075,6 +1078,7 @@ impl RecvHalfConnection {
     pub(crate) fn ping_timeout(&self) -> HashMap<StreamId, StreamRef> {
         let err: Error<OperationError> = Error::new(ConnectionError::KeepaliveTimeout, self.service());
         self.0.error.set(Some(err.clone()));
+        self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
@@ -1090,6 +1094,7 @@ impl RecvHalfConnection {
     pub(crate) fn read_timeout(&self) -> HashMap<StreamId, StreamRef> {
         let err: Error<OperationError> = Error::new(ConnectionError::ReadTimeout, self.service());
         self.0.error.set(Some(err.clone()));
+        self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
@@ -1123,6 +1128,7 @@ impl RecvHalfConnection {
                 .error
                 .set(Some(Error::new(OperationError::Disconnected, self.service())));
         }
+        self.0.readiness.borrow_mut().clear();
 
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {

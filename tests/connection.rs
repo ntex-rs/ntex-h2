@@ -1607,3 +1607,74 @@ async fn test_control_error_releases_streams() {
         .expect("dispatcher did not complete")
         .unwrap();
 }
+
+/// Client limited to `max` concurrent streams by the peer.
+fn limited_client(max: u8) -> (Rc<SimpleClient>, ntex::io::testing::IoTest) {
+    let (io, srv) = ntex::io::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = SimpleClient::new(
+        ntex::io::Io::new(io, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, max]);
+    (Rc::new(client), srv)
+}
+
+/// A request waiting for a stream slot fails when the connection is closed (N1).
+#[ntex::test]
+async fn test_stream_waiter_fails_on_disconnect() {
+    let (client, srv) = limited_client(1);
+    sleep(Millis(50)).await;
+    let (_stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+
+    let c = client.clone();
+    let waiter = ntex::rt::spawn(async move {
+        c.send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await
+            .map(|_| ())
+    });
+    sleep(Millis(50)).await;
+
+    srv.close().await;
+    let res = ntex::time::timeout(Millis(1_000), waiter)
+        .await
+        .expect("waiter is not woken")
+        .unwrap();
+    assert!(matches!(
+        &*res.unwrap_err(),
+        ntex_h2::OperationError::Disconnected
+    ));
+}
+
+/// A request waiting for a stream slot fails on graceful disconnect (N1).
+#[ntex::test]
+async fn test_stream_waiter_fails_on_graceful_disconnect() {
+    let (client, _srv) = limited_client(1);
+    sleep(Millis(50)).await;
+    let (_stream, _recv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+
+    let c = client.clone();
+    let waiter = ntex::rt::spawn(async move {
+        c.send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await
+            .map(|_| ())
+    });
+    sleep(Millis(50)).await;
+
+    client.close();
+    let res = ntex::time::timeout(Millis(1_000), waiter)
+        .await
+        .expect("waiter is not woken")
+        .unwrap();
+    assert!(matches!(
+        &*res.unwrap_err(),
+        ntex_h2::OperationError::Disconnecting
+    ));
+}
