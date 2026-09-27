@@ -1352,10 +1352,7 @@ async fn test_capacity_timeout() {
     let res = io.recv(&codec).await.unwrap().unwrap(); // reset on timeout
     assert_eq!(
         res,
-        frame::Frame::Reset(frame::Reset::new(
-            frame::StreamId::CLIENT,
-            Reason::FLOW_CONTROL_ERROR,
-        ))
+        frame::Frame::Reset(frame::Reset::new(frame::StreamId::CLIENT, Reason::CANCEL,))
     );
 
     // success

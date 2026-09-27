@@ -499,21 +499,9 @@ impl Connection {
         self.0.pings_count.get()
     }
 
+    /// Local capacity timeouts do not count toward the peer's reset limit.
     pub(crate) fn capacity_timeout(&self, id: StreamId) {
         self.0.drop_stream(id);
-
-        if let Err(err) = self.0.update_rst_count() {
-            let err = err.map(OperationError::Connection);
-            self.0.error.set(Some(err.clone()));
-
-            let streams = mem::take(&mut *self.0.streams.borrow_mut());
-            for stream in streams.values() {
-                stream.set_failed_stream(err.clone());
-            }
-
-            self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
-            self.0.io.close();
-        }
     }
 }
 
@@ -1825,7 +1813,7 @@ mod tests {
 
         let id2 = id.next_id().unwrap();
         let rst = open(id2, "/timeout").await;
-        assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
+        assert_eq!(rst.reason(), Reason::CANCEL);
 
         sleep(Millis(100)).await;
         let events = events.lock().unwrap().clone();
@@ -2201,5 +2189,35 @@ mod tests {
         drop(msg2);
         sleep(Millis(50)).await;
         assert_eq!(conn_window_updates(&srv, &codec), 30_000);
+    }
+
+    #[ntex::test]
+    async fn test_capacity_timeout_not_counted_as_reset() {
+        use ntex_codec::Decoder;
+
+        let (client, srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let con = stream.stream().0.con.clone();
+
+        assert!(matches!(
+            &*stream.send_capacity().await.unwrap_err(),
+            h2::OperationError::Stream(h2::StreamError::CapacityTimeout)
+        ));
+        assert_eq!(con.0.rst_count.get(), 0);
+
+        // the stream is cancelled
+        sleep(Millis(50)).await;
+        let codec = Codec::default();
+        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[PREFACE.len()..]);
+        let rst = loop {
+            if let frame::Frame::Reset(rst) = codec.decode(&mut buf).unwrap().unwrap() {
+                break rst;
+            }
+        };
+        assert_eq!(rst.stream_id(), stream.id());
+        assert_eq!(rst.reason(), Reason::CANCEL);
     }
 }

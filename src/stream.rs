@@ -907,7 +907,7 @@ impl StreamRef {
             self.0.tag(),
             self.0.id,
         );
-        self.reset_with(Reason::FLOW_CONTROL_ERROR, StreamError::CapacityTimeout);
+        self.reset_with(Reason::CANCEL, StreamError::CapacityTimeout);
         self.0.failed(Error::new(
             OperationError::Stream(StreamError::CapacityTimeout),
             self.service(),

@@ -203,9 +203,8 @@ impl StreamError {
     pub(crate) fn reason(&self) -> Reason {
         match self {
             StreamError::Closed => Reason::STREAM_CLOSED,
-            StreamError::WindowOverflowed
-            | StreamError::RecvWindowExceeded
-            | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
+            StreamError::WindowOverflowed | StreamError::RecvWindowExceeded => Reason::FLOW_CONTROL_ERROR,
+            StreamError::CapacityTimeout => Reason::CANCEL,
             StreamError::InvalidFrame(err) => err.reason(),
             StreamError::Idle(_)
             | StreamError::MissingPseudo(_)

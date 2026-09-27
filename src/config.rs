@@ -307,7 +307,10 @@ impl ServiceConfig {
     #[must_use]
     /// Sets the send-capacity availability timeout.
     ///
-    /// A zero duration disables the timeout. The default is 3 seconds.
+    /// A stream that waits for send capacity longer than the timeout is reset with
+    /// `CANCEL`, the waiter fails with `StreamError::CapacityTimeout`.
+    ///
+    /// A zero duration disables the timeout. The default is 5 seconds.
     pub fn set_capacity_timeout(mut self, timeout: Seconds) -> Self {
         if timeout.is_zero() {
             self.capacity_timeout = None;

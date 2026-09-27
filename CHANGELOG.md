@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Capacity timeout resets the stream with `CANCEL` and does not count toward the stream resets
+  limit. Default capacity timeout is 5 seconds
+
 * Connection receive window is released when received data is consumed, the window bounds
   unconsumed data of all streams. Default connection window size is 4 MiB
 
