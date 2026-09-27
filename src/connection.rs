@@ -40,6 +40,8 @@ struct ConnectionState {
     codec: Codec,
     send_window: Cell<Window>,
     recv_window: Cell<Window>,
+    // received but not yet consumed data
+    recv_size: Cell<u32>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
     active_remote_streams: Cell<u32>,
@@ -136,6 +138,7 @@ impl Connection {
             io: io.clone(),
             send_window: Cell::new(send_window),
             recv_window: Cell::new(recv_window),
+            recv_size: Cell::new(0),
             streams: RefCell::new(HashMap::default()),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
@@ -271,9 +274,13 @@ impl Connection {
         self.0.send_window.set(self.0.send_window.get().dec(cap));
     }
 
-    /// data received, update recevice window size if needed
+    /// data received, decrease receive window size
     pub(crate) fn data_received(&self, size: u32) {
         self.0.data_received(size);
+    }
+
+    pub(crate) fn data_consumed(&self, size: u32) {
+        self.0.data_consumed(size);
     }
 
     pub(crate) fn send_window_size(&self) -> WindowSize {
@@ -511,13 +518,20 @@ impl Connection {
 }
 
 impl ConnectionState {
-    /// data received, update recevice window size if needed
+    /// data received, decrease receive window size
     fn data_received(&self, size: u32) {
-        let mut recv_window = self.recv_window.get().dec(size);
+        self.recv_window.set(self.recv_window.get().dec(size));
+        self.recv_size.set(self.recv_size.get() + size);
+    }
 
-        // update connection window size
+    /// data consumed, update connection window size if needed
+    fn data_consumed(&self, size: u32) {
+        let recv_size = self.recv_size.get() - size;
+        self.recv_size.set(recv_size);
+
+        let mut recv_window = self.recv_window.get();
         if let Some(val) = recv_window.update(
-            0,
+            recv_size,
             self.local_config.connection_window_sz,
             self.local_config.connection_window_sz_threshold,
         ) {
@@ -831,10 +845,12 @@ impl RecvHalfConnection {
             // the stream is reset already, frames sent before the peer saw
             // the reset must be ignored (RFC 9113 §5.1)
             self.0.data_received(frm.flow_controlled_len());
+            self.0.data_consumed(frm.flow_controlled_len());
             Ok(None)
         } else if !self.0.err_unknown_streams() {
             // connection level recv window
             self.0.data_received(frm.flow_controlled_len());
+            self.0.data_consumed(frm.flow_controlled_len());
 
             self.encode(frame::Reset::new(frm.stream_id(), frame::Reason::STREAM_CLOSED));
             Ok(None)
@@ -2125,5 +2141,65 @@ mod tests {
             .send(Method::GET, "/".into(), HeaderMap::default(), true)
             .await
             .unwrap();
+    }
+
+    /// Sum of connection level window updates sent by the client
+    fn conn_window_updates(srv: &ntex::io::testing::IoTest, codec: &Codec) -> i32 {
+        use ntex_codec::Decoder;
+
+        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[..]);
+        let mut size = 0;
+        while let Some(frm) = codec.decode(&mut buf).unwrap() {
+            if let frame::Frame::WindowUpdate(upd) = frm
+                && upd.stream_id().is_zero()
+            {
+                size += upd.size_increment();
+            }
+        }
+        size
+    }
+
+    #[ntex::test]
+    async fn test_connection_window_released_on_consume() {
+        let (io, srv) = ntex::io::testing::IoTest::create();
+        srv.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("CLI")
+            .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
+            .build();
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        sleep(Millis(50)).await;
+
+        let (_stream, recv) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+
+        // skip preface, settings and the initial connection window update
+        let codec = Codec::default();
+        let _ = srv.read_any();
+
+        // response headers and 30000 bytes of data
+        srv.write([0, 0, 1, 1, 4, 0, 0, 0, 1, 0x88]);
+        for _ in 0..2 {
+            srv.write([0, 0x3a, 0x98, 0, 0, 0, 0, 0, 1]);
+            srv.write(vec![0; 15_000]);
+        }
+
+        let _hdrs = recv.recv().await.unwrap();
+        let msg1 = recv.recv().await.unwrap();
+        let msg2 = recv.recv().await.unwrap();
+        assert!(matches!(msg2.kind(), h2::MessageKind::Data(..)));
+        sleep(Millis(50)).await;
+
+        // unconsumed data does not replenish the connection window
+        assert_eq!(conn_window_updates(&srv, &codec), 0);
+
+        // consumed data does
+        drop(msg1);
+        drop(msg2);
+        sleep(Millis(50)).await;
+        assert_eq!(conn_window_updates(&srv, &codec), 30_000);
     }
 }

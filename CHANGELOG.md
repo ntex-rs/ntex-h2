@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Connection receive window is released when received data is consumed, the window bounds
+  unconsumed data of all streams. Default connection window size is 4 MiB
+
 * Ignore RST_STREAM for unknown or forgotten streams instead of a connection error
 
 * Stop the capacity timer when a stream closes or fails, the timer does not keep closed streams

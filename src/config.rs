@@ -119,7 +119,10 @@ impl ServiceConfig {
     /// The initial window of a connection is used as part of flow control. For more details,
     /// see [flow control](https://www.rfc-editor.org/rfc/rfc9113#section-5.2).
     ///
-    /// The default value is 1 MiB.
+    /// The window is released when received data is consumed, so it bounds the amount of
+    /// unconsumed data buffered for all streams of the connection.
+    ///
+    /// The default value is 4 MiB.
     pub fn set_initial_connection_window_size(mut self, size: i32) -> Self {
         assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
         self.connection_window_sz = size;

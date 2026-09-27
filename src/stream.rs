@@ -308,9 +308,9 @@ impl StreamState {
     }
 
     /// check and update recevice window size
-    fn received_data_consumed(&self, size: u32) {
+    fn received_data_consumed(&self, consumed: u32) {
         let cap = self.recv_size.get();
-        let size = cap - size;
+        let size = cap - consumed;
 
         #[cfg(feature = "trace")]
         log::trace!(
@@ -337,6 +337,9 @@ impl StreamState {
             self.recv_window.set(window);
             self.con.encode(WindowUpdate::new(self.id, val));
         }
+
+        // connection level recv window
+        self.con.data_consumed(consumed);
     }
 }
 
