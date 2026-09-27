@@ -1,6 +1,6 @@
-use std::{cell::Cell, cell::RefCell, rc::Rc};
+use std::{cell::Cell, cell::RefCell, cmp, rc::Rc};
 
-use ntex_bytes::{BytePages, Bytes, BytesMut};
+use ntex_bytes::{BytePages, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 mod error;
@@ -23,10 +23,12 @@ pub struct Codec(Rc<CodecInner>);
 /// Partially loaded headers frame
 #[derive(Debug)]
 struct Partial {
-    /// Empty frame
-    frame: frame::Headers,
+    /// Stream of the header block
+    stream_id: frame::StreamId,
+    /// Flags of the HEADERS frame
+    flags: frame::HeadersFlag,
     /// Partial header payload
-    buf: Bytes,
+    buf: BytesMut,
     /// Number of continuations
     count: usize,
 }
@@ -216,13 +218,12 @@ impl Decoder for Codec {
                     }?;
 
                     if frame.is_end_headers() {
-                        let max_headers = inner.decoder_max_headers.get();
-
                         // Load the HPACK encoded headers
                         let res = frame.load_hpack(
                             &mut bytes,
                             &mut inner.decoder_hpack.borrow_mut(),
-                            max_headers,
+                            inner.decoder_max_headers.get(),
+                            inner.decoder_max_header_list_size.get(),
                         );
                         match res {
                             Ok(()) => {}
@@ -240,9 +241,11 @@ impl Decoder for Codec {
                     } else {
                         log::trace!("loaded partial header block");
                         // Defer returning the frame
+                        let (stream_id, flags) = frame.into_head();
                         *inner.partial.borrow_mut() = Some(Partial {
-                            frame,
-                            buf: bytes,
+                            stream_id,
+                            flags,
+                            buf: BytesMut::copy_from_slice(&bytes),
                             count: 0,
                         });
 
@@ -292,7 +295,7 @@ impl Decoder for Codec {
                     })?;
 
                     // The stream identifiers must match
-                    if partial.frame.stream_id() != head.stream_id() {
+                    if partial.stream_id != head.stream_id() {
                         proto_err!(conn: "CONTINUATION frame stream ID does not match previous frame stream ID");
                         return Err(frame::FrameError::Continuation(
                             frame::FrameContinuationError::UnknownStreamId,
@@ -311,41 +314,29 @@ impl Decoder for Codec {
                         }
                     }
 
-                    // Extend the buf
-                    if partial.buf.is_empty() {
-                        partial.buf = bytes.split_off(frame::HEADER_LEN);
-                    } else {
-                        // If there was left over bytes previously, they may be
-                        // needed to continue decoding, even though we will
-                        // be ignoring this frame. This is done to keep the HPACK
-                        // decoder state up-to-date.
-                        //
-                        // Still, we need to be careful, because if a malicious
-                        // attacker were to try to send a gigantic string, such
-                        // that it fits over multiple header blocks.
-                        //
-                        // Instead, we use a simple heuristic to determine if
-                        // we should continue to ignore decoding, or to tell
-                        // the attacker to go away.
-                        if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size.get() {
-                            proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
-                            return Err(frame::FrameError::Continuation(
-                                frame::FrameContinuationError::MaxLeftoverSize,
-                            ));
-                        }
-                        let mut buf =
-                            BytesMut::with_capacity(partial.buf.len() + bytes.len() - frame::HEADER_LEN);
-                        buf.extend_from_slice(&partial.buf);
-                        buf.extend_from_slice(&bytes[frame::HEADER_LEN..]);
-                        partial.buf = buf.into();
+                    // Accumulate the header block, it is decoded once complete
+                    let fragment = &bytes[frame::HEADER_LEN..];
+                    if partial.buf.len() + fragment.len() > inner.decoder_max_header_list_size.get() {
+                        proto_err!(conn: "CONTINUATION frame header block size over limit");
+                        return Err(frame::FrameError::Continuation(
+                            frame::FrameContinuationError::MaxLeftoverSize,
+                        ));
                     }
+                    if partial.buf.capacity() - partial.buf.len() < fragment.len() {
+                        // `reserve` allocates the exact size, grow geometrically
+                        // to keep the total copying linear
+                        partial.buf.reserve(cmp::max(fragment.len(), partial.buf.len()));
+                    }
+                    partial.buf.extend_from_slice(fragment);
 
                     if (head.flag() & 0x4) == 0x4 {
-                        let max_headers = inner.decoder_max_headers.get();
-                        let res = partial.frame.load_hpack(
-                            &mut partial.buf,
+                        let mut buf = partial.buf.take();
+                        let mut frame = frame::Headers::from_head(partial.stream_id, partial.flags);
+                        let res = frame.load_hpack(
+                            &mut buf,
                             &mut inner.decoder_hpack.borrow_mut(),
-                            max_headers,
+                            inner.decoder_max_headers.get(),
+                            inner.decoder_max_header_list_size.get(),
                         );
                         match res {
                             Ok(()) => {}
@@ -360,7 +351,7 @@ impl Decoder for Codec {
                             }
                         }
 
-                        partial.frame.into()
+                        frame.into()
                     } else {
                         *inner.partial.borrow_mut() = Some(partial);
                         continue;

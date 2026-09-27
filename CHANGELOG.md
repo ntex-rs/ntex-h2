@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+* Enforce the header list size limit on decoded headers, `Headers::load_hpack()` accepts `max_list_size`
+
+* Count every header field toward `max_headers`, not only distinct names
+
+* Fix quadratic copying when joining CONTINUATION frames
+
 * Replace the generic length delimited codec with a dedicated HTTP/2 frame decoder
 
 * Do not copy GO_AWAY debug data on decode, `GoAway::load()` accepts `Bytes`

@@ -50,6 +50,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
+pub(crate) use self::headers::HeadersFlag;
 pub use self::headers::{Headers, PseudoHeaders};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
@@ -128,7 +129,7 @@ pub enum FrameError {
     #[error("The padding length was larger than the frame-header-specified length of the payload")]
     TooMuchPadding,
 
-    /// Headers frame contains too many headers
+    /// Headers frame contains too many headers, or the header list is too large
     #[error("Headers frame contains too many headers")]
     TooManyHeaders(StreamId),
 

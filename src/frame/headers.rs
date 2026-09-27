@@ -152,13 +152,39 @@ impl Headers {
         })
     }
 
+    /// Returns the stream id and flags of a frame whose header block continues
+    /// in CONTINUATION frames.
+    pub(crate) fn into_head(self) -> (StreamId, HeadersFlag) {
+        (self.stream_id, self.flags)
+    }
+
+    /// Creates a frame for a header block received in CONTINUATION frames.
+    pub(crate) fn from_head(stream_id: StreamId, mut flags: HeadersFlag) -> Self {
+        flags.set_end_headers();
+        Headers {
+            flags,
+            stream_id,
+            header_block: HeaderBlock {
+                fields: HeaderMap::new(),
+                pseudo: PseudoHeaders::default(),
+            },
+        }
+    }
+
+    /// Decodes the HPACK header block.
+    ///
+    /// Fails with `FrameError::TooManyHeaders` if the block contains more than
+    /// `max_headers` regular fields, or if the decoded header list size
+    /// (name + value + 32 per field, RFC 9113 §6.5.2) exceeds `max_list_size`.
     pub fn load_hpack(
         &mut self,
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
         max_headers: usize,
+        max_list_size: usize,
     ) -> Result<(), FrameError> {
-        self.header_block.load(self.stream_id, src, decoder, max_headers)
+        self.header_block
+            .load(self.stream_id, src, decoder, max_headers, max_list_size)
     }
 
     /// Returns the associated stream identifier.
@@ -441,10 +467,13 @@ impl HeaderBlock {
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
         max_headers: usize,
+        max_list_size: usize,
     ) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
         let mut too_many_headers = false;
+        let mut num_fields = 0;
+        let mut list_size = 0usize;
 
         macro_rules! set_pseudo {
             ($field:ident, $val:expr) => {{
@@ -469,6 +498,16 @@ impl HeaderBlock {
         let res = decoder.decode(&mut cursor, |header| {
             use crate::hpack::Header;
 
+            // Once the block is rejected, remaining fields are decoded only
+            // to keep the hpack state in sync, they are not stored
+            list_size = list_size.saturating_add(header.len());
+            if list_size > max_list_size {
+                too_many_headers = true;
+            }
+            if too_many_headers {
+                return;
+            }
+
             match header {
                 Header::Field { name, value } => {
                     // Connection level header fields are not supported and must
@@ -487,9 +526,11 @@ impl HeaderBlock {
                         malformed = true;
                     } else {
                         reg = true;
-                        self.fields.append(name, value);
-                        if self.fields.len() > max_headers {
+                        num_fields += 1;
+                        if num_fields > max_headers {
                             too_many_headers = true;
+                        } else {
+                            self.fields.append(name, value);
                         }
                     }
                 }
