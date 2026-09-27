@@ -2,6 +2,8 @@
 
 ## [4.1.0] - Unreleased
 
+* HPACK encoder compacts dynamic table entries, entries do not pin application buffers
+
 * HPACK decoder compacts dynamic table entries with `trimdown()`, entries do not pin read buffers
 
 * Client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection error `PROTOCOL_ERROR`,
