@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+* Add `ClientBuilder::connect_timeout()` and `ClientBuilder::disconnect_timeout()`
+
+* Remove unused `control::Terminated`
+
+* Document all public items and fix inaccurate API docs
+
 * Reset only the stream on requests with missing or unexpected pseudo headers, instead of
   closing the connection, add `StreamError::MissingPseudo` and `StreamError::UnexpectedPseudo`
 

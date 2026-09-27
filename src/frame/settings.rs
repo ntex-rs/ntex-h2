@@ -148,6 +148,7 @@ impl Settings {
     }
     */
 
+    /// Parses a `SETTINGS` frame payload.
     pub fn load(head: Head, payload: &[u8]) -> Result<Settings, FrameError> {
         debug_assert_eq!(head.kind(), crate::frame::Kind::Settings);
 
@@ -230,6 +231,7 @@ impl Settings {
         len
     }
 
+    /// Encodes the frame, including the frame header.
     pub fn encode(self, dst: &mut BytePages) {
         log::trace!("encoding SETTINGS; len={self:?}");
 

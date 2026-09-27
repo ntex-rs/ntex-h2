@@ -236,7 +236,7 @@ impl SimpleClient {
     }
 
     #[doc(hidden)]
-    /// Get number of active streams
+    /// Returns the number of keep-alive `PING` frames sent.
     pub fn pings_count(&self) -> u16 {
         self.0.con.pings_count()
     }

@@ -73,6 +73,7 @@
 //! [Flow control]: https://www.rfc-editor.org/rfc/rfc9113#section-5.2
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Protocol_upgrade_mechanism
 #![deny(clippy::pedantic)]
+#![warn(missing_docs)]
 #![allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,

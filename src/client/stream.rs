@@ -65,7 +65,9 @@ impl Inflight {
 /// Sending half of a client-initiated HTTP/2 stream.
 ///
 /// Dropping an unfinished send stream resets it with [`Reason::CANCEL`].
-/// Sending can continue after the [`RecvStream`] is dropped.
+/// Sending can continue after the [`RecvStream`] is dropped only if the
+/// response is fully received, dropping it earlier resets the whole stream
+/// with [`Reason::CANCEL`].
 pub struct SendStream(StreamRef, InflightStorage);
 
 impl Drop for SendStream {

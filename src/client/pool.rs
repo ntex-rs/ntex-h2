@@ -367,12 +367,15 @@ where
     }
 
     #[must_use]
-    /// Sets the streams limit per connection.
+    /// Sets the assumed stream limit for connections whose peer did not
+    /// send `MAX_CONCURRENT_STREAMS`.
     ///
-    /// If limit is 0, the connector uses `MAX_CONCURRENT_STREAMS` config
-    /// from connection settings.
+    /// The pool prefers connections that use less than half of their
+    /// stream limit, the peer's `MAX_CONCURRENT_STREAMS` setting is used
+    /// when it is known. The limit on concurrent streams is always the
+    /// peer's setting.
     ///
-    /// The default limit size is 100.
+    /// The default is 100.
     pub fn max_streams(mut self, limit: u32) -> Self {
         self.inner.max_streams = limit;
         self
@@ -402,6 +405,26 @@ where
     }
 
     #[must_use]
+    /// Sets the timeout for establishing a connection, including the
+    /// transport connect and TLS handshake.
+    ///
+    /// The default is 1 second.
+    pub fn connect_timeout<U: Into<Millis>>(mut self, timeout: U) -> Self {
+        self.inner.conn_timeout = timeout.into();
+        self
+    }
+
+    #[must_use]
+    /// Sets the timeout for gracefully closing a connection that is
+    /// disconnecting, for example after receiving `GOAWAY`.
+    ///
+    /// The default is 15 seconds.
+    pub fn disconnect_timeout<U: Into<Millis>>(mut self, timeout: U) -> Self {
+        self.inner.disconnect_timeout = timeout.into();
+        self
+    }
+
+    #[must_use]
     /// Sets the minimum concurrent connections.
     ///
     /// The default is one connection.
@@ -413,8 +436,9 @@ where
     #[must_use]
     /// Sets the maximum number of simultaneous connections.
     ///
-    /// A new connection is opened only when every existing connection has
-    /// reached its stream limit. The default is 16 connections.
+    /// Beyond [`minconn`](Self::minconn) connections, a new connection is
+    /// opened only when no existing connection can open a stream. The default
+    /// is 16 connections.
     pub fn connection_limit(mut self, num: usize) -> Self {
         self.inner.maxconn = num;
         self

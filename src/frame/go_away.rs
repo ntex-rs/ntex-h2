@@ -4,6 +4,8 @@ use ntex_bytes::{BufMut, BytePages, Bytes};
 
 use crate::frame::{self, FrameError, Head, Kind, Reason, StreamId};
 
+/// A `GOAWAY` frame, initiates connection shutdown or signals a
+/// connection error (RFC 9113 §6.8).
 #[derive(Clone, Eq, PartialEq)]
 pub struct GoAway {
     last_stream_id: StreamId,
@@ -12,6 +14,8 @@ pub struct GoAway {
 }
 
 impl GoAway {
+    /// Creates a `GOAWAY` frame with the given error code, the last stream
+    /// id set to 0 and no debug data.
     pub fn new(reason: Reason) -> Self {
         GoAway {
             last_stream_id: 0.into(),
@@ -21,12 +25,15 @@ impl GoAway {
     }
 
     #[must_use]
+    /// Sets the highest peer-initiated stream id that was or might be
+    /// processed.
     pub fn set_last_stream_id(mut self, id: StreamId) -> Self {
         self.last_stream_id = id;
         self
     }
 
     #[must_use]
+    /// Sets the opaque debug data.
     pub fn set_data<T>(mut self, data: T) -> Self
     where
         Bytes: From<T>,
@@ -36,23 +43,29 @@ impl GoAway {
     }
 
     #[must_use]
+    /// Sets the error code.
     pub fn set_reason(mut self, error_code: Reason) -> Self {
         self.error_code = error_code;
         self
     }
 
+    /// Returns the highest peer-initiated stream id that was or might be
+    /// processed.
     pub fn last_stream_id(&self) -> StreamId {
         self.last_stream_id
     }
 
+    /// Returns the error code.
     pub fn reason(&self) -> Reason {
         self.error_code
     }
 
+    /// Returns the opaque debug data.
     pub fn data(&self) -> &Bytes {
         &self.data
     }
 
+    /// Parses a `GOAWAY` frame payload, the debug data is not copied.
     pub fn load(mut payload: Bytes) -> Result<GoAway, FrameError> {
         if payload.len() < 8 {
             return Err(FrameError::BadFrameSize);
@@ -74,6 +87,7 @@ impl GoAway {
         })
     }
 
+    /// Encodes the frame, including the frame header.
     pub fn encode(self, dst: &mut BytePages) {
         log::trace!("encoding GO_AWAY; code={:?}", self.error_code);
         let head = Head::new(Kind::GoAway, 0, StreamId::zero());

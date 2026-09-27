@@ -2,6 +2,7 @@ use ntex_bytes::BufMut;
 
 use crate::frame::{Frame, FrameError, Head, Kind, Reason, StreamId};
 
+/// A `RST_STREAM` frame, terminates a stream (RFC 9113 §6.4).
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {
     stream_id: StreamId,
@@ -9,6 +10,7 @@ pub struct Reset {
 }
 
 impl Reset {
+    /// Creates a `RST_STREAM` frame.
     pub fn new(stream_id: StreamId, error: Reason) -> Reset {
         Reset {
             stream_id,
@@ -17,21 +19,25 @@ impl Reset {
     }
 
     #[must_use]
+    /// Sets the error code.
     pub fn set_reason(mut self, error_code: Reason) -> Self {
         self.error_code = error_code;
         self
     }
 
     #[must_use]
+    /// Returns the reset stream id.
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
     #[must_use]
+    /// Returns the error code.
     pub fn reason(&self) -> Reason {
         self.error_code
     }
 
+    /// Parses a `RST_STREAM` frame payload.
     pub fn load(head: Head, payload: &[u8]) -> Result<Reset, FrameError> {
         if payload.len() != 4 {
             return Err(FrameError::InvalidPayloadLength);
@@ -45,6 +51,7 @@ impl Reset {
         })
     }
 
+    /// Encodes the frame, including the frame header.
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
         log::trace!(
             "encoding RESET; id={:?} code={:?}",

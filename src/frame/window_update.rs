@@ -4,6 +4,8 @@ use ntex_bytes::BufMut;
 
 const SIZE_INCREMENT_MASK: u32 = 1 << 31;
 
+/// A `WINDOW_UPDATE` frame, increases a flow-control window
+/// (RFC 9113 §6.9).
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
 pub struct WindowUpdate {
     stream_id: StreamId,
@@ -11,6 +13,8 @@ pub struct WindowUpdate {
 }
 
 impl WindowUpdate {
+    /// Creates a `WINDOW_UPDATE` frame, stream id 0 updates the connection
+    /// window.
     pub fn new(stream_id: StreamId, size_increment: u32) -> WindowUpdate {
         WindowUpdate {
             stream_id,
@@ -18,11 +22,13 @@ impl WindowUpdate {
         }
     }
 
+    /// Returns the stream id, 0 for the connection window.
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
     }
 
     #[allow(clippy::cast_possible_wrap)]
+    /// Returns the window size increment.
     pub fn size_increment(&self) -> i32 {
         self.size_increment as i32
     }
@@ -44,6 +50,7 @@ impl WindowUpdate {
         })
     }
 
+    /// Encodes the frame, including the frame header.
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
         log::trace!(
             "encoding WINDOW_UPDATE; id={:?}, inc={}",

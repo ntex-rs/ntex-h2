@@ -30,14 +30,17 @@ pub struct HeadersFlag(u8);
 /// Decoded HTTP/2 pseudo-header fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PseudoHeaders {
-    // Request
+    /// Request `:method`.
     pub method: Option<Method>,
+    /// Request `:scheme`.
     pub scheme: Option<ByteString>,
+    /// Request `:authority`.
     pub authority: Option<ByteString>,
+    /// Request `:path`.
     pub path: Option<ByteString>,
+    /// Extended CONNECT `:protocol` (RFC 8441).
     pub protocol: Option<Protocol>,
-
-    // Response
+    /// Response `:status`.
     pub status: Option<StatusCode>,
 }
 
@@ -243,6 +246,8 @@ impl Headers {
         self.header_block.fields
     }
 
+    /// Encodes the header block, split into `CONTINUATION` frames if it
+    /// exceeds `max_size`.
     pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytePages, max_size: usize) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
@@ -284,6 +289,9 @@ impl fmt::Debug for Headers {
 // ===== impl Pseudo =====
 
 impl PseudoHeaders {
+    /// Creates request pseudo headers from a method and URI.
+    ///
+    /// An empty path becomes `/`, except for `OPTIONS` and `CONNECT`.
     pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
         let parts = uri::Parts::from(uri);
 
@@ -324,6 +332,7 @@ impl PseudoHeaders {
         pseudo
     }
 
+    /// Creates response pseudo headers.
     pub fn response(status: StatusCode) -> Self {
         PseudoHeaders {
             method: None,
@@ -335,10 +344,12 @@ impl PseudoHeaders {
         }
     }
 
+    /// Sets `:status`.
     pub fn set_status(&mut self, value: StatusCode) {
         self.status = Some(value);
     }
 
+    /// Sets `:scheme`.
     pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
         self.scheme = Some(match scheme.as_str() {
             "http" => ByteString::from_static("http"),
@@ -347,10 +358,12 @@ impl PseudoHeaders {
         });
     }
 
+    /// Sets `:protocol`.
     pub fn set_protocol(&mut self, protocol: Protocol) {
         self.protocol = Some(protocol);
     }
 
+    /// Sets `:authority`.
     pub fn set_authority(&mut self, authority: ByteString) {
         self.authority = Some(authority);
     }

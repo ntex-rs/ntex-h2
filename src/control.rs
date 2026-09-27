@@ -1,3 +1,5 @@
+//! Connection control events, delivered to the control service.
+
 use std::io;
 
 use crate::frame::Frame;
@@ -108,18 +110,6 @@ impl<E> Error<E> {
         ControlAck {
             frame: Some(self.goaway.into()),
         }
-    }
-}
-
-/// Notification that the dispatcher has terminated.
-#[derive(Debug)]
-pub struct Terminated;
-
-impl Terminated {
-    #[inline]
-    /// Acknowledges termination without sending a frame.
-    pub fn ack(self) -> ControlAck {
-        ControlAck { frame: None }
     }
 }
 

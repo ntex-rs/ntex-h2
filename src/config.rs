@@ -204,9 +204,9 @@ impl ServiceConfig {
     /// been reserved but the stream has not started, do not count against this
     /// setting.
     ///
-    /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `ntex-h2` library will immediately reset
-    /// the stream.
+    /// Also note that if the remote *does* exceed the value set here, the stream
+    /// is reset with `REFUSED_STREAM`. If the remote keeps opening streams over
+    /// the limit, the connection is closed with a `GOAWAY` frame.
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
@@ -280,8 +280,9 @@ impl ServiceConfig {
     #[must_use]
     /// Sets the connection handshake timeout.
     ///
-    /// The handshake includes receiving the client preface and preparing the
-    /// connection.
+    /// For servers the handshake includes receiving the client preface and
+    /// creating the request service. For clients created by the connector it
+    /// includes establishing the transport and creating the connection.
     ///
     /// The default is 5 seconds.
     pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {

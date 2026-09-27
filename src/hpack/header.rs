@@ -7,7 +7,12 @@ use super::{DecoderError, NeedMore};
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Header<T = HeaderName> {
     /// Regular header field.
-    Field { name: T, value: HeaderValue },
+    Field {
+        /// Header name.
+        name: T,
+        /// Header value.
+        value: HeaderValue,
+    },
     // TODO: Change these types to `http::uri` types.
     /// `:authority` pseudo-header.
     Authority(ByteString),

@@ -962,6 +962,8 @@ pub(super) fn parse_u64(src: &[u8]) -> Option<u64> {
     }
 }
 
+/// Payload for [`StreamRef::send_pages`], created from `Bytes` or
+/// `BytePages`.
 #[derive(Debug)]
 pub struct StreamData(Either<Bytes, BytePages>);
 
