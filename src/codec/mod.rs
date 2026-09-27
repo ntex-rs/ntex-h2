@@ -4,11 +4,11 @@ use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 
 mod error;
-mod length_delimited;
+mod frame_decoder;
 
 pub use self::error::EncoderError;
 
-use self::length_delimited::LengthDelimitedCodec;
+use self::frame_decoder::FrameDecoder;
 use crate::{consts, frame, frame::Frame, frame::Kind, hpack};
 
 // Push promise frame kind
@@ -38,7 +38,7 @@ struct CodecInner {
     encoder_max_frame_size: frame::FrameSize, // Max frame size, this is specified by the peer
 
     // decoder state
-    decoder: LengthDelimitedCodec,
+    decoder: FrameDecoder,
     decoder_hpack: hpack::Decoder,
     decoder_max_headers: usize,
     decoder_max_header_list_size: usize,
@@ -50,13 +50,7 @@ impl Default for Codec {
     #[inline]
     /// Creates a codec with default HTTP/2 limits.
     fn default() -> Self {
-        // Delimit the frames
-        let decoder = self::length_delimited::Builder::new()
-            .length_field_length(3)
-            .length_adjustment(9)
-            .max_frame_length(frame::DEFAULT_MAX_FRAME_SIZE as usize)
-            .num_skip(0) // Don't skip the header
-            .new_codec();
+        let decoder = FrameDecoder::new(frame::DEFAULT_MAX_FRAME_SIZE as usize);
 
         Codec(Rc::new(RefCell::new(CodecInner {
             decoder,

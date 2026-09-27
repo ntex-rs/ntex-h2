@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Replace the generic length delimited codec with a dedicated HTTP/2 frame decoder
+
 * Do not copy GO_AWAY debug data on decode, `GoAway::load()` accepts `Bytes`
 
 * Reject DATA frames that exceed the receive window, with a `FLOW_CONTROL_ERROR` stream
