@@ -2,6 +2,8 @@
 
 ## [4.1.0] - Unreleased
 
+* Document that a remote stream reset outside of a publish call does not get the final message
+
 * Stream `WINDOW_UPDATE` is not sent for streams with a closed receive side, consumed data
   still releases the connection window
 

@@ -438,6 +438,11 @@ impl StreamRef {
     /// has been sent to the peer. If the receive side of a remote stream is
     /// still open, the in-flight publish call is replaced with the final
     /// [`StreamError::LocalReset`] message.
+    ///
+    /// The final message is published only if the stream has a publish call
+    /// in flight. A remote stream reset outside of a publish call, for example
+    /// from a spawned task, does not get the final message, the caller must
+    /// release its state for the stream.
     pub fn reset(&self, reason: Reason) -> bool {
         self.reset_with(reason, StreamError::LocalReset(reason))
     }

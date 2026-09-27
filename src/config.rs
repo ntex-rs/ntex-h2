@@ -308,7 +308,9 @@ impl ServiceConfig {
     /// Sets the send-capacity availability timeout.
     ///
     /// A stream that waits for send capacity longer than the timeout is reset with
-    /// `CANCEL`, the waiter fails with `StreamError::CapacityTimeout`.
+    /// `CANCEL`, the waiter fails with `StreamError::CapacityTimeout`. The final
+    /// message of a remote stream is published only if the stream has a publish
+    /// call in flight, see [`StreamRef::reset`](crate::StreamRef::reset).
     ///
     /// A zero duration disables the timeout. The default is 5 seconds.
     pub fn set_capacity_timeout(mut self, timeout: Seconds) -> Self {
