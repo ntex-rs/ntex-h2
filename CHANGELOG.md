@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Released stream slots wake a waiting request per free slot, a dropped woken request passes
+  the wake up to the next waiting request
+
 * Requests waiting for a stream slot fail on disconnect, keep-alive and read timeouts and
   graceful disconnect instead of waiting forever
 

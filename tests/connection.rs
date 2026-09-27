@@ -1678,3 +1678,81 @@ async fn test_stream_waiter_fails_on_graceful_disconnect() {
         ntex_h2::OperationError::Disconnecting
     ));
 }
+
+/// Released stream slots wake the waiters, back to back releases included (N2).
+#[ntex::test]
+async fn test_stream_waiters_woken_on_release() {
+    let (client, _srv) = limited_client(2);
+    sleep(Millis(50)).await;
+    let (s1, _r1) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    let (s2, _r2) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+
+    let c = client.clone();
+    let a = ntex::rt::spawn(async move {
+        c.send(Method::POST, "/".into(), HeaderMap::new(), false)
+            .await
+            .unwrap()
+    });
+    let c = client.clone();
+    let b = ntex::rt::spawn(async move {
+        c.send(Method::POST, "/".into(), HeaderMap::new(), false)
+            .await
+            .unwrap()
+    });
+    sleep(Millis(50)).await;
+
+    // both slots are released before the waiters run
+    s1.reset(Reason::CANCEL);
+    s2.reset(Reason::CANCEL);
+    let _a = ntex::time::timeout(Millis(1_000), a)
+        .await
+        .expect("waiter a is not woken")
+        .unwrap();
+    let _b = ntex::time::timeout(Millis(1_000), b)
+        .await
+        .expect("waiter b is not woken")
+        .unwrap();
+}
+
+/// A woken waiter that is dropped passes the wake up to the next waiter (N2).
+#[ntex::test]
+async fn test_dropped_stream_waiter_passes_wakeup() {
+    use std::{future::Future, task::Poll};
+
+    let (client, _srv) = limited_client(1);
+    sleep(Millis(50)).await;
+    let (s1, _r1) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+
+    // first waiter is registered, but never polled again
+    let mut a = Box::pin(client.send(Method::POST, "/".into(), HeaderMap::new(), false));
+    std::future::poll_fn(|cx| {
+        assert!(a.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+
+    let c = client.clone();
+    let b = ntex::rt::spawn(async move {
+        c.send(Method::POST, "/".into(), HeaderMap::new(), false)
+            .await
+            .unwrap()
+    });
+    sleep(Millis(50)).await;
+
+    // the slot wakes the first waiter, it is dropped
+    s1.reset(Reason::CANCEL);
+    drop(a);
+    let _b = ntex::time::timeout(Millis(1_000), b)
+        .await
+        .expect("waiter b is not woken")
+        .unwrap();
+}

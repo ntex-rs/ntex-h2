@@ -1,5 +1,6 @@
+use std::task::{Context, Poll, Waker};
 use std::{cell::Cell, cell::RefCell, fmt, io, mem, rc::Rc};
-use std::{collections::VecDeque, time::Instant};
+use std::{collections::VecDeque, future::poll_fn, time::Instant};
 
 use ntex_bytes::{BytePages, ByteString, Bytes};
 use ntex_error::Error;
@@ -347,7 +348,8 @@ impl Connection {
                 } else {
                     let (tx, rx) = self.0.pool.channel();
                     self.0.readiness.borrow_mut().push_back(tx);
-                    if rx.await.is_ok() {
+                    let waiter = ReadyWaiter { rx, state: &self.0 };
+                    if poll_fn(|cx| waiter.rx.poll_recv(cx)).await.is_ok() {
                         continue;
                     }
                     // waiters are dropped on connection failure or disconnect
@@ -559,16 +561,22 @@ impl ConnectionState {
     }
 
     fn release_local_stream(&self) {
-        let local = self.active_local_streams.get();
-        self.active_local_streams.set(local.saturating_sub(1));
-        if let Some(max) = self.local_max_concurrent_streams.get()
-            && local == max
+        let local = self.active_local_streams.get().saturating_sub(1);
+        self.active_local_streams.set(local);
+
+        // wake a waiter for each free slot, woken waiters re-check the limit
+        if let Some(max) = self.local_max_concurrent_streams.get() {
+            self.wake_waiters(max.saturating_sub(local));
+        }
+    }
+
+    fn wake_waiters(&self, mut count: u32) {
+        let mut readiness = self.readiness.borrow_mut();
+        while count > 0
+            && let Some(tx) = readiness.pop_front()
         {
-            while let Some(tx) = self.readiness.borrow_mut().pop_front() {
-                if !tx.is_canceled() {
-                    let _ = tx.send(());
-                    break;
-                }
+            if tx.send(()).is_ok() {
+                count -= 1;
             }
         }
     }
@@ -1193,6 +1201,21 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         st.unset_flags(ConnectionFlags::RECV_PONG);
         st.encode(frame::Ping::new(counter.to_be_bytes()));
         st.0.pings_count.set(st.0.pings_count.get() + 1);
+    }
+}
+
+/// Passes the wake up to the next waiter if the woken waiter is dropped.
+struct ReadyWaiter<'a> {
+    rx: pool::Receiver<()>,
+    state: &'a ConnectionState,
+}
+
+impl Drop for ReadyWaiter<'_> {
+    fn drop(&mut self) {
+        let mut cx = Context::from_waker(Waker::noop());
+        if let Poll::Ready(Ok(())) = self.rx.poll_recv(&mut cx) {
+            self.state.wake_waiters(1);
+        }
     }
 }
 
