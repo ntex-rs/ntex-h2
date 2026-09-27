@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Count DATA frame padding toward flow control, add `frame::Data::flow_controlled_len()`
+
 * Update to ntex-codec 2.0
 
 * Export `client::ClientDisconnect`, the future returned by `SimpleClient::disconnect()`

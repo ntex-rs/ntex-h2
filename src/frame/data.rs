@@ -12,6 +12,8 @@ pub struct Data {
     stream_id: StreamId,
     payload: Bytes,
     flags: DataFlags,
+    /// Frame payload length, including padding
+    flow_len: u32,
 }
 
 #[derive(Default, Copy, Clone, Eq, PartialEq)]
@@ -31,6 +33,7 @@ impl Data {
         assert!(!stream_id.is_zero());
 
         Data {
+            flow_len: payload.len() as u32,
             payload,
             stream_id,
             flags: DataFlags::default(),
@@ -86,6 +89,14 @@ impl Data {
         &mut self.payload
     }
 
+    /// Returns the flow-controlled length of this frame.
+    ///
+    /// This is the length of the entire frame payload, including the pad
+    /// length field and any padding that was originally included.
+    pub fn flow_controlled_len(&self) -> u32 {
+        self.flow_len
+    }
+
     /// Consumes `self` and returns the frame's payload.
     ///
     /// This does **not** include any padding that might have been originally
@@ -106,11 +117,13 @@ impl Data {
             return Err(FrameError::InvalidStreamId);
         }
 
+        let flow_len = payload.len() as u32;
         if flags.is_padded() {
             util::strip_padding(&mut payload)?;
         }
 
         Ok(Data {
+            flow_len,
             flags,
             payload,
             stream_id: head.stream_id(),
@@ -185,5 +198,21 @@ impl std::fmt::Debug for DataFlags {
             .flag_if(self.is_end_stream(), "END_STREAM")
             .flag_if(self.is_padded(), "PADDED")
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn padding_is_flow_controlled() {
+        let head = Head::new(Kind::Data, PADDED, StreamId::from(1));
+        let frm = Data::load(head, Bytes::from_static(b"\x03data\0\0\0")).unwrap();
+        assert_eq!(frm.payload(), &Bytes::from_static(b"data"));
+        assert_eq!(frm.flow_controlled_len(), 8);
+
+        let frm = Data::new(StreamId::from(1), Bytes::from_static(b"data"));
+        assert_eq!(frm.flow_controlled_len(), 4);
     }
 }

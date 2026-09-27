@@ -629,6 +629,57 @@ async fn test_goaway_on_overflow() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
+/// Padding counts toward flow control, the peer gets its window back even
+/// though the padding is not delivered.
+#[ntex::test]
+async fn test_padding_is_flow_controlled() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let codec = Codec::default();
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    io.encode(frame::Settings::default().into(), &codec).unwrap();
+
+    // settings & window
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+    let _ = io.recv(&codec).await;
+
+    let id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::POST),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
+    io.send(hdrs.into(), &codec).await.unwrap();
+
+    // 255 frames of 256 flow-controlled bytes, 1 data byte each, fit into
+    // the initial stream window
+    let mut frm = vec![0, 1, 0, 0, 0x8, 0, 0, 0, 1, 254, b'x'];
+    frm.resize(9 + 256, 0);
+    for _ in 0..255 {
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&frm));
+    }
+    io.flush(true).await.unwrap();
+
+    // the discarded padding is returned to the peer, the delivered data
+    // alone stays below the window update threshold
+    let upd = ntex::time::timeout(Millis(2000), async {
+        loop {
+            if let frame::Frame::WindowUpdate(upd) = io.recv(&codec).await.unwrap().unwrap()
+                && upd.stream_id() == id
+            {
+                return upd;
+            }
+        }
+    })
+    .await
+    .expect("stream window is not updated");
+    assert!(upd.size_increment() > 255);
+}
+
 #[ntex::test]
 async fn test_stream_cancel() {
     let srv = start_server().await;

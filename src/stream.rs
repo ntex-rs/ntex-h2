@@ -529,7 +529,13 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, Error<StreamError>> {
-        let cap = Capacity::new(data.payload().len() as u32, &self.0);
+        // padding counts toward flow control, it is not delivered, so its
+        // capacity is released immediately
+        let len = data.payload().len() as u32;
+        let cap = Capacity::new(data.flow_controlled_len(), &self.0);
+        if data.flow_controlled_len() > len {
+            cap.consume(data.flow_controlled_len() - len);
+        }
 
         #[cfg(feature = "trace")]
         log::trace!(

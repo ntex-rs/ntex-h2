@@ -747,7 +747,7 @@ impl RecvHalfConnection {
         } else if !self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(frm.stream_id())
         {
             // connection level recv window
-            self.0.data_received(frm.payload().len() as u32);
+            self.0.data_received(frm.flow_controlled_len());
 
             self.encode(frame::Reset::new(frm.stream_id(), frame::Reason::STREAM_CLOSED));
             Ok(None)
