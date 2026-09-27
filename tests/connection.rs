@@ -1419,3 +1419,132 @@ async fn test_con_lifetime() {
     let id3 = client.id().clone();
     assert_ne!(id1, id3);
 }
+
+/// PRIORITY with an invalid length is a stream error of type `FRAME_SIZE_ERROR`.
+#[ntex::test]
+async fn test_priority_invalid_length() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    // 4 bytes payload on the open stream
+    let _ = io.with_write_src(|buf| {
+        buf.extend_from_slice(&[0, 0, 4, 2, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    });
+    let rst = loop {
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Reset(rst) => break rst,
+            frame::Frame::WindowUpdate(_) => {}
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
+    };
+    assert_eq!(rst.stream_id(), frame::StreamId::CLIENT);
+    assert_eq!(rst.reason(), Reason::FRAME_SIZE_ERROR);
+
+    // the connection is still usable
+    io.send(frame::Ping::new([7; 8]).into(), &codec).await.unwrap();
+    loop {
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Ping(ping) => {
+                assert!(ping.is_ack());
+                break;
+            }
+            frame::Frame::WindowUpdate(_) => {}
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
+    }
+}
+
+async fn start_echo_server() -> test::TestServer {
+    test::server_with_config(
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |req: http::Request| {
+                    let body = format!("{} {}", req.method(), req.uri());
+                    Ok::<_, io::Error>(Response::Ok().body(body))
+                }),
+            )
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new()),
+    )
+}
+
+/// CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5).
+#[ntex::test]
+async fn test_connect_request() {
+    let srv = start_echo_server().await;
+    let (io, codec) = open_raw_stream(&srv).await;
+    let _ = io.recv(&codec).await; // response for the POST stream
+
+    let connect =
+        |authority: Option<&str>, scheme: Option<&str>, path: Option<&str>| frame::PseudoHeaders {
+            method: Some(Method::CONNECT),
+            authority: authority.map(Into::into),
+            scheme: scheme.map(Into::into),
+            path: path.map(Into::into),
+            ..Default::default()
+        };
+    let cases = [
+        (connect(Some("example.com:443"), None, None), None),
+        (connect(None, None, None), Some(Reason::PROTOCOL_ERROR)),
+        (
+            connect(Some("example.com:443"), Some("https"), None),
+            Some(Reason::PROTOCOL_ERROR),
+        ),
+        (
+            connect(Some("example.com:443"), None, Some("/")),
+            Some(Reason::PROTOCOL_ERROR),
+        ),
+    ];
+
+    let mut id = frame::StreamId::CLIENT;
+    for (pseudo, expected) in cases {
+        id = id.next_id().unwrap();
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
+        io.send(hdrs.into(), &codec).await.unwrap();
+
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Reset(rst) if rst.stream_id() == id => {
+                    assert_eq!(Some(rst.reason()), expected, "{pseudo:?}");
+                    break;
+                }
+                frame::Frame::Data(data) if data.stream_id() == id => {
+                    assert_eq!(expected, None, "{pseudo:?}");
+                    assert_eq!(data.payload().as_ref(), b"CONNECT example.com:443");
+                    break;
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+/// The client omits `:scheme` and `:path` for CONNECT.
+#[ntex::test]
+async fn test_client_connect_request() {
+    let srv = start_echo_server().await;
+    let addr = srv.addr();
+    let client = Pipeline::new(
+        SharedCfg::default(),
+        client::Connector::new()
+            .scheme(Scheme::HTTP)
+            .connector(fn_service(move |_| async move { Ok(connect(addr).await) })),
+    )
+    .call("localhost:8080")
+    .await
+    .unwrap();
+
+    let (_snd, rcv) = client
+        .send(Method::CONNECT, "/ignored".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    let msg = rcv.recv().await.unwrap();
+    assert!(matches!(msg.kind(), MessageKind::Headers { .. }), "{msg:?}");
+    let msg = rcv.recv().await.unwrap();
+    match msg.kind() {
+        MessageKind::Data(data, _) => assert_eq!(data.as_ref(), b"CONNECT localhost:8080"),
+        kind => panic!("unexpected message: {kind:?}"),
+    }
+}

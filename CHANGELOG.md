@@ -2,6 +2,11 @@
 
 ## [4.1.0] - Unreleased
 
+* PRIORITY frame with an invalid length is a stream error `FRAME_SIZE_ERROR`
+
+* Accept `CONNECT` requests without `:scheme` and `:path`, reject them if present. Client omits
+  `:scheme` and `:path` for `CONNECT` requests
+
 * HPACK encoder compacts dynamic table entries, entries do not pin application buffers
 
 * HPACK decoder compacts dynamic table entries with `trimdown()`, entries do not pin read buffers

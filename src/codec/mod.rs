@@ -295,14 +295,16 @@ impl Decoder for Codec {
 
                     match frame::Priority::load(head, &bytes[frame::HEADER_LEN..]) {
                         Ok(frame) => frame.into(),
-                        Err(frame::FrameError::InvalidDependencyId) => {
-                            // A stream cannot depend on itself. An endpoint MUST
-                            // treat this as a stream error (Section 5.4.2) of type
-                            // `PROTOCOL_ERROR`.
+                        Err(
+                            e @ (frame::FrameError::InvalidDependencyId
+                            | frame::FrameError::InvalidPayloadLength),
+                        ) => {
+                            // A stream cannot depend on itself, a length other than 5
+                            // octets is a stream error of type `FRAME_SIZE_ERROR`
+                            // (RFC 9113 §6.3).
                             let id = head.stream_id();
-                            proto_err!(stream: "PRIORITY invalid dependency ID; stream={:?}", id);
-                            frame::InvalidFrame::new(kind, id, frame::FrameError::InvalidDependencyId)
-                                .into()
+                            proto_err!(stream: "invalid PRIORITY frame; stream={:?}; err={:?}", id, e);
+                            frame::InvalidFrame::new(kind, id, e).into()
                         }
                         Err(e) => {
                             proto_err!(conn: "failed to load PRIORITY frame; err={:?};", e);

@@ -449,15 +449,19 @@ impl Connection {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, Error<OperationError>> {
+        // CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5)
+        let connect = method == Method::CONNECT;
         let pseudo = PseudoHeaders {
-            scheme: Some(if self.0.flags.get().contains(ConnectionFlags::SECURE) {
-                consts::HTTPS_SCHEME
-            } else {
-                consts::HTTP_SCHEME
+            scheme: (!connect).then(|| {
+                if self.0.flags.get().contains(ConnectionFlags::SECURE) {
+                    consts::HTTPS_SCHEME
+                } else {
+                    consts::HTTP_SCHEME
+                }
             }),
             method: Some(method),
             authority: Some(authority),
-            path: Some(path),
+            path: (!connect).then_some(path),
             ..Default::default()
         };
         self.check_header_list_size(&pseudo, &headers)?;
@@ -713,11 +717,19 @@ impl RecvHalfConnection {
             // Pseudo-headers validation, a malformed request is
             // a stream error (RFC 9113 §8.1.1)
             let pseudo = frm.pseudo();
-            let err = if pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Some(StreamError::MissingPseudo("path"))
-            } else if pseudo.method.is_none() {
+            // CONNECT omits `:scheme` and `:path`, extended CONNECT does not (RFC 9113 §8.5)
+            let connect = pseudo.method == Some(Method::CONNECT) && pseudo.protocol.is_none();
+            let err = if pseudo.method.is_none() {
                 Some(StreamError::MissingPseudo("method"))
-            } else if pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+            } else if connect && pseudo.authority.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+                Some(StreamError::MissingPseudo("authority"))
+            } else if connect && pseudo.scheme.is_some() {
+                Some(StreamError::UnexpectedPseudo("scheme"))
+            } else if connect && pseudo.path.is_some() {
+                Some(StreamError::UnexpectedPseudo("path"))
+            } else if !connect && pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+                Some(StreamError::MissingPseudo("path"))
+            } else if !connect && pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
                 Some(StreamError::MissingPseudo("scheme"))
             } else if pseudo.status.is_some() {
                 Some(StreamError::UnexpectedPseudo("status"))
