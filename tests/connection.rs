@@ -611,6 +611,73 @@ async fn test_first_frame_not_settings() {
     }
 }
 
+/// Invalid SETTINGS frames close the connection with the RFC 9113 error code.
+#[ntex::test]
+async fn test_invalid_settings_reason() {
+    let srv = start_server().await;
+
+    fn settings(flags: u8, stream: u8, payload: &[u8]) -> Vec<u8> {
+        let len = payload.len() as u32;
+        let mut buf = len.to_be_bytes()[1..].to_vec();
+        buf.extend_from_slice(&[4, flags, 0, 0, 0, stream]);
+        buf.extend_from_slice(payload);
+        buf
+    }
+
+    let cases = [
+        // INITIAL_WINDOW_SIZE = 2^31
+        (
+            settings(0, 0, &[0, 4, 0x80, 0, 0, 0]),
+            Reason::FLOW_CONTROL_ERROR,
+            "Initial window size is above the maximum window size",
+        ),
+        // payload is not a multiple of 6
+        (settings(0, 0, &[0, 4, 0, 0]), Reason::FRAME_SIZE_ERROR, ""),
+        // ACK with payload
+        (
+            settings(1, 0, &[0, 4, 0, 0, 0, 1]),
+            Reason::FRAME_SIZE_ERROR,
+            "Received a payload with an ACK settings frame",
+        ),
+        // ENABLE_PUSH = 2
+        (
+            settings(0, 0, &[0, 2, 0, 0, 0, 2]),
+            Reason::PROTOCOL_ERROR,
+            "An invalid setting value was provided",
+        ),
+        // non-zero stream id
+        (
+            settings(0, 1, &[]),
+            Reason::PROTOCOL_ERROR,
+            "An invalid stream identifier was provided",
+        ),
+    ];
+
+    for (frm, reason, data) in cases {
+        let io = connect(srv.addr()).await;
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| {
+            buf.extend_from_slice(&PREFACE);
+            buf.extend_from_slice(&frm);
+        });
+
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Settings(_) | frame::Frame::WindowUpdate(_) => {}
+                frame::Frame::GoAway(res) => {
+                    assert_eq!(res.reason(), reason, "{frm:?}");
+                    if !data.is_empty() {
+                        assert_eq!(res.data().as_ref(), data.as_bytes());
+                    }
+                    break;
+                }
+                frm => panic!("unexpected frame: {frm:?}"),
+            }
+        }
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+}
+
 /// Streams over the concurrency limit are refused, the connection stays
 /// usable until the peer keeps opening streams over the limit.
 #[ntex::test]

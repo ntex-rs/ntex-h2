@@ -63,9 +63,7 @@ impl ConnectionError {
             ConnectionError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame encoding")
             }
-            ConnectionError::Decoder(_) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame decoding")
-            }
+            ConnectionError::Decoder(err) => GoAway::new(err.reason()).set_data(err.to_string()),
             ConnectionError::MissingSettings => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("First frame is not SETTINGS")
             }
@@ -201,9 +199,8 @@ impl StreamError {
             StreamError::WindowOverflowed
             | StreamError::RecvWindowExceeded
             | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
-            StreamError::InvalidFrame(frame::FrameError::TooManyHeaders(_)) => Reason::REFUSED_STREAM,
+            StreamError::InvalidFrame(err) => err.reason(),
             StreamError::Idle(_)
-            | StreamError::InvalidFrame(_)
             | StreamError::MissingPseudo(_)
             | StreamError::UnexpectedPseudo(_)
             | StreamError::WindowZeroUpdateValue

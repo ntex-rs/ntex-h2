@@ -164,8 +164,8 @@ impl From<InvalidFrame> for Frame {
 /// Errors that can occur during parsing an HTTP/2 frame.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FrameError {
-    /// A length value other than 8 was set on a PING message.
-    #[error("A length value other than 8 was set on a PING message")]
+    /// A PING, GOAWAY or `WINDOW_UPDATE` frame has an invalid length.
+    #[error("Invalid frame length")]
     BadFrameSize,
 
     /// Frame size exceeded
@@ -184,6 +184,10 @@ pub enum FrameError {
     /// An invalid setting value was provided
     #[error("An invalid setting value was provided")]
     InvalidSettingValue,
+
+    /// `SETTINGS_INITIAL_WINDOW_SIZE` value is above the maximum window size
+    #[error("Initial window size is above the maximum window size")]
+    InvalidInitialWindowSize,
 
     /// The payload length specified by the frame header was not the
     /// value necessary for the specific frame type.
@@ -229,6 +233,27 @@ pub enum FrameError {
     /// Failed to perform HPACK decoding
     #[error("{0}")]
     Hpack(#[from] hpack::DecoderError),
+}
+
+impl FrameError {
+    /// Returns the error code for the frame error.
+    pub fn reason(&self) -> Reason {
+        match self {
+            FrameError::BadFrameSize
+            | FrameError::MaxFrameSize
+            | FrameError::InvalidPayloadLength
+            | FrameError::InvalidPayloadAckSettings => Reason::FRAME_SIZE_ERROR,
+            FrameError::InvalidInitialWindowSize => Reason::FLOW_CONTROL_ERROR,
+            FrameError::TooManyHeaders(_) => Reason::REFUSED_STREAM,
+            FrameError::Hpack(
+                hpack::DecoderError::InvalidUtf8
+                | hpack::DecoderError::InvalidStatusCode
+                | hpack::DecoderError::InvalidPseudoheader,
+            ) => Reason::PROTOCOL_ERROR,
+            FrameError::Hpack(_) => Reason::COMPRESSION_ERROR,
+            _ => Reason::PROTOCOL_ERROR,
+        }
+    }
 }
 
 /// Errors involving a HEADERS/CONTINUATION frame sequence.

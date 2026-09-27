@@ -2,6 +2,10 @@
 
 ## [4.1.0] - Unreleased
 
+* Use RFC 9113 error codes for frame decoding errors (`FRAME_SIZE_ERROR`, `FLOW_CONTROL_ERROR`,
+  `COMPRESSION_ERROR`), GOAWAY debug data contains the decoding error. Add `FrameError::reason()`
+  and `FrameError::InvalidInitialWindowSize`, fix swapped SETTINGS payload length errors
+
 * A response without `:status` or with request pseudo-headers is a stream error with
   `PROTOCOL_ERROR`. Remove unused `ConnectionError::MissingPseudo` and
   `ConnectionError::UnexpectedPseudo`
