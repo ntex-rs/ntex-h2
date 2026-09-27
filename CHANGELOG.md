@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* Wake streams waiting for send capacity when `SETTINGS_INITIAL_WINDOW_SIZE` grows the
+  stream windows, senders stalled until the capacity timeout
+
 * Add `ClientBuilder::connect_timeout()` and `ClientBuilder::disconnect_timeout()`
 
 * Remove unused `control::Terminated`

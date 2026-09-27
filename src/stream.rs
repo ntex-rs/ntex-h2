@@ -640,6 +640,11 @@ impl StreamRef {
         );
         self.0.send_window.set(window);
 
+        // SETTINGS_INITIAL_WINDOW_SIZE can grow the window, wake a waiting sender
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
+            self.0.send_cap.wake();
+            self.stop_capacity_timer();
+        }
         Ok(())
     }
 

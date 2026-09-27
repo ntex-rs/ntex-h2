@@ -1288,6 +1288,68 @@ mod tests {
         assert!(con.streams.borrow().is_empty());
     }
 
+    /// A sender waiting for capacity in its own task continues when SETTINGS
+    /// increases the initial window size.
+    #[ntex::test]
+    async fn test_settings_initial_window_wakes_sender() {
+        let srv = test::server(async |()| {
+            fn_service(async move |io: Io<_>| {
+                let codec = Codec::default();
+                let mut preface = [0; 24];
+                io.read_exact(&mut preface).await.unwrap();
+                assert_eq!(preface, PREFACE);
+
+                let mut settings = frame::Settings::default();
+                settings.set_initial_window_size(Some(1));
+                io.send(settings.into(), &codec).await.unwrap();
+
+                while let Ok(Some(frm)) = io.recv(&codec).await {
+                    if let frame::Frame::Data(data) = frm {
+                        let id = data.stream_id();
+                        if data.payload().as_ref() == b"t" {
+                            // grow the window with SETTINGS only
+                            let mut settings = frame::Settings::default();
+                            settings.set_initial_window_size(Some(65_535));
+                            io.send(settings.into(), &codec).await.unwrap();
+                        } else if data.is_end_stream() {
+                            let hdrs = frame::Headers::new(
+                                id,
+                                frame::PseudoHeaders::response(ntex::http::StatusCode::OK),
+                                HeaderMap::new(),
+                                true,
+                            );
+                            io.send(hdrs.into(), &codec).await.unwrap();
+                        }
+                    }
+                }
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+
+        // wait for the server settings
+        sleep(Millis(150)).await;
+
+        let (snd, rcv) = client
+            .send(Method::POST, "/".into(), HeaderMap::new(), false)
+            .await
+            .unwrap();
+        let start = std::time::Instant::now();
+        snd.send_payload(Bytes::from_static(b"test body"), true)
+            .await
+            .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_millis(500),
+            "sender is not woken"
+        );
+
+        let msg = rcv.recv().await.unwrap();
+        assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
+    }
+
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
