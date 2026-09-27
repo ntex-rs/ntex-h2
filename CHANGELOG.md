@@ -2,6 +2,10 @@
 
 ## [4.1.0] - Unreleased
 
+* Late frames for closed streams are not connection errors, `WINDOW_UPDATE` is ignored, `DATA`
+  is reset with `STREAM_CLOSED`, trailers for a reset stream are ignored, frames for idle
+  streams are still connection errors
+
 * A publish call of a remote stream is cancelled only if the stream is reset during the call,
   request data after a complete response and the final message of a reset stream are published
 

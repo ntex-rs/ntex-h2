@@ -553,6 +553,15 @@ impl ConnectionState {
         self.flags.get().contains(ConnectionFlags::UNKNOWN_STREAMS)
     }
 
+    /// Checks if the stream id is used already, the stream is closed if it is not in the map
+    fn is_used_id(&self, id: StreamId) -> bool {
+        if id.is_client_initiated() == self.flags.get().contains(ConnectionFlags::SERVER) {
+            id <= self.last_id.get()
+        } else {
+            id < self.next_stream_id.get()
+        }
+    }
+
     fn notify_capacity(&self) {
         if let Some(f) = self.on_capacity.take() {
             self.on_capacity.set(Some(f.clone()));
@@ -682,6 +691,11 @@ impl RecvHalfConnection {
         // If we've arrived here, the stream does NOT exist on our map.
         // Therefore, it must be a newly created stream. The ID must be higher than the last one viewed.
         let last_id = self.0.last_id.get();
+        if last_id >= id && self.0.local_pending_reset.is_pending(id) {
+            // the stream is reset already, trailers sent before the peer
+            // saw the reset must be ignored (RFC 9113 §5.1)
+            return Ok(None);
+        }
         if last_id >= id {
             // If the ID is old and the stream was not found above, it's an error (Stream Closed or ID Reuse).
             return Err(Either::Left(Error::new(
@@ -846,8 +860,8 @@ impl RecvHalfConnection {
             self.0.data_received(frm.flow_controlled_len());
             self.0.data_consumed(frm.flow_controlled_len());
             Ok(None)
-        } else if !self.0.err_unknown_streams() {
-            // connection level recv window
+        } else if !self.0.err_unknown_streams() || self.0.is_used_id(frm.stream_id()) {
+            // closed stream, the connection level recv window is released
             self.0.data_received(frm.flow_controlled_len());
             self.0.data_consumed(frm.flow_controlled_len());
 
@@ -1011,7 +1025,10 @@ impl RecvHalfConnection {
             stream
                 .recv_window_update(frm)
                 .map_err(|kind| Either::Right(StreamErrorInner::new(stream, kind)))
-        } else if self.0.local_pending_reset.is_pending(frm.stream_id()) {
+        } else if self.0.local_pending_reset.is_pending(frm.stream_id())
+            || self.0.is_used_id(frm.stream_id())
+        {
+            // late update for a closed stream (RFC 9113 §5.1)
             Ok(())
         } else if self.0.err_unknown_streams() {
             log::trace!("{}: Unknown WINDOW_UPDATE {frm:?}", self.tag());
@@ -2018,7 +2035,25 @@ mod tests {
         let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // prev closed stream
+        // prev closed stream, stream error only
+        io.send(pl.into(), &codec).await.unwrap();
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.stream_id(), id);
+        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+
+        // late window update for the closed stream is ignored
+        io.send(frame::WindowUpdate::new(id, 10).into(), &codec)
+            .await
+            .unwrap();
+        io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
+        let res = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+            "{res:?}"
+        );
+
+        // idle stream
+        let pl = frame::Data::new(101.into(), Bytes::from_static(b"data"));
         io.send(pl.into(), &codec).await.unwrap();
         let res = goaway(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
@@ -2051,15 +2086,106 @@ mod tests {
         let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // after server receives remote reset, any next frame cause protocol error
+        // after server receives remote reset, next frame is a stream error
         io.send(frame::Reset::new(id, Reason::NO_ERROR).into(), &codec)
             .await
             .unwrap();
 
         let pl = frame::Data::new(id, Bytes::from_static(b"data"));
         io.send(pl.clone().into(), &codec).await.unwrap();
-        let res = goaway(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+    }
+
+    /// Late frames for closed streams that are purged from the reset queue
+    /// are not connection errors (F5).
+    #[ntex::test]
+    async fn test_late_frames_for_forgotten_streams() {
+        let srv = test::server_with_config(
+            async |()| {
+                fn_service(async move |io: Io<_>| {
+                    let _ = h2::server::handle_one(
+                        io.into(),
+                        Pipeline::new((), async move |msg: h2::Message| {
+                            if matches!(msg.kind(), h2::MessageKind::Headers { .. }) {
+                                msg.stream().reset(Reason::NO_ERROR);
+                            }
+                            Ok::<_, h2::StreamError>(())
+                        }),
+                        Pipeline::new(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
+                    )
+                    .await;
+                    Ok::<_, ()>(())
+                })
+            },
+            SharedCfg::new("SRV").add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_max_concurrent_reset_streams(1),
+            ),
+        );
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.encode(frame::Settings::default().into(), &codec).unwrap();
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+
+        let pseudo = frame::PseudoHeaders {
+            method: Some(Method::GET),
+            scheme: Some("HTTPS".into()),
+            authority: Some("localhost".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+
+        // stream 1 and 3 are reset, stream 1 is purged from the reset queue
+        let id1 = frame::StreamId::CLIENT;
+        let id3 = id1.next_id().unwrap();
+        for id in [id1, id3] {
+            let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+            io.send(hdrs.into(), &codec).await.unwrap();
+            let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+            assert_eq!(res.reason(), Reason::NO_ERROR);
+        }
+
+        // trailers for the reset stream are ignored
+        let hdrs = frame::Headers::trailers(id3, HeaderMap::new());
+        io.send(hdrs.into(), &codec).await.unwrap();
+
+        // late window update is ignored
+        io.send(frame::WindowUpdate::new(id1, 10).into(), &codec)
+            .await
+            .unwrap();
+        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+        let res = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+            "{res:?}"
+        );
+
+        // late data is a stream error
+        let pl = frame::Data::new(id1, Bytes::from_static(b"data"));
+        io.send(pl.into(), &codec).await.unwrap();
+        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(res.stream_id(), id1);
+        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+        io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
+        let res = io.recv(&codec).await.unwrap().unwrap();
+        assert!(
+            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+            "{res:?}"
+        );
     }
 
     async fn zero_window_client() -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
