@@ -2,6 +2,8 @@
 
 ## [4.1.0] - Unreleased
 
+* HPACK decoder compacts dynamic table entries with `trimdown()`, entries do not pin read buffers
+
 * Client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection error `PROTOCOL_ERROR`,
   add `ConnectionError::UnexpectedEnablePush`
 

@@ -69,6 +69,42 @@ impl Header<Option<HeaderName>> {
 }
 
 impl Header {
+    /// Compacts the header data, so it does not retain a larger source buffer.
+    pub(super) fn detach(self) -> Header {
+        match self {
+            Header::Field { name, value } => {
+                let mut bytes = value.as_shared().clone();
+                bytes.trimdown();
+                if bytes.as_ptr() == value.as_bytes().as_ptr() {
+                    Header::Field { name, value }
+                } else {
+                    let sensitive = value.is_sensitive();
+                    // the value is already valid, conversion cannot fail
+                    let mut value = HeaderValue::from_shared(bytes).unwrap_or(value);
+                    value.set_sensitive(sensitive);
+                    Header::Field { name, value }
+                }
+            }
+            Header::Authority(mut v) => {
+                v.trimdown();
+                Header::Authority(v)
+            }
+            Header::Scheme(mut v) => {
+                v.trimdown();
+                Header::Scheme(v)
+            }
+            Header::Path(mut v) => {
+                v.trimdown();
+                Header::Path(v)
+            }
+            Header::Protocol(mut v) => {
+                v.trimdown();
+                Header::Protocol(v)
+            }
+            h @ (Header::Method(_) | Header::Status(_)) => h,
+        }
+    }
+
     /// Parses a header name and value.
     pub fn new(name: &Bytes, value: Bytes) -> Result<Header, DecoderError> {
         if name.is_empty() {
