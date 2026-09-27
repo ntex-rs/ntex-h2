@@ -90,11 +90,12 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                 let guard = TimerGuard;
                 loop {
                     sleep(SEC).await;
+                    let mut expired = Vec::new();
                     let stop = TIMER.with(|timer| {
                         let current = timer.current.get();
                         timer.current.set(current + 1);
 
-                        // notify io dispatcher
+                        // collect expired streams
                         let mut inner = timer.storage.borrow_mut();
                         while let Some(key) = inner.notifications.keys().next() {
                             let key = *key;
@@ -103,7 +104,7 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                                 for io in items.drain() {
                                     if let Some(hnd) = inner.streams.remove(&io) {
                                         if hnd == key {
-                                            io.capacity_timeout();
+                                            expired.push(io);
                                         } else {
                                             inner.streams.insert(io, hnd);
                                         }
@@ -126,6 +127,12 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                         }
                     });
 
+                    // notify streams outside of the storage borrow, a timeout
+                    // can fail other streams and unregister their timers
+                    for io in expired {
+                        io.capacity_timeout();
+                    }
+
                     if stop {
                         break;
                     }
@@ -145,4 +152,9 @@ impl Drop for TimerGuard {
             timer.storage.borrow_mut().notifications.clear();
         });
     }
+}
+
+#[cfg(test)]
+pub(crate) fn is_registered(io: &StreamRef) -> bool {
+    TIMER.with(|timer| timer.storage.borrow().streams.contains_key(io))
 }

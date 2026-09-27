@@ -511,6 +511,7 @@ impl StreamRef {
 
     pub(crate) fn set_failed_stream(&self, err: Error<OperationError>) {
         self.0.failed(err);
+        self.stop_capacity_timer();
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, Error<StreamError>> {
@@ -880,7 +881,7 @@ impl StreamRef {
         }
     }
 
-    fn stop_capacity_timer(&self) {
+    pub(crate) fn stop_capacity_timer(&self) {
         if self.0.flags.get().contains(StreamFlags::CAPACITY_TIMER) {
             self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
             timer::unregister(self);
@@ -890,8 +891,9 @@ impl StreamRef {
     pub(crate) fn capacity_timeout(&self) {
         self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
 
-        // stream is already closed or capacity is available
-        if (self.0.recv.get().is_closed() && self.0.send.get().is_closed())
+        // nobody waits, send side is already closed or capacity is available
+        if !self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            || self.0.send.get().is_closed()
             || self.available_send_capacity() > 0
         {
             return;
@@ -915,24 +917,33 @@ impl StreamRef {
     /// Fails with [`StreamError::CapacityTimeout`] and resets the stream if
     /// capacity is not available within the configured capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
+        let _guard = CapacityWaiter(self);
         poll_fn(|cx| self.poll_send_capacity(cx)).await
+    }
+
+    /// Stops waiting for send capacity.
+    fn cancel_capacity_wait(&self) {
+        self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
+        self.stop_capacity_timer();
     }
 
     /// Polls for available send capacity.
     ///
     /// Starts the capacity timeout while capacity is unavailable, see
-    /// [`StreamRef::send_capacity`].
+    /// [`StreamRef::send_capacity`]. The timeout stays armed if the caller
+    /// stops polling before capacity becomes available.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
     ) -> Poll<Result<WindowSize, Error<OperationError>>> {
-        self.0.check_error()?;
-        self.0.con.check_error()?;
+        if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
+            self.cancel_capacity_wait();
+            return Poll::Ready(Err(err));
+        }
 
         let win = self.available_send_capacity();
         if win > 0 {
-            self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
-            self.stop_capacity_timer();
+            self.cancel_capacity_wait();
             Poll::Ready(Ok(win))
         } else {
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
@@ -952,6 +963,15 @@ impl StreamRef {
             self.0.send_reset.register(cx.waker());
             Poll::Pending
         }
+    }
+}
+
+/// Stops the capacity wait if the `send_capacity()` future is dropped.
+struct CapacityWaiter<'a>(&'a StreamRef);
+
+impl Drop for CapacityWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.cancel_capacity_wait();
     }
 }
 

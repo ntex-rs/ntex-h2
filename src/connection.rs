@@ -573,6 +573,7 @@ impl ConnectionState {
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
+                stream.stop_capacity_timer();
                 #[cfg(feature = "trace")]
                 log::trace!(
                     "{}: Dropping stream {id:?} remote: {:?}",
@@ -2023,5 +2024,81 @@ mod tests {
         io.send(pl.clone().into(), &codec).await.unwrap();
         let res = goaway(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+    }
+
+    async fn zero_window_client() -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
+        let (io, srv) = ntex::io::testing::IoTest::create();
+        srv.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("CLI")
+            .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
+            .build();
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+
+        // peer sets zero stream window and never updates it
+        srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
+        sleep(Millis(50)).await;
+        (client, srv)
+    }
+
+    #[ntex::test]
+    async fn test_capacity_timer_stopped_on_close() {
+        let (client, _srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        // pending capacity wait starts the timer
+        let waiter = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        sleep(Millis(50)).await;
+        assert!(crate::timer::is_registered(stream.stream()));
+
+        // closing the stream releases the timer reference
+        assert!(stream.reset(Reason::CANCEL));
+        assert!(!crate::timer::is_registered(stream.stream()));
+        assert!(fut.await.unwrap().is_err());
+    }
+
+    #[ntex::test]
+    async fn test_capacity_timer_stopped_on_failure() {
+        let (client, _srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        let waiter = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        sleep(Millis(50)).await;
+        assert!(crate::timer::is_registered(stream.stream()));
+
+        // connection failure drains the streams map
+        stream.stream().0.con.recv_half().disconnect();
+        assert!(!crate::timer::is_registered(stream.stream()));
+        assert!(fut.await.unwrap().is_err());
+    }
+
+    #[ntex::test]
+    async fn test_dropped_capacity_wait_stops_timer() {
+        let (client, srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        // the waiter gives up before the capacity timeout
+        assert!(
+            ntex::time::timeout(Millis(100), stream.send_capacity())
+                .await
+                .is_err()
+        );
+        assert!(!crate::timer::is_registered(stream.stream()));
+
+        // the stream is not reset after the capacity timeout
+        sleep(Millis(2500)).await;
+        srv.write([0, 0, 4, 8, 0, 0, 0, 0, 1, 0, 0, 0, 4]);
+        sleep(Millis(50)).await;
+        stream.send_payload("test", true).await.unwrap();
     }
 }

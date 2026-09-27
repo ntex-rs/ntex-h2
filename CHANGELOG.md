@@ -2,6 +2,12 @@
 
 ## [4.1.0] - Unreleased
 
+* Stop the capacity timer when a stream closes or fails, the timer does not keep closed streams
+  alive
+
+* Dropping a pending `send_capacity()` future stops the capacity timer, the stream is not reset
+  with `FLOW_CONTROL_ERROR` without a waiter
+
 * Control service failure fails open streams and publishes `Disconnect` for them, pending
   handlers do not block the connection shutdown
 
