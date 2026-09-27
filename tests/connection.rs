@@ -1061,6 +1061,66 @@ async fn test_malformed_headers_reset_stream() {
     }
 }
 
+/// A request with missing or unexpected pseudo headers resets the stream,
+/// the connection stays usable.
+#[ntex::test]
+async fn test_invalid_pseudo_reset_stream() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    let valid = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    let cases = [
+        frame::PseudoHeaders {
+            path: None,
+            ..valid.clone()
+        },
+        frame::PseudoHeaders {
+            method: None,
+            ..valid.clone()
+        },
+        frame::PseudoHeaders {
+            scheme: None,
+            ..valid.clone()
+        },
+        frame::PseudoHeaders {
+            status: Some(http::StatusCode::OK),
+            ..valid.clone()
+        },
+    ];
+
+    let mut id = frame::StreamId::from(3);
+    for pseudo in cases {
+        io.send(
+            frame::Headers::new(id, pseudo, HeaderMap::new(), false).into(),
+            &codec,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            io.recv(&codec).await.unwrap().unwrap(),
+            frame::Frame::Reset(frame::Reset::new(id, Reason::PROTOCOL_ERROR))
+        );
+
+        // data sent before the reset is seen is ignored
+        io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
+            .await
+            .unwrap();
+        id = id.next_id().unwrap();
+    }
+
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame: {frm:?}"),
+    }
+}
+
 /// A response with too many headers fails the client stream, instead of
 /// closing the connection.
 #[ntex::test]

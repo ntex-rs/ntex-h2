@@ -196,6 +196,12 @@ pub enum StreamError {
     /// or too large header block.
     #[error("Invalid frame: {0}")]
     InvalidFrame(frame::FrameError),
+    /// A required request pseudo-header is missing.
+    #[error("Missing pseudo header {0:?}")]
+    MissingPseudo(&'static str),
+    /// A pseudo-header is not valid in a request.
+    #[error("Unexpected pseudo header {0:?}")]
+    UnexpectedPseudo(&'static str),
 }
 
 impl StreamError {
@@ -209,6 +215,8 @@ impl StreamError {
             StreamError::InvalidFrame(frame::FrameError::TooManyHeaders(_)) => Reason::REFUSED_STREAM,
             StreamError::Idle(_)
             | StreamError::InvalidFrame(_)
+            | StreamError::MissingPseudo(_)
+            | StreamError::UnexpectedPseudo(_)
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
             | StreamError::InvalidContentLength
@@ -234,6 +242,8 @@ impl ErrorDiagnostic for StreamError {
             StreamError::CapacityTimeout => "h2-stream-CapacityTimeout",
             StreamError::Reset(_) => "h2-stream-Reset",
             StreamError::InvalidFrame(_) => "h2-stream-InvalidFrame",
+            StreamError::MissingPseudo(_) => "h2-stream-MissingPseudo",
+            StreamError::UnexpectedPseudo(_) => "h2-stream-UnexpectedPseudo",
         }
     }
 }

@@ -253,8 +253,4 @@ pub enum FrameContinuationError {
     /// Max count of Continuations
     #[error("Max count of Continuations")]
     MaxContinuations,
-
-    /// Malformed frame
-    #[error("Malformed frame")]
-    Malformed,
 }

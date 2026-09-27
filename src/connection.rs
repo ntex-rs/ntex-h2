@@ -693,28 +693,25 @@ impl RecvHalfConnection {
                 };
             }
 
-            // Pseudo-headers validation
+            // Pseudo-headers validation, a malformed request is
+            // a stream error (RFC 9113 §8.1.1)
             let pseudo = frm.pseudo();
-            if pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Err(Either::Left(Error::new(
-                    ConnectionError::MissingPseudo("path"),
-                    self.service(),
-                )))
+            let err = if pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+                Some(StreamError::MissingPseudo("path"))
             } else if pseudo.method.is_none() {
-                Err(Either::Left(Error::new(
-                    ConnectionError::MissingPseudo("method"),
-                    self.service(),
-                )))
+                Some(StreamError::MissingPseudo("method"))
             } else if pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Err(Either::Left(Error::new(
-                    ConnectionError::MissingPseudo("scheme"),
-                    self.service(),
-                )))
-            } else if frm.pseudo().status.is_some() {
-                Err(Either::Left(Error::new(
-                    ConnectionError::UnexpectedPseudo("scheme"),
-                    self.service(),
-                )))
+                Some(StreamError::MissingPseudo("scheme"))
+            } else if pseudo.status.is_some() {
+                Some(StreamError::UnexpectedPseudo("status"))
+            } else {
+                None
+            };
+
+            if let Some(err) = err {
+                log::debug!("{}: malformed request on {id:?}: {err}", self.tag());
+                self.0.streams_count.set(self.0.streams_count.get() + 1);
+                self.reset_unknown_stream(id, err.reason())
             } else {
                 // Create the new stream
                 let stream = StreamRef::new(id, true, Connection(self.0.clone()));
@@ -765,9 +762,17 @@ impl RecvHalfConnection {
             self.0.last_id.set(id);
             self.0.streams_count.set(self.0.streams_count.get() + 1);
         }
+        self.reset_unknown_stream(id, err.reason())
+    }
 
+    /// Resets a stream that is not tracked by the connection.
+    fn reset_unknown_stream(
+        &self,
+        id: StreamId,
+        reason: frame::Reason,
+    ) -> Result<Option<(StreamRef, Message)>, EitherError> {
         self.update_rst_count().map_err(Either::Left)?;
-        self.encode(frame::Reset::new(id, err.reason()));
+        self.encode(frame::Reset::new(id, reason));
 
         // the peer can still send frames for the stream before it sees the reset
         if self.0.err_unknown_streams() {

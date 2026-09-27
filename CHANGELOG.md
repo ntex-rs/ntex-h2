@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+* Reset only the stream on requests with missing or unexpected pseudo headers, instead of
+  closing the connection, add `StreamError::MissingPseudo` and `StreamError::UnexpectedPseudo`
+
+* Remove unused `FrameContinuationError::Malformed`
+
 * Reset only the stream, instead of closing the connection, on malformed, too large or
   self-dependent header blocks and self-dependent PRIORITY frames, add `Frame::Invalid`,
   `frame::InvalidFrame` and `StreamError::InvalidFrame`
