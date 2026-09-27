@@ -1419,6 +1419,116 @@ mod tests {
         assert!(client.is_ready());
     }
 
+    /// Streams reset by the local side get the final message, if the
+    /// receive side is still open.
+    #[ntex::test]
+    async fn test_local_reset_publishes_eof() {
+        use std::sync::{Arc, Mutex};
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events2 = events.clone();
+        let srv = test::server_with_config(
+            async move |()| {
+                let events = events2.clone();
+                fn_service(move |io: Io<_>| {
+                    let events = events.clone();
+                    async move {
+                        let _ = h2::server::handle_one(
+                            io.into(),
+                            Pipeline::new((), async move |msg: h2::Message| {
+                                match msg.kind {
+                                    h2::MessageKind::Headers { pseudo, .. } => {
+                                        if pseudo.path.as_deref() == Some("/reset") {
+                                            msg.stream.reset(Reason::CANCEL);
+                                        } else {
+                                            msg.stream
+                                                .send_response(
+                                                    ntex::http::StatusCode::OK,
+                                                    HeaderMap::default(),
+                                                    false,
+                                                )
+                                                .unwrap();
+                                            let _ = msg.stream.send_payload("data", true).await;
+                                        }
+                                    }
+                                    h2::MessageKind::Eof(h2::StreamEof::Error(err)) => {
+                                        events.lock().unwrap().push((msg.stream.id(), *err));
+                                    }
+                                    _ => {}
+                                }
+                                Ok::<_, h2::StreamError>(())
+                            }),
+                            Pipeline::new(
+                                (),
+                                fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                    Ok::<_, ()>(msg.ack())
+                                })
+                                .map_err(|()| unreachable!()),
+                            )
+                            .bind(),
+                        )
+                        .await;
+
+                        Ok::<_, ()>(())
+                    }
+                })
+            },
+            SharedCfg::new("SRV").add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_capacity_timeout(Seconds(1)),
+            ),
+        );
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        // no send window for the server
+        let mut settings = frame::Settings::default();
+        settings.set_initial_window_size(Some(0));
+        io.encode(settings.into(), &codec).unwrap();
+
+        let open = async |id, path: &'static str| {
+            let pseudo = frame::PseudoHeaders {
+                method: Some(Method::POST),
+                scheme: Some("HTTPS".into()),
+                authority: Some("localhost".into()),
+                path: Some(path.into()),
+                ..Default::default()
+            };
+            let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
+            io.send(hdrs.into(), &codec).await.unwrap();
+            loop {
+                match io.recv(&codec).await.unwrap().unwrap() {
+                    frame::Frame::Reset(rst) => return rst,
+                    frame::Frame::Settings(s) if !s.is_ack() => {
+                        io.encode(frame::Settings::ack().into(), &codec).unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        };
+
+        let id = frame::StreamId::CLIENT;
+        let rst = open(id, "/reset").await;
+        assert_eq!(rst.reason(), Reason::CANCEL);
+
+        let id2 = id.next_id().unwrap();
+        let rst = open(id2, "/timeout").await;
+        assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
+
+        sleep(Millis(100)).await;
+        let events = events.lock().unwrap().clone();
+        assert_eq!(
+            events,
+            vec![
+                (id, h2::StreamError::LocalReset(Reason::CANCEL)),
+                (id2, h2::StreamError::CapacityTimeout)
+            ]
+        );
+    }
+
     /// During shutdown all new streams are refused, without hitting the
     /// reset limit.
     #[ntex::test]

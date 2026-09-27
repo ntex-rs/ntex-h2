@@ -1,6 +1,8 @@
 # Changes
 
-## [Unreleased]
+## [4.1.0] - Unreleased
+
+* Publish stream reset message for locally closed streams
 
 * `SETTINGS_INITIAL_WINDOW_SIZE` that overflows a stream send window is a connection
   `FLOW_CONTROL_ERROR`, instead of a stream reset
@@ -84,10 +86,6 @@
 * Fix `SimpleClient::active_streams()` returning `0` until the peer sends `MAX_CONCURRENT_STREAMS`
 
 * Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration
-
-## [4.1.0] - 2026-09-22
-
-* Use update ntex-io api
 
 ## [4.0.1] - 2026-09-18
 

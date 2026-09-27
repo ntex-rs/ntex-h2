@@ -72,7 +72,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                     );
                 }
 
-                if !stream.reset(kind.reason()) {
+                if !stream.reset_silent(kind.reason()) {
                     self.connection.encode(Reset::new(stream.id(), kind.reason()));
                 }
                 publish(Message::error(kind, &stream), stream, &self.inner).await
@@ -274,16 +274,28 @@ where
     PErr: 'static,
 {
     let result = if stream.is_remote() {
-        let fut = inner.publish.call(msg);
-        let mut pinned = std::pin::pin!(fut);
-        future::poll_fn(|cx| {
-            if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
-                log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
-                return Poll::Ready(Ok(()));
-            }
-            pinned.as_mut().poll(cx)
-        })
-        .await
+        let result = {
+            let fut = inner.publish.call(msg);
+            let mut pinned = std::pin::pin!(fut);
+            future::poll_fn(|cx| {
+                if let Poll::Ready(Ok(()) | Err(_)) = stream.poll_send_reset(cx) {
+                    log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
+                    return Poll::Ready(None);
+                }
+                pinned.as_mut().poll(cx).map(Some)
+            })
+            .await
+        };
+
+        // a stream reset by the local side gets the final message,
+        // the publish call is dropped or completed
+        match result {
+            Some(Err(e)) => Err(e),
+            _ => match stream.take_local_close() {
+                Some(err) => inner.publish.call(Message::error(err, &stream)).await,
+                None => Ok(()),
+            },
+        }
     } else {
         inner.publish.call(msg).await
     };

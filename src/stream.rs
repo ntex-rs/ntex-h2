@@ -157,6 +157,8 @@ pub(crate) struct StreamState {
     pub(crate) con: Connection,
     /// error state
     error: Cell<Option<Error<OperationError>>>,
+    /// final message for a stream reset by the local side
+    local_close: Cell<Option<StreamError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -360,6 +362,7 @@ impl StreamRef {
             send_cap: LocalWaker::new(),
             send_reset: LocalWaker::new(),
             error: Cell::new(None),
+            local_close: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
             flags: Cell::new(if remote {
                 StreamFlags::REMOTE
@@ -425,9 +428,36 @@ impl StreamRef {
     /// Resets the stream with the specified HTTP/2 reason.
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
-    /// has been sent to the peer.
-    #[inline]
+    /// has been sent to the peer. If the receive side of a remote stream is
+    /// still open, the in-flight publish call is replaced with the final
+    /// [`StreamError::LocalReset`] message.
     pub fn reset(&self, reason: Reason) -> bool {
+        self.reset_with(reason, StreamError::LocalReset(reason))
+    }
+
+    /// Resets the stream, `err` is the final message if the receive side is open.
+    fn reset_with(&self, reason: Reason, err: StreamError) -> bool {
+        let recv_open = !self.0.recv.get().is_closed();
+        if self.reset_silent(reason) {
+            if recv_open {
+                self.0.local_close.set(Some(err));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Takes the final message error of a stream reset by the local side.
+    pub(crate) fn take_local_close(&self) -> Option<Error<StreamError>> {
+        self.0
+            .local_close
+            .take()
+            .map(|err| Error::new(err, self.service()))
+    }
+
+    /// Resets the stream without publishing the final message.
+    pub(crate) fn reset_silent(&self, reason: Reason) -> bool {
         if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
             self.0.con.encode(Reset::new(self.0.id, reason));
             self.0.reset_stream(Some(reason));
@@ -838,7 +868,7 @@ impl StreamRef {
             self.0.tag(),
             self.0.id,
         );
-        self.reset(Reason::FLOW_CONTROL_ERROR);
+        self.reset_with(Reason::FLOW_CONTROL_ERROR, StreamError::CapacityTimeout);
         self.0.failed(Error::new(
             OperationError::Stream(StreamError::CapacityTimeout),
             self.service(),

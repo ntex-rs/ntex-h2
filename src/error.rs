@@ -189,9 +189,12 @@ pub enum StreamError {
     /// Waiting for send capacity timed out.
     #[error("Capacity availability timeout")]
     CapacityTimeout,
-    /// The stream was reset with the specified reason.
+    /// The stream was reset by the peer with the specified reason.
     #[error("Stream has been reset with {0}")]
     Reset(Reason),
+    /// The stream was reset by the local side with the specified reason.
+    #[error("Stream has been reset from local side with {0}")]
+    LocalReset(Reason),
     /// The peer sent an invalid frame for the stream, such as a malformed
     /// or too large header block.
     #[error("Invalid frame: {0}")]
@@ -222,7 +225,7 @@ impl StreamError {
             | StreamError::InvalidContentLength
             | StreamError::WrongPayloadLength
             | StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
-            StreamError::Reset(r) => *r,
+            StreamError::Reset(r) | StreamError::LocalReset(r) => *r,
         }
     }
 }
@@ -241,6 +244,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::NonEmptyPayload => "h2-stream-NonEmptyPayload",
             StreamError::CapacityTimeout => "h2-stream-CapacityTimeout",
             StreamError::Reset(_) => "h2-stream-Reset",
+            StreamError::LocalReset(_) => "h2-stream-LocalReset",
             StreamError::InvalidFrame(_) => "h2-stream-InvalidFrame",
             StreamError::MissingPseudo(_) => "h2-stream-MissingPseudo",
             StreamError::UnexpectedPseudo(_) => "h2-stream-UnexpectedPseudo",
