@@ -1,4 +1,4 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::Cell, cell::RefCell, rc::Rc};
 
 use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
@@ -18,7 +18,7 @@ const PUSH_PROMISE: u8 = 5;
 ///
 /// Clones share HPACK and frame-size state.
 #[derive(Clone, Debug)]
-pub struct Codec(Rc<RefCell<CodecInner>>);
+pub struct Codec(Rc<CodecInner>);
 
 /// Partially loaded headers frame
 #[derive(Debug)]
@@ -34,16 +34,16 @@ struct Partial {
 #[derive(Debug)]
 struct CodecInner {
     // encoder state
-    encoder_hpack: hpack::Encoder,
-    encoder_max_frame_size: frame::FrameSize, // Max frame size, this is specified by the peer
+    encoder_hpack: RefCell<hpack::Encoder>,
+    encoder_max_frame_size: Cell<frame::FrameSize>, // Max frame size, this is specified by the peer
 
     // decoder state
     decoder: FrameDecoder,
-    decoder_hpack: hpack::Decoder,
-    decoder_max_headers: usize,
-    decoder_max_header_list_size: usize,
-    decoder_max_header_continuations: usize,
-    partial: Option<Partial>, // Partially loaded headers frame
+    decoder_hpack: RefCell<hpack::Decoder>,
+    decoder_max_headers: Cell<usize>,
+    decoder_max_header_list_size: Cell<usize>,
+    decoder_max_header_continuations: Cell<usize>,
+    partial: RefCell<Option<Partial>>, // Partially loaded headers frame
 }
 
 impl Default for Codec {
@@ -52,17 +52,19 @@ impl Default for Codec {
     fn default() -> Self {
         let decoder = FrameDecoder::new(frame::DEFAULT_MAX_FRAME_SIZE as usize);
 
-        Codec(Rc::new(RefCell::new(CodecInner {
+        Codec(Rc::new(CodecInner {
             decoder,
-            decoder_hpack: hpack::Decoder::new(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE),
-            decoder_max_headers: consts::DEFAULT_MAX_HEADERS,
-            decoder_max_header_list_size: consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE as usize,
-            decoder_max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
-            partial: None,
+            decoder_hpack: RefCell::new(hpack::Decoder::new(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE)),
+            decoder_max_headers: Cell::new(consts::DEFAULT_MAX_HEADERS),
+            decoder_max_header_list_size: Cell::new(
+                consts::DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE as usize,
+            ),
+            decoder_max_header_continuations: Cell::new(consts::DEFAULT_MAX_COUNTINUATIONS),
+            partial: RefCell::new(None),
 
-            encoder_hpack: hpack::Encoder::default(),
-            encoder_max_frame_size: frame::DEFAULT_MAX_FRAME_SIZE,
-        })))
+            encoder_hpack: RefCell::new(hpack::Encoder::default()),
+            encoder_max_frame_size: Cell::new(frame::DEFAULT_MAX_FRAME_SIZE),
+        }))
     }
 }
 
@@ -82,33 +84,33 @@ impl Codec {
         assert!(
             frame::DEFAULT_MAX_FRAME_SIZE as usize <= val && val <= frame::MAX_MAX_FRAME_SIZE as usize
         );
-        self.0.borrow_mut().decoder.set_max_frame_length(val);
+        self.0.decoder.set_max_frame_length(val);
     }
 
     /// Returns the maximum frame size accepted from the peer.
     pub fn recv_frame_size(&self) -> u32 {
-        self.0.borrow_mut().decoder.max_frame_length() as u32
+        self.0.decoder.max_frame_length() as u32
     }
 
     /// Sets the maximum decoded header-list size.
     ///
     /// The default is 48 KiB.
     pub fn set_recv_header_list_size(&self, val: usize) {
-        self.0.borrow_mut().decoder_max_header_list_size = val;
+        self.0.decoder_max_header_list_size.set(val);
     }
 
     /// Sets the maximum number of decoded headers.
     ///
     /// The default is 96.
     pub fn set_max_headers(&self, val: usize) {
-        self.0.borrow_mut().decoder_max_headers = val;
+        self.0.decoder_max_headers.set(val);
     }
 
     /// Sets the maximum continuation frames for one header block.
     ///
     /// The default is 5.
     pub fn set_max_header_continuations(&self, val: usize) {
-        self.0.borrow_mut().decoder_max_header_continuations = val;
+        self.0.decoder_max_header_continuations.set(val);
     }
 
     /// Sets the maximum frame payload sent to the peer.
@@ -121,17 +123,17 @@ impl Codec {
             (frame::DEFAULT_MAX_FRAME_SIZE as usize..=frame::MAX_MAX_FRAME_SIZE as usize).contains(&val),
             "frame size must be between 16384 and 16777215"
         );
-        self.0.borrow_mut().encoder_max_frame_size = val as frame::FrameSize;
+        self.0.encoder_max_frame_size.set(val as frame::FrameSize);
     }
 
     /// Sets the peer's HPACK header table size.
     pub fn set_send_header_table_size(&self, val: usize) {
-        self.0.borrow_mut().encoder_hpack.update_max_size(val);
+        self.0.encoder_hpack.borrow_mut().update_max_size(val);
     }
 
     /// Returns the maximum frame payload sent to the peer.
     pub fn send_frame_size(&self) -> u32 {
-        self.0.borrow_mut().encoder_max_frame_size
+        self.0.encoder_max_frame_size.get()
     }
 }
 
@@ -144,7 +146,7 @@ impl Decoder for Codec {
     ///
     /// This method is intentionally de-generified and outlined because it is very large.
     fn decode(&self, src: &mut BytesMut) -> Result<Option<Frame>, frame::FrameError> {
-        let mut inner = self.0.borrow_mut();
+        let inner = &*self.0;
         loop {
             let Some(mut bytes) = inner.decoder.decode(src)? else {
                 return Ok(None);
@@ -159,7 +161,7 @@ impl Decoder for Codec {
             let head = frame::Head::parse(&bytes);
             let kind = head.kind();
 
-            if inner.partial.is_some() && kind != Kind::Continuation {
+            if inner.partial.borrow().is_some() && kind != Kind::Continuation {
                 proto_err!(conn: "expected CONTINUATION, got {:?}", kind);
                 return Err(frame::FrameError::Continuation(
                     frame::FrameContinuationError::Expected,
@@ -214,10 +216,15 @@ impl Decoder for Codec {
                     }?;
 
                     if frame.is_end_headers() {
-                        let max_headers = inner.decoder_max_headers;
+                        let max_headers = inner.decoder_max_headers.get();
 
                         // Load the HPACK encoded headers
-                        match frame.load_hpack(&mut bytes, &mut inner.decoder_hpack, max_headers) {
+                        let res = frame.load_hpack(
+                            &mut bytes,
+                            &mut inner.decoder_hpack.borrow_mut(),
+                            max_headers,
+                        );
+                        match res {
                             Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();
@@ -233,7 +240,7 @@ impl Decoder for Codec {
                     } else {
                         log::trace!("loaded partial header block");
                         // Defer returning the frame
-                        inner.partial = Some(Partial {
+                        *inner.partial.borrow_mut() = Some(Partial {
                             frame,
                             buf: bytes,
                             count: 0,
@@ -279,7 +286,7 @@ impl Decoder for Codec {
                     }
                 }
                 Kind::Continuation => {
-                    let mut partial = inner.partial.take().ok_or_else(|| {
+                    let mut partial = inner.partial.borrow_mut().take().ok_or_else(|| {
                         proto_err!(conn: "received unexpected CONTINUATION frame");
                         frame::FrameError::Continuation(frame::FrameContinuationError::Unexpected)
                     })?;
@@ -292,10 +299,11 @@ impl Decoder for Codec {
                         ));
                     }
 
-                    if inner.decoder_max_header_continuations > 0 {
+                    let max_continuations = inner.decoder_max_header_continuations.get();
+                    if max_continuations > 0 {
                         // Check count of continuation frames
                         partial.count += 1;
-                        if partial.count > inner.decoder_max_header_continuations {
+                        if partial.count > max_continuations {
                             proto_err!(conn: "received excessive amount of CONTINUATION frames");
                             return Err(frame::FrameError::Continuation(
                                 frame::FrameContinuationError::MaxContinuations,
@@ -319,7 +327,7 @@ impl Decoder for Codec {
                         // Instead, we use a simple heuristic to determine if
                         // we should continue to ignore decoding, or to tell
                         // the attacker to go away.
-                        if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size {
+                        if partial.buf.len() + bytes.len() > inner.decoder_max_header_list_size.get() {
                             proto_err!(conn: "CONTINUATION frame header block size over ignorable limit");
                             return Err(frame::FrameError::Continuation(
                                 frame::FrameContinuationError::MaxLeftoverSize,
@@ -333,12 +341,13 @@ impl Decoder for Codec {
                     }
 
                     if (head.flag() & 0x4) == 0x4 {
-                        let max_headers = inner.decoder_max_headers;
-                        match partial.frame.load_hpack(
+                        let max_headers = inner.decoder_max_headers.get();
+                        let res = partial.frame.load_hpack(
                             &mut partial.buf,
-                            &mut inner.decoder_hpack,
+                            &mut inner.decoder_hpack.borrow_mut(),
                             max_headers,
-                        ) {
+                        );
+                        match res {
                             Ok(()) => {}
                             Err(frame::FrameError::MalformedMessage) => {
                                 let id = head.stream_id();
@@ -353,7 +362,7 @@ impl Decoder for Codec {
 
                         partial.frame.into()
                     } else {
-                        inner.partial = Some(partial);
+                        *inner.partial.borrow_mut() = Some(partial);
                         continue;
                     }
                 }
@@ -376,20 +385,20 @@ impl Encoder for Codec {
         // Ensure that we have enough capacity to accept the write.
         // log::debug!(frame = ?item, "send");
 
-        let mut inner = self.0.borrow_mut();
+        let inner = &*self.0;
 
         match item {
             Frame::Data(v) => {
                 // Ensure that the payload is not greater than the max frame.
                 let len = v.payload().len();
-                if len > inner.encoder_max_frame_size as usize {
+                if len > inner.encoder_max_frame_size.get() as usize {
                     return Err(error::EncoderError::MaxSizeExceeded);
                 }
                 v.encode(buf);
             }
             Frame::Headers(v) => {
-                let max_size = inner.encoder_max_frame_size as usize;
-                v.encode(&mut inner.encoder_hpack, buf, max_size);
+                let max_size = inner.encoder_max_frame_size.get() as usize;
+                v.encode(&mut inner.encoder_hpack.borrow_mut(), buf, max_size);
             }
             Frame::Settings(v) => {
                 v.encode(buf);

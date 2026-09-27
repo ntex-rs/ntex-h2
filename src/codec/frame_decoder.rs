@@ -11,7 +11,7 @@ const LENGTH_FIELD_LEN: usize = 3;
 /// Splits HTTP/2 frames, including the 9 byte frame header.
 #[derive(Debug)]
 pub(super) struct FrameDecoder {
-    max_frame_len: usize,
+    max_frame_len: Cell<usize>,
     // Total length of the frame currently being decoded
     pending: Cell<Option<usize>>,
 }
@@ -19,18 +19,18 @@ pub(super) struct FrameDecoder {
 impl FrameDecoder {
     pub(super) fn new(max_frame_len: usize) -> Self {
         Self {
-            max_frame_len,
+            max_frame_len: Cell::new(max_frame_len),
             pending: Cell::new(None),
         }
     }
 
     pub(super) fn max_frame_length(&self) -> usize {
-        self.max_frame_len
+        self.max_frame_len.get()
     }
 
     /// Updates the max frame size, a frame that is already in progress is not affected.
-    pub(super) fn set_max_frame_length(&mut self, val: usize) {
-        self.max_frame_len = val;
+    pub(super) fn set_max_frame_length(&self, val: usize) {
+        self.max_frame_len.set(val);
     }
 
     pub(super) fn decode(&self, src: &mut BytesMut) -> Result<Option<Bytes>, FrameError> {
@@ -42,7 +42,7 @@ impl FrameDecoder {
             }
             let payload_len =
                 (usize::from(src[0]) << 16) | (usize::from(src[1]) << 8) | usize::from(src[2]);
-            if payload_len > self.max_frame_len {
+            if payload_len > self.max_frame_len.get() {
                 return Err(FrameError::MaxFrameSize);
             }
             let len = payload_len + frame::HEADER_LEN;
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn max_frame_length() {
-        let mut dec = FrameDecoder::new(16_384);
+        let dec = FrameDecoder::new(16_384);
         let mut buf = BytesMut::new();
 
         // 16_384 is allowed, a frame in progress is not affected by a lower limit
