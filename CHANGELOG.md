@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+* Streams over the concurrency limit are always refused with `REFUSED_STREAM` and count
+  toward the rapid reset limit, instead of closing the connection on the second overflow.
+  Remove `ConnectionError::ConcurrencyOverflow`
+
+* During shutdown all new streams are refused, DATA for refused streams is ignored
+
 * Client assumes a limit of 100 concurrent streams until the peer's SETTINGS arrive,
   instead of no limit
 

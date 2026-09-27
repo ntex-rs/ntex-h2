@@ -29,7 +29,6 @@ bitflags::bitflags! {
         const UNKNOWN_STREAMS         = 0b0000_0100;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
-        const STREAM_REFUSED          = 0b0010_0000;
         const KA_TIMER                = 0b0100_0000;
         const RECV_PONG               = 0b1000_0000;
         const REMOTE_SETTINGS         = 0b0001_0000_0000;
@@ -664,7 +663,8 @@ impl RecvHalfConnection {
         } else {
             // 6. New Stream Validation Logic (Disconnect, Max Concurrency, Pseudo Headers)
 
-            // Refuse stream if connection is preparing for disconnect
+            // Refuse all new streams if connection is preparing for disconnect,
+            // the peer might not know yet, so refusals are not counted
             if self
                 .0
                 .flags
@@ -672,26 +672,20 @@ impl RecvHalfConnection {
                 .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
             {
                 self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
-                self.set_flags(ConnectionFlags::STREAM_REFUSED);
+                if self.0.err_unknown_streams() {
+                    self.0.local_pending_reset.add(id, &self.0.local_config);
+                }
                 return Ok(None);
             }
 
-            // Max concurrent streams check
+            // Max concurrent streams check, exceeding the limit is a stream
+            // error (RFC 9113 §5.1.2), refusals count toward the reset limit
             if let Some(max) = self.0.local_config.remote_max_concurrent_streams
                 && self.0.active_remote_streams.get() >= max
             {
-                // check if client opened more streams than allowed
-                // in that case close connection
-                return if self.flags().contains(ConnectionFlags::STREAM_REFUSED) {
-                    Err(Either::Left(Error::new(
-                        ConnectionError::ConcurrencyOverflow,
-                        self.service(),
-                    )))
-                } else {
-                    self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
-                    self.set_flags(ConnectionFlags::STREAM_REFUSED);
-                    Ok(None)
-                };
+                log::debug!("{}: refusing {id:?}, max concurrent streams {max}", self.tag());
+                self.0.streams_count.set(self.0.streams_count.get() + 1);
+                return self.reset_unknown_stream(id, frame::Reason::REFUSED_STREAM);
             }
 
             // Pseudo-headers validation, a malformed request is
@@ -1411,6 +1405,81 @@ mod tests {
 
         assert_eq!(client.max_streams(), None);
         assert!(client.is_ready());
+    }
+
+    /// During shutdown all new streams are refused, without hitting the
+    /// reset limit.
+    #[ntex::test]
+    async fn test_shutdown_refuses_new_streams() {
+        let srv = test::server_with_config(
+            async |()| {
+                fn_service(async move |io: Io<_>| {
+                    let _ = h2::server::handle_one(
+                        io.into(),
+                        Pipeline::new((), async move |_: h2::Message| {
+                            ServiceConfig::shutdown();
+                            sleep(Millis(10_000)).await;
+                            Ok::<_, h2::StreamError>(())
+                        }),
+                        Pipeline::new(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
+                    )
+                    .await;
+
+                    Ok::<_, ()>(())
+                })
+            },
+            SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
+        );
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.encode(frame::Settings::default().into(), &codec).unwrap();
+
+        // settings & window
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+
+        let pseudo = frame::PseudoHeaders {
+            method: Some(Method::POST),
+            scheme: Some("HTTPS".into()),
+            authority: Some("localhost".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+        let mut id = frame::StreamId::CLIENT;
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+        io.send(hdrs.into(), &codec).await.unwrap();
+        sleep(Millis(100)).await;
+
+        for _ in 0..32 {
+            id = id.next_id().unwrap();
+            let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+            io.send(hdrs.into(), &codec).await.unwrap();
+            assert_eq!(
+                io.recv(&codec).await.unwrap().unwrap(),
+                frame::Frame::Reset(frame::Reset::new(id, Reason::REFUSED_STREAM))
+            );
+            // data sent before the reset is seen is ignored
+            io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
+                .await
+                .unwrap();
+        }
+
+        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
     }
 
     #[ntex::test]

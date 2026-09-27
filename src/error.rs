@@ -44,9 +44,6 @@ pub enum ConnectionError {
     /// The peer sent more data than the connection receive window allows.
     #[error("Connection receive window is exceeded")]
     RecvWindowExceeded,
-    /// The peer exceeded the concurrent stream limit.
-    #[error("Max concurrent streams count achieved")]
-    ConcurrencyOverflow,
     /// The peer exceeded the rapid-reset limit.
     #[error("Stream rapid reset count achieved")]
     StreamResetsLimit,
@@ -98,9 +95,6 @@ impl ConnectionError {
             ConnectionError::RecvWindowExceeded => {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Connection receive window is exceeded")
             }
-            ConnectionError::ConcurrencyOverflow => {
-                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Max concurrent streams count achieved")
-            }
             ConnectionError::StreamResetsLimit => {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Stream rapid reset count achieved")
             }
@@ -130,7 +124,6 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
             ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
             ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
-            ConnectionError::ConcurrencyOverflow => "h2-conn-ConcurrencyOverflow",
             ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
             ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
             ConnectionError::ReadTimeout => "h2-conn-ReadTimeout",

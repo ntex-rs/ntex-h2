@@ -585,8 +585,10 @@ async fn test_send_after_response() {
 
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+/// Streams over the concurrency limit are refused, the connection stays
+/// usable until the peer keeps opening streams over the limit.
 #[ntex::test]
-async fn test_goaway_on_overflow() {
+async fn test_refuse_on_overflow() {
     let srv = start_server().await;
     let addr = srv.addr();
 
@@ -620,12 +622,39 @@ async fn test_goaway_on_overflow() {
     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::REFUSED_STREAM);
 
-    let id = id.next_id().unwrap();
-    let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
-    io.send(hdrs.clone().into(), &codec).await.unwrap();
+    // data sent before the reset is seen is ignored
+    io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
+        .await
+        .unwrap();
 
-    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
-    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    let mut id = id.next_id().unwrap();
+    let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    io.send(hdrs.clone().into(), &codec).await.unwrap();
+    let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    assert_eq!(res.reason(), Reason::REFUSED_STREAM);
+
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame: {frm:?}"),
+    }
+
+    // continuous overflow hits the reset limit
+    loop {
+        id = id.next_id().unwrap();
+        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+        io.send(hdrs.into(), &codec).await.unwrap();
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Reset(rst) => assert_eq!(rst.reason(), Reason::REFUSED_STREAM),
+            frame::Frame::GoAway(res) => {
+                assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+                assert_eq!(res.data().as_ref(), b"Stream rapid reset count achieved");
+                break;
+            }
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
+        assert!(u32::from(id) < 64, "reset limit is not reached");
+    }
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
