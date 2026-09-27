@@ -136,6 +136,9 @@ where
         log::debug!("{}: Handle h2 message: {reqt:?}", self.connection.tag());
 
         match req {
+            DispatchItem::Item(frame) if let Err(err) = self.connection.check_first_frame(&frame) => {
+                self.handle_message(Err(Either::Left(err))).await
+            }
             DispatchItem::Item(frame) => match frame {
                 Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)).await,
                 Frame::Data(data) => self.handle_message(self.connection.recv_data(data)).await,

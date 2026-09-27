@@ -811,6 +811,18 @@ impl RecvHalfConnection {
         }
     }
 
+    /// The first frame from the peer must be SETTINGS (RFC 9113 §3.4)
+    pub(crate) fn check_first_frame(&self, frame: &frame::Frame) -> Result<(), Error<ConnectionError>> {
+        if self.flags().contains(ConnectionFlags::REMOTE_SETTINGS)
+            || matches!(frame, frame::Frame::Settings(s) if !s.is_ack())
+        {
+            Ok(())
+        } else {
+            proto_err!(conn: "first frame is not SETTINGS: {frame:?}");
+            Err(Error::new(ConnectionError::MissingSettings, self.service()))
+        }
+    }
+
     pub(crate) fn recv_settings(
         &self,
         settings: frame::Settings,

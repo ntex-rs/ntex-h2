@@ -585,6 +585,32 @@ async fn test_send_after_response() {
 
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+/// The first frame after the preface must be SETTINGS.
+#[ntex::test]
+async fn test_first_frame_not_settings() {
+    let srv = start_server().await;
+
+    for first in [frame::Ping::new([1; 8]).into(), frame::Settings::ack().into()] {
+        let io = connect(srv.addr()).await;
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.send(first, &codec).await.unwrap();
+
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Settings(_) | frame::Frame::WindowUpdate(_) => {}
+                frame::Frame::GoAway(res) => {
+                    assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+                    assert_eq!(res.data().as_ref(), b"First frame is not SETTINGS");
+                    break;
+                }
+                frm => panic!("unexpected frame: {frm:?}"),
+            }
+        }
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+}
+
 /// Streams over the concurrency limit are refused, the connection stays
 /// usable until the peer keeps opening streams over the limit.
 #[ntex::test]

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+* The first frame from the peer must be SETTINGS, otherwise the connection is closed
+  with `PROTOCOL_ERROR`. Add `ConnectionError::MissingSettings`
+
 * Streams over the concurrency limit are always refused with `REFUSED_STREAM` and count
   toward the rapid reset limit, instead of closing the connection on the second overflow.
   Remove `ConnectionError::ConcurrencyOverflow`

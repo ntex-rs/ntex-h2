@@ -29,6 +29,9 @@ pub enum ConnectionError {
     /// A SETTINGS acknowledgment was not expected.
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
+    /// The first frame from the peer is not SETTINGS.
+    #[error("First frame is not SETTINGS")]
+    MissingSettings,
     /// A required pseudo-header is missing.
     #[error("Missing pseudo header {0:?}")]
     MissingPseudo(&'static str),
@@ -68,6 +71,9 @@ impl ConnectionError {
             }
             ConnectionError::Decoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame decoding")
+            }
+            ConnectionError::MissingSettings => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("First frame is not SETTINGS")
             }
             ConnectionError::MissingPseudo(s) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Missing pseudo header {s:?}"))
@@ -119,6 +125,7 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::StreamClosed(..) => "h2-conn-StreamClosed",
             ConnectionError::InvalidStreamId(_) => "h2-conn-InvalidStreamId",
             ConnectionError::UnexpectedSettingsAck => "h2-conn-UnexpectedSettingsAck",
+            ConnectionError::MissingSettings => "h2-conn-MissingSettings",
             ConnectionError::MissingPseudo(_) => "h2-conn-MissingPseudo",
             ConnectionError::UnexpectedPseudo(_) => "h2-conn-UnexpectedPseudo",
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
