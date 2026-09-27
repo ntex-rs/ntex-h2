@@ -253,11 +253,14 @@ impl Decoder for Codec {
                         proto_err!(conn: "failed to load RESET frame; err={:?}", e);
                     })?
                     .into(),
-                Kind::GoAway => frame::GoAway::load(&bytes[frame::HEADER_LEN..])
-                    .inspect_err(|e| {
-                        proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
-                    })?
-                    .into(),
+                Kind::GoAway => {
+                    bytes.advance_to(frame::HEADER_LEN);
+                    frame::GoAway::load(bytes)
+                        .inspect_err(|e| {
+                            proto_err!(conn: "failed to load GO_AWAY frame; err={:?}", e);
+                        })?
+                        .into()
+                }
                 Kind::Priority => {
                     if head.stream_id() == 0 {
                         // Invalid stream identifier

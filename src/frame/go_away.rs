@@ -53,14 +53,19 @@ impl GoAway {
         &self.data
     }
 
-    pub fn load(payload: &[u8]) -> Result<GoAway, FrameError> {
+    pub fn load(mut payload: Bytes) -> Result<GoAway, FrameError> {
         if payload.len() < 8 {
             return Err(FrameError::BadFrameSize);
         }
 
         let (last_stream_id, _) = StreamId::parse(&payload[..4]);
         let error_code = unpack_octets_4!(payload, 4, u32);
-        let data = Bytes::copy_from_slice(&payload[8..]);
+        let data = if payload.len() > 8 {
+            payload.advance_to(8);
+            payload
+        } else {
+            Bytes::new()
+        };
 
         Ok(GoAway {
             last_stream_id,
@@ -96,5 +101,27 @@ impl fmt::Debug for GoAway {
         }
 
         builder.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_does_not_copy_data() {
+        let mut buf = b"\x00\x00\x00\x05\x00\x00\x00\x02".to_vec();
+        buf.extend_from_slice(&[b'a'; 1024]);
+        let payload = Bytes::from(buf);
+        let frm = GoAway::load(payload.clone()).unwrap();
+        assert_eq!(frm.last_stream_id(), StreamId::from(5));
+        assert_eq!(frm.reason(), Reason::INTERNAL_ERROR);
+        assert_eq!(frm.data(), &[b'a'; 1024][..]);
+        assert_eq!(frm.data().as_ptr(), payload[8..].as_ptr());
+
+        let frm = GoAway::load(payload.slice(..8)).unwrap();
+        assert!(frm.data().is_empty());
+
+        assert!(GoAway::load(payload.slice(..7)).is_err());
     }
 }

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+* Do not copy GO_AWAY debug data on decode, `GoAway::load()` accepts `Bytes`
+
 * Reject DATA frames that exceed the receive window, with a `FLOW_CONTROL_ERROR` stream
   reset or connection error, add `StreamError::RecvWindowExceeded` and
   `ConnectionError::RecvWindowExceeded`
