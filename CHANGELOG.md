@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Cap the HPACK encoder table at 4096 bytes, the peer's larger `SETTINGS_HEADER_TABLE_SIZE`
+  is not used
+
 * Use RFC 9113 error codes for frame decoding errors (`FRAME_SIZE_ERROR`, `FLOW_CONTROL_ERROR`,
   `COMPRESSION_ERROR`), GOAWAY debug data contains the decoding error. Add `FrameError::reason()`
   and `FrameError::InvalidInitialWindowSize`, fix swapped SETTINGS payload length errors

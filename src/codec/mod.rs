@@ -156,8 +156,13 @@ impl Codec {
     }
 
     /// Sets the peer's HPACK header table size.
+    ///
+    /// The encoder table is capped at 4096 bytes, larger peer values are ignored.
     pub fn set_send_header_table_size(&self, val: usize) {
-        self.0.encoder_hpack.borrow_mut().update_max_size(val);
+        self.0
+            .encoder_hpack
+            .borrow_mut()
+            .update_max_size(val.min(frame::DEFAULT_SETTINGS_HEADER_TABLE_SIZE));
     }
 
     /// Returns the maximum frame payload sent to the peer.

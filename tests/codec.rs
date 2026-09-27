@@ -1,7 +1,7 @@
 mod support;
 
 use ntex_bytes::BytesMut;
-use ntex_codec::Decoder;
+use ntex_codec::{Decoder, Encoder};
 use ntex_h2::{Codec, frame, frame::FrameError};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode};
 use ntex_io::testing::IoTest;
@@ -555,4 +555,29 @@ fn stream_level_header_errors_keep_hpack_state() {
         }
         res => panic!("unexpected result: {res:?}"),
     }
+}
+
+#[test]
+fn send_header_table_size_is_capped() {
+    fn encode(codec: &Codec) -> ntex_bytes::Bytes {
+        let hdrs = frame::Headers::new(
+            1.into(),
+            frame::PseudoHeaders::response(StatusCode::OK),
+            HeaderMap::new(),
+            true,
+        );
+        let mut buf = ntex_bytes::BytePages::default();
+        codec.encode(hdrs.into(), &mut buf).unwrap();
+        buf.freeze().slice(9..)
+    }
+
+    // larger than default, the table stays at 4096 without a size update
+    let codec = Codec::default();
+    codec.set_send_header_table_size(1 << 30);
+    assert_eq!(&encode(&codec)[..], &[0x88]);
+
+    // shrink, then grow back up to 4096 only
+    codec.set_send_header_table_size(100);
+    codec.set_send_header_table_size(1 << 30);
+    assert_eq!(&encode(&codec)[..], &[0x3f, 0x45, 0x3f, 0xe1, 0x1f, 0x88]);
 }
