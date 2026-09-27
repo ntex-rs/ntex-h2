@@ -55,7 +55,7 @@ async fn main() -> std::io::Result<()> {
                                     header::CONTENT_TYPE,
                                     header::HeaderValue::try_from("blah").unwrap(),
                                 );
-                                stream.send_trailers(hdrs);
+                                stream.send_trailers(hdrs)?;
                             }
                             MessageKind::Data(data, _cap) => {
                                 println!("Got data: {:?}", data.len());

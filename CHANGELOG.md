@@ -2,6 +2,12 @@
 
 ## [4.1.0] - Unreleased
 
+* Client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection error `PROTOCOL_ERROR`,
+  add `ConnectionError::UnexpectedEnablePush`
+
+* Requests, responses and trailers over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail with
+  `OperationError::HeaderListTooLarge`. `send_trailers()` returns `Result`
+
 * Cap the HPACK encoder table at 4096 bytes, the peer's larger `SETTINGS_HEADER_TABLE_SIZE`
   is not used
 

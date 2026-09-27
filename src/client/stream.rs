@@ -153,8 +153,10 @@ impl SendStream {
 
     #[inline]
     /// Sends trailers and closes the local side of the stream.
-    pub fn send_trailers(&self, map: HeaderMap) {
-        self.0.send_trailers(map);
+    ///
+    /// See [`crate::StreamRef::send_trailers`].
+    pub fn send_trailers(&self, map: HeaderMap) -> Result<(), Error<OperationError>> {
+        self.0.send_trailers(map)
     }
 
     /// Resets the stream with the specified reason.

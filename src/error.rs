@@ -32,6 +32,9 @@ pub enum ConnectionError {
     /// The first frame from the peer is not SETTINGS.
     #[error("First frame is not SETTINGS")]
     MissingSettings,
+    /// A server sent `SETTINGS_ENABLE_PUSH` set to 1.
+    #[error("Server sent SETTINGS_ENABLE_PUSH set to 1")]
+    UnexpectedEnablePush,
     /// A `WINDOW_UPDATE` increment was zero.
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
@@ -66,6 +69,9 @@ impl ConnectionError {
             ConnectionError::Decoder(err) => GoAway::new(err.reason()).set_data(err.to_string()),
             ConnectionError::MissingSettings => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("First frame is not SETTINGS")
+            }
+            ConnectionError::UnexpectedEnablePush => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Server enabled push")
             }
             ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
@@ -112,6 +118,7 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::InvalidStreamId(_) => "h2-conn-InvalidStreamId",
             ConnectionError::UnexpectedSettingsAck => "h2-conn-UnexpectedSettingsAck",
             ConnectionError::MissingSettings => "h2-conn-MissingSettings",
+            ConnectionError::UnexpectedEnablePush => "h2-conn-UnexpectedEnablePush",
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
             ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
             ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
@@ -272,6 +279,15 @@ pub enum OperationError {
     #[error("The stream ID space is overflowed")]
     OverflowedStreamId,
 
+    /// Header list exceeds the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`
+    #[error("Header list size {size} exceeds the peer's limit {max}")]
+    HeaderListTooLarge {
+        /// Header list size
+        size: usize,
+        /// Peer's limit
+        max: usize,
+    },
+
     /// Disconnecting
     #[error("Connection is disconnecting")]
     Disconnecting,
@@ -292,6 +308,7 @@ impl ErrorDiagnostic for OperationError {
             OperationError::RemoteReset(_) => "h2-oper-RemoteReset",
             OperationError::LocalReset(_) => "h2-oper-LocalReset",
             OperationError::OverflowedStreamId => "h2-oper-OverflowedStreamId",
+            OperationError::HeaderListTooLarge { .. } => "h2-oper-HeaderListTooLarge",
             OperationError::Disconnecting => "h2-oper-Disconnecting",
             OperationError::Disconnected => "h2-oper-Disconnected",
         }

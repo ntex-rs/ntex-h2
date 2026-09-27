@@ -63,6 +63,8 @@ struct ConnectionState {
     remote_window_sz: Cell<i32>,
     // Max frame size
     remote_frame_size: Cell<u32>,
+    // Peer's max header list size
+    remote_max_header_list_size: Cell<u32>,
     // Locally reset streams
     local_pending_reset: Pending,
     // protocol level error
@@ -129,6 +131,7 @@ impl Connection {
         let state = Rc::new(ConnectionState {
             codec,
             remote_frame_size,
+            remote_max_header_list_size: Cell::new(u32::MAX),
             pool,
             io: io.clone(),
             send_window: Cell::new(send_window),
@@ -285,6 +288,24 @@ impl Connection {
         self.0.remote_frame_size.get() as usize
     }
 
+    /// Checks the header list size against the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
+    pub(crate) fn check_header_list_size(
+        &self,
+        pseudo: &PseudoHeaders,
+        headers: &HeaderMap,
+    ) -> Result<(), Error<OperationError>> {
+        let max = self.0.remote_max_header_list_size.get() as usize;
+        let size = pseudo.header_list_size(headers);
+        if size > max {
+            Err(Error::new(
+                OperationError::HeaderListTooLarge { size, max },
+                self.service(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
     pub(crate) fn settings_processed(&self) -> bool {
         self.flags().contains(ConnectionFlags::SETTINGS_PROCESSED)
     }
@@ -428,17 +449,6 @@ impl Connection {
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, Error<OperationError>> {
-        let stream = {
-            let id = self.0.next_stream_id.get();
-            let next_id = id
-                .next_id()
-                .map_err(|_| Error::new(OperationError::OverflowedStreamId, self.service()))?;
-            self.0.next_stream_id.set(next_id);
-            let stream = StreamRef::new(id, false, self.clone());
-            self.0.streams.borrow_mut().insert(id, stream.clone());
-            stream
-        };
-
         let pseudo = PseudoHeaders {
             scheme: Some(if self.0.flags.get().contains(ConnectionFlags::SECURE) {
                 consts::HTTPS_SCHEME
@@ -449,6 +459,18 @@ impl Connection {
             authority: Some(authority),
             path: Some(path),
             ..Default::default()
+        };
+        self.check_header_list_size(&pseudo, &headers)?;
+
+        let stream = {
+            let id = self.0.next_stream_id.get();
+            let next_id = id
+                .next_id()
+                .map_err(|_| Error::new(OperationError::OverflowedStreamId, self.service()))?;
+            self.0.next_stream_id.set(next_id);
+            let stream = StreamRef::new(id, false, self.clone());
+            self.0.streams.borrow_mut().insert(id, stream.clone());
+            stream
         };
         stream.send_headers(Headers::new(stream.id(), pseudo, headers, eof));
         Ok(stream.into_stream())
@@ -862,6 +884,18 @@ impl RecvHalfConnection {
                 return Err(Either::Right(stream_errors));
             }
         } else {
+            if settings.is_push_enabled() == Some(true)
+                && !self.0.flags.get().contains(ConnectionFlags::SERVER)
+            {
+                proto_err!(conn: "server sent SETTINGS_ENABLE_PUSH=1");
+                return Err(Either::Left(Error::new(
+                    ConnectionError::UnexpectedEnablePush,
+                    self.service(),
+                )));
+            }
+            if let Some(max) = settings.max_header_list_size() {
+                self.0.remote_max_header_list_size.set(max);
+            }
             if let Some(max) = settings.max_frame_size() {
                 self.0.codec.set_send_frame_size(max as usize);
                 self.0.remote_frame_size.set(max);
@@ -1417,6 +1451,194 @@ mod tests {
 
         assert_eq!(client.max_streams(), None);
         assert!(client.is_ready());
+    }
+
+    /// A client must treat `SETTINGS_ENABLE_PUSH=1` as a connection error.
+    #[ntex::test]
+    async fn test_client_rejects_enable_push() {
+        use std::sync::{Arc, Mutex};
+
+        let goaway = Arc::new(Mutex::new(None));
+        let goaway2 = goaway.clone();
+        let srv = test::server(async move |()| {
+            let goaway = goaway2.clone();
+            fn_service(move |io: Io<_>| {
+                let goaway = goaway.clone();
+                async move {
+                    let codec = Codec::default();
+                    let mut preface = [0; 24];
+                    io.read_exact(&mut preface).await.unwrap();
+                    let mut settings = frame::Settings::default();
+                    settings.set_enable_push(true);
+                    io.send(settings.into(), &codec).await.unwrap();
+
+                    while let Ok(Some(frm)) = io.recv(&codec).await {
+                        if let frame::Frame::GoAway(frm) = frm {
+                            *goaway.lock().unwrap() = Some((frm.reason(), frm.data().clone()));
+                        }
+                    }
+                    Ok::<_, ()>(())
+                }
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        sleep(Millis(150)).await;
+
+        assert_eq!(
+            goaway.lock().unwrap().take(),
+            Some((Reason::PROTOCOL_ERROR, Bytes::from_static(b"Server enabled push")))
+        );
+        assert!(
+            client
+                .send(Method::GET, "/".into(), HeaderMap::new(), true)
+                .await
+                .is_err()
+        );
+    }
+
+    /// Requests over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail locally.
+    #[ntex::test]
+    async fn test_client_max_header_list_size() {
+        let srv = test::server(async |()| {
+            fn_service(async move |io: Io<_>| {
+                let codec = Codec::default();
+                let mut preface = [0; 24];
+                io.read_exact(&mut preface).await.unwrap();
+                let mut settings = frame::Settings::default();
+                settings.set_max_header_list_size(Some(200));
+                io.send(settings.into(), &codec).await.unwrap();
+
+                while let Ok(Some(frm)) = io.recv(&codec).await {
+                    if let frame::Frame::Headers(hdrs) = frm {
+                        assert_eq!(hdrs.stream_id(), frame::StreamId::CLIENT);
+                        let pseudo = frame::PseudoHeaders::response(ntex::http::StatusCode::OK);
+                        let hdrs = frame::Headers::new(hdrs.stream_id(), pseudo, HeaderMap::new(), true);
+                        io.send(hdrs.into(), &codec).await.unwrap();
+                    }
+                }
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        sleep(Millis(150)).await;
+
+        let mut large = HeaderMap::new();
+        large.insert(
+            ntex::http::header::USER_AGENT,
+            ntex::http::header::HeaderValue::from_static(concat!(
+                "0123456789012345678901234567890123456789012345678901234567890123456789",
+                "0123456789012345678901234567890123456789012345678901234567890123456789",
+            )),
+        );
+        let err = client
+            .send(Method::GET, "/".into(), large, true)
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(*err, h2::OperationError::HeaderListTooLarge { max: 200, .. }),
+            "{err:?}"
+        );
+
+        // the stream id is not used, the next request gets the first id
+        let (_snd, rcv) = client
+            .send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await
+            .unwrap();
+        let msg = rcv.recv().await.unwrap();
+        assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
+    }
+
+    /// Responses and trailers over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail locally.
+    #[ntex::test]
+    async fn test_server_max_header_list_size() {
+        use std::sync::{Arc, Mutex};
+
+        let results = Arc::new(Mutex::new(Vec::new()));
+        let results2 = results.clone();
+        let srv = test::server(async move |()| {
+            let results = results2.clone();
+            fn_service(move |io: Io<_>| {
+                let results = results.clone();
+                async move {
+                    let _ = h2::server::handle_one(
+                        io.into(),
+                        Pipeline::new((), async move |msg: h2::Message| {
+                            if let h2::MessageKind::Headers { .. } = msg.kind {
+                                let mut large = HeaderMap::new();
+                                large.insert(
+                                    ntex::http::header::SERVER,
+                                    ntex::http::header::HeaderValue::from_static(concat!(
+                                        "01234567890123456789012345678901234567890123456789",
+                                        "01234567890123456789012345678901234567890123456789",
+                                    )),
+                                );
+                                let st = ntex::http::StatusCode::OK;
+                                let mut res = results.lock().unwrap();
+                                res.push(msg.stream.send_response(st, large.clone(), false).is_ok());
+                                res.push(msg.stream.send_response(st, HeaderMap::new(), false).is_ok());
+                                res.push(msg.stream.send_trailers(large).is_ok());
+                                res.push(msg.stream.send_trailers(HeaderMap::new()).is_ok());
+                            }
+                            Ok::<_, h2::StreamError>(())
+                        }),
+                        Pipeline::new(
+                            (),
+                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
+                                Ok::<_, ()>(msg.ack())
+                            })
+                            .map_err(|()| unreachable!()),
+                        )
+                        .bind(),
+                    )
+                    .await;
+                    Ok::<_, ()>(())
+                }
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        let mut settings = frame::Settings::default();
+        settings.set_max_header_list_size(Some(120));
+        io.encode(settings.into(), &codec).unwrap();
+
+        let pseudo = frame::PseudoHeaders {
+            method: Some(Method::GET),
+            scheme: Some("https".into()),
+            authority: Some("localhost".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+        let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo, HeaderMap::new(), true);
+        io.send(hdrs.into(), &codec).await.unwrap();
+
+        let mut headers = 0;
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Headers(hdrs) => {
+                    headers += 1;
+                    if hdrs.is_end_stream() {
+                        break;
+                    }
+                }
+                frame::Frame::Settings(s) if !s.is_ack() => {
+                    io.encode(frame::Settings::ack().into(), &codec).unwrap();
+                }
+                frame::Frame::Reset(rst) => panic!("unexpected reset: {rst:?}"),
+                _ => {}
+            }
+        }
+        assert_eq!(headers, 2);
+        assert_eq!(*results.lock().unwrap(), [false, true, false, true]);
     }
 
     /// A malformed response is a stream error, the connection stays usable.

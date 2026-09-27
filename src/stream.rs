@@ -739,6 +739,7 @@ impl StreamRef {
         match self.0.send.get() {
             HalfState::Idle => {
                 let pseudo = PseudoHeaders::response(status);
+                self.0.con.check_header_list_size(&pseudo, &headers)?;
                 let mut hdrs = Headers::new(self.0.id, pseudo, headers, eof);
 
                 if eof {
@@ -844,14 +845,22 @@ impl StreamRef {
     }
 
     /// Sends trailers and closes the local side of the stream.
-    pub fn send_trailers(&self, map: HeaderMap) {
+    ///
+    /// Does nothing if the stream is not in the payload state. Fails if
+    /// the trailers exceed the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`,
+    /// the stream stays in the payload state.
+    pub fn send_trailers(&self, map: HeaderMap) -> Result<(), Error<OperationError>> {
         if self.0.send.get() == HalfState::Payload {
+            self.0
+                .con
+                .check_header_list_size(&PseudoHeaders::default(), &map)?;
             let mut hdrs = Headers::trailers(self.0.id, map);
             hdrs.set_end_headers();
             hdrs.set_end_stream();
             self.0.con.encode(hdrs);
             self.0.state_send_close(None);
         }
+        Ok(())
     }
 
     /// Returns the currently available stream and connection send capacity.

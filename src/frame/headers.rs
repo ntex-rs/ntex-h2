@@ -289,6 +289,20 @@ impl fmt::Debug for Headers {
 // ===== impl Pseudo =====
 
 impl PseudoHeaders {
+    /// Returns the header list size of the pseudo-headers and `fields`
+    /// (name + value + 32 per field, RFC 9113 §6.5.2).
+    pub(crate) fn header_list_size(&self, fields: &HeaderMap) -> usize {
+        let pseudo = self.method.as_ref().map_or(0, |v| 32 + 7 + v.as_str().len())
+            + self.scheme.as_ref().map_or(0, |v| 32 + 7 + v.len())
+            + self.authority.as_ref().map_or(0, |v| 32 + 10 + v.len())
+            + self.path.as_ref().map_or(0, |v| 32 + 5 + v.len())
+            + self.protocol.as_ref().map_or(0, |v| 32 + 9 + v.as_str().len())
+            + self.status.map_or(0, |_| 32 + 7 + 3);
+        fields.iter().fold(pseudo, |acc, (name, value)| {
+            acc + 32 + name.as_str().len() + value.len()
+        })
+    }
+
     /// Creates request pseudo headers from a method and URI.
     ///
     /// An empty path becomes `/`, except for `OPTIONS` and `CONNECT`.
