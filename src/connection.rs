@@ -1033,13 +1033,8 @@ impl RecvHalfConnection {
             )))
         } else if self.0.local_pending_reset.remove(id) {
             self.update_rst_count().map_err(Either::Left)
-        } else if self.0.err_unknown_streams() {
-            self.update_rst_count().map_err(Either::Left)?;
-            Err(Either::Left(Error::new(
-                ConnectionError::UnknownStream("RST_STREAM"),
-                self.service(),
-            )))
         } else {
+            // late reset for a stream that is already forgotten
             Ok(())
         }
     }
@@ -2100,5 +2095,35 @@ mod tests {
         srv.write([0, 0, 4, 8, 0, 0, 0, 0, 1, 0, 0, 0, 4]);
         sleep(Millis(50)).await;
         stream.send_payload("test", true).await.unwrap();
+    }
+
+    #[ntex::test]
+    async fn test_rst_stream_for_unknown_stream_ignored() {
+        let (client, srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let id = stream.id();
+        let con = stream.stream().0.con.clone();
+
+        // local reset keeps the id in the pending list
+        assert!(stream.reset(Reason::CANCEL));
+        assert!(con.0.local_pending_reset.is_pending(id));
+
+        // peer reset removes the id from the pending list
+        srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
+        sleep(Millis(50)).await;
+        assert!(!con.0.local_pending_reset.is_pending(id));
+
+        // late resets for forgotten and unknown streams are ignored
+        srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
+        srv.write([0, 0, 4, 3, 0, 0, 0, 0, 9, 0, 0, 0, 8]);
+        sleep(Millis(50)).await;
+        assert!(!client.is_closed());
+        client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
     }
 }

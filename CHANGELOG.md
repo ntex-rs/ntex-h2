@@ -2,6 +2,8 @@
 
 ## [4.1.0] - Unreleased
 
+* Ignore RST_STREAM for unknown or forgotten streams instead of a connection error
+
 * Stop the capacity timer when a stream closes or fails, the timer does not keep closed streams
   alive
 

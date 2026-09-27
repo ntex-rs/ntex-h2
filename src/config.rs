@@ -232,9 +232,10 @@ impl ServiceConfig {
     /// bound on the amount of state that is maintained. When this max value is
     /// reached, the oldest reset stream is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional frames
-    /// received for that stream will result in a connection level protocol
-    /// error, forcing the connection to terminate.
+    /// Once the stream has been fully purged from memory, any additional `DATA`
+    /// or `WINDOW_UPDATE` frames received for that stream will result in a
+    /// connection level protocol error, forcing the connection to terminate.
+    /// `RST_STREAM` and `PRIORITY` frames are ignored.
     ///
     /// The default value is 32.
     pub fn set_max_concurrent_reset_streams(mut self, val: usize) -> Self {
@@ -257,9 +258,10 @@ impl ServiceConfig {
     /// this state will be maintained in memory. Once the duration elapses, the
     /// stream state is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional frames
-    /// received for that stream will result in a connection level protocol
-    /// error, forcing the connection to terminate.
+    /// Once the stream has been fully purged from memory, any additional `DATA`
+    /// or `WINDOW_UPDATE` frames received for that stream will result in a
+    /// connection level protocol error, forcing the connection to terminate.
+    /// `RST_STREAM` and `PRIORITY` frames are ignored.
     ///
     /// The default value is 30 seconds.
     pub fn set_reset_stream_duration(mut self, dur: Seconds) -> Self {
