@@ -1419,6 +1419,69 @@ mod tests {
         assert!(client.is_ready());
     }
 
+    /// A malformed response is a stream error, the connection stays usable.
+    #[ntex::test]
+    async fn test_malformed_response_pseudo() {
+        let srv = test::server(async |()| {
+            fn_service(async move |io: Io<_>| {
+                let codec = Codec::default();
+                let mut preface = [0; 24];
+                io.read_exact(&mut preface).await.unwrap();
+                io.send(frame::Settings::default().into(), &codec).await.unwrap();
+
+                while let Ok(Some(frm)) = io.recv(&codec).await {
+                    match frm {
+                        frame::Frame::Headers(hdrs) => {
+                            let id = hdrs.stream_id();
+                            let pseudo = match hdrs.pseudo().path.as_deref() {
+                                Some("/no-status") => frame::PseudoHeaders::default(),
+                                Some("/path") => frame::PseudoHeaders {
+                                    status: Some(ntex::http::StatusCode::OK),
+                                    path: Some("/".into()),
+                                    ..Default::default()
+                                },
+                                _ => frame::PseudoHeaders::response(ntex::http::StatusCode::OK),
+                            };
+                            let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), true);
+                            io.send(hdrs.into(), &codec).await.unwrap();
+                        }
+                        frame::Frame::Reset(rst) => {
+                            assert_eq!(rst.reason(), Reason::PROTOCOL_ERROR);
+                        }
+                        _ => {}
+                    }
+                }
+                Ok::<_, ()>(())
+            })
+        });
+
+        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+        let io = ntex::connect::connect(addr).await.unwrap();
+        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        sleep(Millis(150)).await;
+
+        for (path, expected) in [
+            ("/no-status", Some(h2::StreamError::MissingPseudo("status"))),
+            ("/path", Some(h2::StreamError::UnexpectedPseudo("path"))),
+            ("/", None),
+        ] {
+            let (_snd, rcv) = client
+                .send(Method::GET, path.into(), HeaderMap::new(), true)
+                .await
+                .unwrap();
+            let msg = rcv.recv().await.unwrap();
+            match (msg.kind, expected) {
+                (h2::MessageKind::Eof(h2::StreamEof::Error(err)), Some(expected)) => {
+                    assert_eq!(*err, expected);
+                }
+                (h2::MessageKind::Headers { pseudo, .. }, None) => {
+                    assert_eq!(pseudo.status, Some(ntex::http::StatusCode::OK));
+                }
+                (kind, _) => panic!("unexpected message for {path}: {kind:?}"),
+            }
+        }
+    }
+
     /// Streams reset by the local side get the final message, if the
     /// receive side is still open.
     #[ntex::test]

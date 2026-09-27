@@ -525,6 +525,31 @@ impl StreamRef {
 
         match self.0.recv.get() {
             HalfState::Idle => {
+                // a response must have only the :status pseudo-header,
+                // a malformed response is a stream error (RFC 9113 §8.3.2)
+                if !self.is_remote() {
+                    let pseudo = hdrs.pseudo();
+                    let err = if pseudo.status.is_none() {
+                        Some(StreamError::MissingPseudo("status"))
+                    } else if pseudo.method.is_some() {
+                        Some(StreamError::UnexpectedPseudo("method"))
+                    } else if pseudo.scheme.is_some() {
+                        Some(StreamError::UnexpectedPseudo("scheme"))
+                    } else if pseudo.authority.is_some() {
+                        Some(StreamError::UnexpectedPseudo("authority"))
+                    } else if pseudo.path.is_some() {
+                        Some(StreamError::UnexpectedPseudo("path"))
+                    } else if pseudo.protocol.is_some() {
+                        Some(StreamError::UnexpectedPseudo("protocol"))
+                    } else {
+                        None
+                    };
+                    if let Some(err) = err {
+                        proto_err!(stream: "malformed response on {:?}: {err}", self.0.id);
+                        return Err(Error::new(err, self.service()));
+                    }
+                }
+
                 let eof = hdrs.is_end_stream();
                 if eof {
                     self.0.state_recv_close(None);

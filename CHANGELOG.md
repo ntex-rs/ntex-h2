@@ -2,6 +2,10 @@
 
 ## [4.1.0] - Unreleased
 
+* A response without `:status` or with request pseudo-headers is a stream error with
+  `PROTOCOL_ERROR`. Remove unused `ConnectionError::MissingPseudo` and
+  `ConnectionError::UnexpectedPseudo`
+
 * Publish stream reset message for locally closed streams
 
 * `SETTINGS_INITIAL_WINDOW_SIZE` that overflows a stream send window is a connection

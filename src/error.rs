@@ -32,12 +32,6 @@ pub enum ConnectionError {
     /// The first frame from the peer is not SETTINGS.
     #[error("First frame is not SETTINGS")]
     MissingSettings,
-    /// A required pseudo-header is missing.
-    #[error("Missing pseudo header {0:?}")]
-    MissingPseudo(&'static str),
-    /// A pseudo-header is not valid in this message.
-    #[error("Unexpected pseudo header {0:?}")]
-    UnexpectedPseudo(&'static str),
     /// A `WINDOW_UPDATE` increment was zero.
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
@@ -74,12 +68,6 @@ impl ConnectionError {
             }
             ConnectionError::MissingSettings => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("First frame is not SETTINGS")
-            }
-            ConnectionError::MissingPseudo(s) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Missing pseudo header {s:?}"))
-            }
-            ConnectionError::UnexpectedPseudo(s) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Unexpected pseudo header {s:?}"))
             }
             ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
@@ -126,8 +114,6 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::InvalidStreamId(_) => "h2-conn-InvalidStreamId",
             ConnectionError::UnexpectedSettingsAck => "h2-conn-UnexpectedSettingsAck",
             ConnectionError::MissingSettings => "h2-conn-MissingSettings",
-            ConnectionError::MissingPseudo(_) => "h2-conn-MissingPseudo",
-            ConnectionError::UnexpectedPseudo(_) => "h2-conn-UnexpectedPseudo",
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
             ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
             ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
