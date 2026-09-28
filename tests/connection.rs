@@ -1238,6 +1238,10 @@ async fn test_invalid_pseudo_reset_stream() {
             status: Some(http::StatusCode::OK),
             ..valid.clone()
         },
+        frame::PseudoHeaders {
+            protocol: Some("websocket".into()),
+            ..valid.clone()
+        },
     ];
 
     let mut id = frame::StreamId::from(3);
@@ -1492,6 +1496,14 @@ async fn test_connect_request() {
         ),
         (
             connect(Some("example.com:443"), None, Some("/")),
+            Some(Reason::PROTOCOL_ERROR),
+        ),
+        // extended CONNECT is not enabled (RFC 8441 §4)
+        (
+            frame::PseudoHeaders {
+                protocol: Some("websocket".into()),
+                ..connect(Some("example.com:443"), Some("https"), Some("/"))
+            },
             Some(Reason::PROTOCOL_ERROR),
         ),
     ];

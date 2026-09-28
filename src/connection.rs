@@ -763,10 +763,14 @@ impl RecvHalfConnection {
             // Pseudo-headers validation, a malformed request is
             // a stream error (RFC 9113 §8.1.1)
             let pseudo = frm.pseudo();
-            // CONNECT omits `:scheme` and `:path`, extended CONNECT does not (RFC 9113 §8.5)
-            let connect = pseudo.method == Some(Method::CONNECT) && pseudo.protocol.is_none();
+            // CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5)
+            let connect = pseudo.method == Some(Method::CONNECT);
             let err = if pseudo.method.is_none() {
                 Some(StreamError::MissingPseudo("method"))
+            } else if pseudo.protocol.is_some() {
+                // extended CONNECT is not supported, `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+                // is never sent (RFC 8441 §4)
+                Some(StreamError::UnexpectedPseudo("protocol"))
             } else if connect && pseudo.authority.as_ref().is_none_or(|s| s.as_str().is_empty()) {
                 Some(StreamError::MissingPseudo("authority"))
             } else if connect && pseudo.scheme.is_some() {

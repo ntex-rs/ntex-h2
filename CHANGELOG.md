@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Server resets a request with the `:protocol` pseudo header with `PROTOCOL_ERROR`, extended
+  CONNECT is not enabled
+
 * Client validates a response to a `HEAD` request as a response without content, its
   `content-length` header was checked against the response `DATA`
 
