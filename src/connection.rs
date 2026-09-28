@@ -2499,10 +2499,17 @@ mod tests {
 
     /// Client without capacity timeout, the peer sets the initial stream window
     async fn window_client(window: u32) -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
+        window_client_with(window, Seconds::ZERO).await
+    }
+
+    async fn window_client_with(
+        window: u32,
+        capacity_timeout: Seconds,
+    ) -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
         let (io, srv) = ntex::io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
-            .add(ServiceConfig::new().set_capacity_timeout(Seconds::ZERO))
+            .add(ServiceConfig::new().set_capacity_timeout(capacity_timeout))
             .build();
         let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
         srv.write(initial_window_frame(window));
@@ -2700,6 +2707,40 @@ mod tests {
         stream.send_payload(Bytes::new(), true).await.unwrap();
         sleep(Millis(50)).await;
         assert_eq!(client_data(&srv, &codec), [(0, true)]);
+    }
+
+    /// Stream window updates do not extend the capacity timeout while the
+    /// connection window is exhausted.
+    #[ntex::test]
+    async fn test_stream_updates_do_not_extend_capacity_timeout() {
+        let (client, srv) = window_client_with(1_000_000, Seconds(1)).await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        // exhaust the default connection window
+        let conn_window = frame::DEFAULT_INITIAL_WINDOW_SIZE as usize;
+        stream
+            .send_payload(Bytes::from(vec![b'x'; conn_window]), false)
+            .await
+            .unwrap();
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        let s = stream.stream().clone();
+        let waiter = ntex::rt::spawn(async move { s.send_payload("x", true).await });
+
+        // the peer trickles stream window updates only
+        for _ in 0..10 {
+            sleep(Millis(300)).await;
+            srv.write(window_update_frame(1, 1));
+        }
+        let res = ntex::time::timeout(Millis(100), waiter).await;
+        let res = res.expect("capacity timeout is extended").unwrap();
+        assert!(matches!(
+            &*res.unwrap_err(),
+            h2::OperationError::Stream(h2::StreamError::CapacityTimeout)
+        ));
     }
 
     /// Capacity waiters fail once the send side is closed.

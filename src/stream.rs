@@ -676,8 +676,16 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_window_update_connection(&self) {
-        let window = self.0.send_window.get();
-        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
+        self.wake_capacity_waiter();
+    }
+
+    /// Wakes a waiting sender if both stream and connection capacity are available.
+    ///
+    /// The capacity timer keeps running while either window is exhausted.
+    fn wake_capacity_waiter(&self) {
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            && self.available_send_capacity() > 0
+        {
             self.0.send_cap.wake();
             self.stop_capacity_timer();
         }
@@ -692,11 +700,7 @@ impl StreamRef {
                 .inc(frm.size_increment())
                 .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?;
             self.0.send_window.set(window);
-
-            if window.available() {
-                self.0.send_cap.wake();
-                self.stop_capacity_timer();
-            }
+            self.wake_capacity_waiter();
             Ok(())
         }
     }
@@ -720,10 +724,7 @@ impl StreamRef {
         self.0.send_window.set(window);
 
         // SETTINGS_INITIAL_WINDOW_SIZE can grow the window, wake a waiting sender
-        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
-            self.0.send_cap.wake();
-            self.stop_capacity_timer();
-        }
+        self.wake_capacity_waiter();
         Ok(())
     }
 

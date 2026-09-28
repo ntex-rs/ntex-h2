@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Stream window updates do not restart the capacity timeout while the connection
+  window is exhausted
+
 * Waiting for send capacity fails with `OperationError::Closed` once the send side
   is closed, instead of waiting forever or reporting capacity
 
