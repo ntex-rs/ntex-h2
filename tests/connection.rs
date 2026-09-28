@@ -1985,3 +1985,47 @@ async fn test_client_interim_responses() {
     }
     assert!(!client.is_closed());
 }
+
+/// A response to a HEAD request has no content, its `content-length`
+/// describes the content of a GET response.
+#[ntex::test]
+async fn test_client_head_response() {
+    let (client, srv) = limited_client(10);
+    sleep(Millis(50)).await;
+
+    // 200 with `content-length: 10`, then empty DATA with END_STREAM
+    let (_snd, rcv) = client
+        .send(Method::HEAD, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    srv.write([0, 0, 6, 1, 4, 0, 0, 0, 1, 0x88, 0x0f, 0x0d, 2, b'1', b'0']);
+    srv.write([0, 0, 0, 0, 1, 0, 0, 0, 1]);
+    let msg = rcv.recv().await.unwrap();
+    let MessageKind::Headers { pseudo, headers, eof } = msg.kind else {
+        panic!("unexpected message: {msg:?}")
+    };
+    assert_eq!(pseudo.status.unwrap().as_u16(), 200);
+    assert_eq!(headers.get("content-length").unwrap(), "10");
+    assert!(!eof);
+    let msg = rcv.recv().await.unwrap();
+    assert!(
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data)) if data.is_empty()),
+        "{msg:?}"
+    );
+
+    // content in a HEAD response is an error
+    let (_snd, rcv) = client
+        .send(Method::HEAD, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    srv.write([0, 0, 1, 1, 4, 0, 0, 0, 3, 0x88]);
+    srv.write([0, 0, 2, 0, 1, 0, 0, 0, 3, b'o', b'k']);
+    let msg = rcv.recv().await.unwrap();
+    assert!(matches!(msg.kind, MessageKind::Headers { .. }), "{msg:?}");
+    let msg = rcv.recv().await.unwrap();
+    let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = msg.kind else {
+        panic!("unexpected message: {msg:?}")
+    };
+    assert_eq!(err.into_error(), ntex_h2::StreamError::NonEmptyPayload);
+    assert!(!client.is_closed());
+}

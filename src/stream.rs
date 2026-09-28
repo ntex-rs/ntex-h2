@@ -2,7 +2,7 @@ use std::{cell::Cell, cmp, fmt, future::poll_fn, hash, ops, rc::Rc, task::Contex
 
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
-use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
+use ntex_http::{HeaderMap, Method, StatusCode, header::CONTENT_LENGTH};
 use ntex_util::{future::Either, task::LocalWaker};
 
 use crate::error::{OperationError, StreamError};
@@ -507,11 +507,8 @@ impl StreamRef {
             hdrs.is_end_stream()
         );
 
-        if hdrs
-            .pseudo()
-            .status
-            .is_some_and(|status| status.is_informational())
-        {
+        // a response to a HEAD request has no content (RFC 9110 §9.3.2)
+        if hdrs.pseudo().method == Some(Method::HEAD) {
             self.0.content_length.set(ContentLength::Head);
         }
         self.0.con.encode(hdrs);

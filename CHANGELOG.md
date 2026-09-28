@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Client validates a response to a `HEAD` request as a response without content, its
+  `content-length` header was checked against the response `DATA`
+
 * Client delivers interim `1xx` responses and waits for the final response, a following `HEADERS`
   was rejected as trailers without end of stream, an interim response with `END_STREAM` or `101`
   status is malformed (new `StreamError::InvalidInformational`)
