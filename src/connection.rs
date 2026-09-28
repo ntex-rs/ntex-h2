@@ -73,6 +73,8 @@ struct ConnectionState {
     local_pending_reset: Pending,
     // protocol level error
     error: Cell<Option<Error<OperationError>>>,
+    // reason of the received GOAWAY frame
+    go_away: Cell<Option<frame::Reason>>,
     // connection state flags
     flags: Cell<ConnectionFlags>,
 
@@ -157,6 +159,7 @@ impl Connection {
             local_pending_reset: Pending::default(),
             remote_window_sz: Cell::new(frame::DEFAULT_INITIAL_WINDOW_SIZE),
             error: Cell::new(None),
+            go_away: Cell::new(None),
             flags: Cell::new(flags),
         });
         let con = Connection(state);
@@ -264,6 +267,8 @@ impl Connection {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
             Err(err)
+        } else if let Some(reason) = self.0.go_away.get() {
+            Err(Error::new(ConnectionError::GoAway(reason), self.service()))
         } else if self
             .0
             .flags
@@ -451,6 +456,10 @@ impl Connection {
         if self.is_closed() {
             return Err(Error::new(OperationError::Disconnected, self.service()));
         }
+        // the peer does not process new streams after GOAWAY
+        if let Some(reason) = self.0.go_away.get() {
+            return Err(Error::new(ConnectionError::GoAway(reason), self.service()));
+        }
         let stream = self.open_stream(authority, method, path, headers, eof)?;
         self.0
             .reserved_streams
@@ -598,9 +607,11 @@ impl ConnectionState {
 
     fn drop_stream(&self, id: StreamId) {
         let mut released = false;
+        let mut removed = false;
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
+                removed = true;
                 stream.stop_capacity_timer();
                 #[cfg(feature = "trace")]
                 log::trace!(
@@ -623,8 +634,10 @@ impl ConnectionState {
         }
         let flags = self.flags.get();
 
-        // Close connection
-        if empty
+        // Close connection, streams failed by a connection error are already
+        // removed, the connection error handler closes the connection
+        if removed
+            && empty
             && self.reserved_streams.get() == 0
             && flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY)
         {
@@ -1111,27 +1124,41 @@ impl RecvHalfConnection {
         self.set_flags(ConnectionFlags::RECV_PONG);
     }
 
+    /// Handles a received GOAWAY frame (RFC 9113 §6.8).
+    ///
+    /// Locally initiated streams above `last_stream_id` were not processed
+    /// by the peer and are failed, and new streams are refused. Remaining
+    /// streams complete normally, the connection closes after that.
     pub(crate) fn recv_go_away(
         &self,
         reason: frame::Reason,
+        last_stream_id: StreamId,
         data: &Bytes,
     ) -> HashMap<StreamId, StreamRef> {
         log::trace!(
-            "{}: processing go away with reason: {:?}, data: {:?}",
+            "{}: processing go away with reason: {:?}, last stream: {:?}, data: {:?}",
             self.tag(),
             reason,
+            last_stream_id,
             data.slice(..std::cmp::min(data.len(), 20))
         );
 
-        self.0
-            .error
-            .set(Some(Error::new(ConnectionError::GoAway(reason), self.service())));
-        self.0.readiness.borrow_mut().clear();
+        self.0.go_away.set(Some(reason));
 
-        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        let streams: HashMap<_, _> = self
+            .0
+            .streams
+            .borrow()
+            .iter()
+            .filter(|(id, stream)| !stream.is_remote() && **id > last_stream_id)
+            .map(|(id, stream)| (*id, stream.clone()))
+            .collect();
+
+        // failing a stream removes it from the connection
         for stream in streams.values() {
             stream.set_go_away(reason);
         }
+        Connection(self.0.clone()).disconnect_when_ready();
         self.0.notify_capacity();
         streams
     }
@@ -1194,6 +1221,17 @@ impl RecvHalfConnection {
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
         for stream in streams.values() {
             stream.set_failed_stream(Error::new(OperationError::Disconnected, self.service()));
+        }
+        // graceful disconnect is in progress, no streams are left
+        if !streams.is_empty()
+            && self.0.reserved_streams.get() == 0
+            && self
+                .0
+                .flags
+                .get()
+                .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
+            self.0.io.close();
         }
         self.0.notify_capacity();
         streams
@@ -2713,6 +2751,85 @@ mod tests {
         stream.stream().reset(Reason::CANCEL);
         let res = ntex::time::timeout(Millis(500), fut).await;
         assert!(res.unwrap().unwrap().is_err());
+    }
+
+    /// A received GOAWAY fails only local streams above `last_stream_id`,
+    /// remaining streams complete, new streams are refused (RFC 9113 §6.8).
+    #[ntex::test]
+    async fn test_go_away_last_stream_id() {
+        use crate::error::{ConnectionError, OperationError};
+
+        let (client, srv) = window_client(1024).await;
+        let codec = Codec::default();
+        let (s1, r1) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let (s3, _r3) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let _ = client_frames(&srv, &codec);
+
+        // GOAWAY, last stream id 1, INTERNAL_ERROR
+        srv.write([0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 2]);
+        sleep(Millis(50)).await;
+
+        // stream 3 was not processed by the peer
+        assert!(s3.send_payload(Bytes::from_static(b"data"), true).await.is_err());
+
+        // new streams are refused
+        let err = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .err()
+            .unwrap();
+        assert!(matches!(
+            *err,
+            OperationError::Connection(ConnectionError::GoAway(Reason::INTERNAL_ERROR))
+        ));
+        assert!(client.is_disconnecting());
+        assert!(!client.is_closed());
+
+        // stream 1 completes
+        s1.send_payload(Bytes::from_static(b"data"), true).await.unwrap();
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(4, true)]);
+        // HEADERS, END_STREAM | END_HEADERS, `:status: 200`
+        srv.write([0, 0, 1, 1, 5, 0, 0, 0, 1, 0x88]);
+        let msg = r1.recv().await.unwrap();
+        assert!(matches!(msg.kind(), h2::MessageKind::Headers { eof: true, .. }));
+
+        // connection closes after the last stream
+        sleep(Millis(50)).await;
+        assert!(client.is_closed());
+    }
+
+    /// A protocol error during graceful GOAWAY handling closes the connection.
+    #[ntex::test]
+    async fn test_go_away_then_protocol_error() {
+        let (client, srv) = window_client(1024).await;
+        let codec = Codec::default();
+        let (_s1, _r1) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let _ = client_frames(&srv, &codec);
+
+        srv.write([0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+        sleep(Millis(50)).await;
+        assert!(client.is_disconnecting());
+
+        // zero connection window update is a connection error
+        srv.write(window_update_frame(0, 0));
+        sleep(Millis(50)).await;
+        assert!(client.is_closed());
+        let frames = client_frames(&srv, &codec);
+        assert!(
+            frames
+                .iter()
+                .any(|f| matches!(f, frame::Frame::GoAway(g) if g.reason() == Reason::PROTOCOL_ERROR))
+        );
     }
 
     /// `SETTINGS_INITIAL_WINDOW_SIZE` changes adjust open stream windows, the

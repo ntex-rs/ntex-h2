@@ -182,12 +182,15 @@ where
                 Frame::GoAway(frm) => {
                     log::trace!("{}: Processing GoAway: {:#?}", self.connection.tag(), frm);
                     let reason = frm.reason();
-                    let streams = self.connection.recv_go_away(reason, frm.data());
+                    let streams = self
+                        .connection
+                        .recv_go_away(reason, frm.last_stream_id(), frm.data());
                     self.handle_connection_error(
                         streams,
                         Error::new(ConnectionError::GoAway(reason), self.connection.service()),
                     );
-                    control(Control::go_away(frm), &self.inner).await
+                    // remaining streams complete, connection closes when they are done
+                    go_away(Control::go_away(frm), &self.inner).await
                 }
                 Frame::Invalid(frm) => self.handle_message(self.connection.recv_invalid_frame(frm)).await,
                 Frame::Priority(_prio) => {
@@ -344,22 +347,55 @@ where
     PErr: 'static,
 {
     if inner.can_disconnect() {
-        match inner.control.call(pkt).await {
-            Ok(res) => {
-                if let Some(frm) = res.frame {
-                    inner.connection.encode(frm);
-                }
+        call_control(pkt, inner, true).await
+    } else {
+        // control service is already notified (graceful GOAWAY), use default response
+        if let Some(frm) = pkt.ack().frame {
+            inner.connection.encode(frm);
+        }
+        inner.connection.close();
+        Ok(None)
+    }
+}
+
+async fn go_away<Err, PErr>(pkt: Control<PErr>, inner: &Inner<Err, PErr>) -> Result<Option<Frame>, Err>
+where
+    Err: 'static,
+    PErr: 'static,
+{
+    if inner.can_disconnect() {
+        call_control(pkt, inner, false).await
+    } else {
+        Ok(None)
+    }
+}
+
+async fn call_control<Err, PErr>(
+    pkt: Control<PErr>,
+    inner: &Inner<Err, PErr>,
+    close: bool,
+) -> Result<Option<Frame>, Err>
+where
+    Err: 'static,
+    PErr: 'static,
+{
+    match inner.control.call(pkt).await {
+        Ok(res) => {
+            if let Some(frm) = res.frame {
+                inner.connection.encode(frm);
+            }
+            if close {
                 inner.connection.close();
             }
-            Err(err) => {
-                // we cannot handle control service errors, close connection
-                inner
-                    .connection
-                    .encode(GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id));
-                inner.connection.close();
-                return Err(err);
-            }
+            Ok(None)
+        }
+        Err(err) => {
+            // we cannot handle control service errors, close connection
+            inner
+                .connection
+                .encode(GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id));
+            inner.connection.close();
+            Err(err)
         }
     }
-    Ok(None)
 }

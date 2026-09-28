@@ -2,6 +2,10 @@
 
 ## [4.1.0] - Unreleased
 
+* A received GOAWAY honors `last_stream_id` (RFC 9113 §6.8): only locally initiated streams
+  above it are failed, remaining streams complete, new streams are refused with
+  `ConnectionError::GoAway`, the connection closes once the remaining streams are done
+
 * Sending payload waits for the io write back-pressure release, a peer with large flow-control
   windows that does not read could make the sender buffer unbounded data
 
