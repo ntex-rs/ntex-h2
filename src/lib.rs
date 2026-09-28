@@ -93,7 +93,6 @@
 //! # Features
 //!
 //! * `trace` - logs every frame and stream state change at trace level.
-//! * `unstable` - enables unstable APIs.
 //!
 //! [HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113
 //! [ntex]: https://docs.rs/ntex/
@@ -143,5 +142,5 @@ pub use self::codec::Codec;
 pub use self::config::ServiceConfig;
 pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
-pub use self::stream::{Capacity, Stream, StreamData, StreamRef};
+pub use self::stream::{Capacity, StreamData, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};

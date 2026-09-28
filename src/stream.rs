@@ -14,7 +14,7 @@ use crate::{connection::Connection, frame, message::Message, timer, window::Wind
 /// Owned HTTP/2 stream handle.
 ///
 /// Dropping this handle resets an unfinished stream with [`Reason::CANCEL`].
-pub struct Stream(StreamRef);
+pub(crate) struct Stream(StreamRef);
 
 /// Receive-window capacity associated with one HTTP/2 stream.
 ///

@@ -348,21 +348,6 @@ where
     }
 }
 
-impl<A> ClientBuilder<A, DefaultConnector<A>>
-where
-    A: Address + Clone,
-{
-    /// Creates a builder using the default transport connector.
-    ///
-    /// Same as [`ClientBuilder::new`].
-    pub fn with_default<U>(addr: U) -> Self
-    where
-        Connect<A>: From<U>,
-    {
-        Self::new(addr)
-    }
-}
-
 impl<A, S> ClientBuilder<A, S>
 where
     A: Address + Clone,

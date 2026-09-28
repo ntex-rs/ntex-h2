@@ -10,7 +10,7 @@ use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
 use crate::error::OperationError;
 use crate::frame::{Reason, StreamId, WindowSize};
 use crate::message::{Message, MessageKind};
-use crate::{Stream, StreamData, StreamRef};
+use crate::{StreamData, StreamRef, stream::Stream};
 
 #[derive(Clone, Default)]
 pub(super) struct InflightStorage(Rc<InflightStorageInner>);

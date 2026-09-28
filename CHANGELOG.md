@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Remove unreachable `Stream` re-export, unused `client::Observer` and `unstable` feature,
+  `ClientBuilder::with_default()` and `SimpleClient::connection()`
+
 * Fix build with the `trace` feature, API docs updates
 
 * Close the connection with `SETTINGS_TIMEOUT` if the peer does not acknowledge local settings

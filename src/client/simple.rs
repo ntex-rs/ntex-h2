@@ -261,12 +261,6 @@ impl SimpleClient {
     pub fn io_ref(&self) -> &IoRef {
         self.0.con.io()
     }
-
-    #[doc(hidden)]
-    /// Returns the underlying HTTP/2 connection object.
-    pub fn connection(&self) -> &Connection {
-        &self.0.con
-    }
 }
 
 impl Drop for SimpleClient {
