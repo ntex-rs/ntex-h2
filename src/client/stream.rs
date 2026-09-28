@@ -126,7 +126,9 @@ impl SendStream {
     #[inline]
     /// Waits until send capacity is available.
     ///
-    /// Fails with [`StreamError::CapacityTimeout`](crate::StreamError::CapacityTimeout)
+    /// Fails with [`OperationError::Closed`](crate::OperationError::Closed) if the
+    /// send side is closed, and with
+    /// [`StreamError::CapacityTimeout`](crate::StreamError::CapacityTimeout)
     /// and resets the stream if capacity is not available within the configured
     /// capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {

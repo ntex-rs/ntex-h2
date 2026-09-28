@@ -967,7 +967,8 @@ impl StreamRef {
 
     /// Waits until send capacity is available.
     ///
-    /// Fails with [`StreamError::CapacityTimeout`] and resets the stream if
+    /// Fails with [`OperationError::Closed`] if the send side is closed, and
+    /// with [`StreamError::CapacityTimeout`] and resets the stream if
     /// capacity is not available within the configured capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         let _guard = CapacityWaiter(self);
@@ -992,6 +993,12 @@ impl StreamRef {
         if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
             self.cancel_capacity_wait();
             return Poll::Ready(Err(err));
+        }
+
+        // nothing can be sent after the send side is closed
+        if let HalfState::Closed(reason) = self.0.send.get() {
+            self.cancel_capacity_wait();
+            return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
         }
 
         let win = self.available_send_capacity();

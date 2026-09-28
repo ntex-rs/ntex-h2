@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Waiting for send capacity fails with `OperationError::Closed` once the send side
+  is closed, instead of waiting forever or reporting capacity
+
 * Sending empty payload without eof does not wait for send capacity and does not
   send an empty `DATA` frame
 

@@ -2702,6 +2702,43 @@ mod tests {
         assert_eq!(client_data(&srv, &codec), [(0, true)]);
     }
 
+    /// Capacity waiters fail once the send side is closed.
+    #[ntex::test]
+    async fn test_send_capacity_after_send_close() {
+        let (client, srv) = window_client(3).await;
+        let codec = Codec::default();
+
+        // closed with zero window, a waiting sender is woken
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        stream.send_payload("abc", false).await.unwrap();
+        let s = stream.stream().clone();
+        let waiter = ntex::rt::spawn(async move { s.send_capacity().await });
+        sleep(Millis(50)).await;
+        stream.send_trailers(HeaderMap::default()).unwrap();
+        let res = ntex::time::timeout(Millis(500), waiter).await.unwrap().unwrap();
+        assert!(matches!(&*res.unwrap_err(), h2::OperationError::Closed(None)));
+
+        // closed with available window
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        stream.send_payload("a", true).await.unwrap();
+        assert_eq!(stream.stream().available_send_capacity(), 2);
+        assert!(matches!(
+            &*stream.send_capacity().await.unwrap_err(),
+            h2::OperationError::Closed(None)
+        ));
+
+        // no data after END_STREAM
+        sleep(Millis(50)).await;
+        let data = client_data(&srv, &codec);
+        assert_eq!(data.last(), Some(&(1, true)));
+    }
+
     /// Received data capacity is released on consume, stream window updates
     /// are sent once the released size reaches the threshold.
     #[ntex::test]
