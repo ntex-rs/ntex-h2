@@ -554,12 +554,26 @@ impl StreamRef {
                         Some(StreamError::UnexpectedPseudo("path"))
                     } else if pseudo.protocol.is_some() {
                         Some(StreamError::UnexpectedPseudo("protocol"))
+                    } else if pseudo.status.is_some_and(|s| s.is_informational())
+                        && (hdrs.is_end_stream()
+                            || pseudo.status == Some(StatusCode::SWITCHING_PROTOCOLS))
+                    {
+                        // an interim response does not end the stream, `101` is not
+                        // supported (RFC 9113 §8.1, §8.6)
+                        Some(StreamError::InvalidInformational)
                     } else {
                         None
                     };
                     if let Some(err) = err {
                         proto_err!(stream: "malformed response on {:?}: {err}", self.0.id);
                         return Err(Error::new(err, self.service()));
+                    }
+
+                    // an interim response is followed by the final response,
+                    // the stream stays in idle state (RFC 9113 §8.1)
+                    if pseudo.status.is_some_and(|s| s.is_informational()) {
+                        let (pseudo, headers) = hdrs.into_parts();
+                        return Ok(Some(Message::new(pseudo, headers, false, self)));
                     }
                 }
 

@@ -196,6 +196,9 @@ pub enum StreamError {
     /// A pseudo-header is not valid in a request.
     #[error("Unexpected pseudo header {0:?}")]
     UnexpectedPseudo(&'static str),
+    /// An informational response ended the stream or used `101` status.
+    #[error("Invalid informational response")]
+    InvalidInformational,
 }
 
 impl StreamError {
@@ -209,6 +212,7 @@ impl StreamError {
             StreamError::Idle(_)
             | StreamError::MissingPseudo(_)
             | StreamError::UnexpectedPseudo(_)
+            | StreamError::InvalidInformational
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
             | StreamError::InvalidContentLength
@@ -237,6 +241,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::InvalidFrame(_) => "h2-stream-InvalidFrame",
             StreamError::MissingPseudo(_) => "h2-stream-MissingPseudo",
             StreamError::UnexpectedPseudo(_) => "h2-stream-UnexpectedPseudo",
+            StreamError::InvalidInformational => "h2-stream-InvalidInformational",
         }
     }
 }

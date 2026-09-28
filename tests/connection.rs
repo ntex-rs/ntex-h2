@@ -1939,3 +1939,49 @@ async fn test_client_late_headers_for_closed_streams() {
     sleep(Millis(50)).await;
     assert!(client.is_closed());
 }
+
+/// Interim responses are delivered before the final response, an interim
+/// response with `END_STREAM` and `101` are malformed.
+#[ntex::test]
+async fn test_client_interim_responses() {
+    let (client, srv) = limited_client(10);
+    sleep(Millis(50)).await;
+
+    let (_snd, rcv) = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    // 103, 100, 200 and data
+    srv.write([0, 0, 5, 1, 4, 0, 0, 0, 1, 0x08, 3, b'1', b'0', b'3']);
+    srv.write([0, 0, 5, 1, 4, 0, 0, 0, 1, 0x08, 3, b'1', b'0', b'0']);
+    srv.write([0, 0, 1, 1, 4, 0, 0, 0, 1, 0x88]);
+    srv.write([0, 0, 2, 0, 1, 0, 0, 0, 1, b'o', b'k']);
+    for status in [103, 100, 200] {
+        let msg = rcv.recv().await.unwrap();
+        let MessageKind::Headers { pseudo, eof, .. } = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(pseudo.status.unwrap().as_u16(), status);
+        assert!(!eof);
+    }
+    let msg = rcv.recv().await.unwrap();
+    assert!(
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data)) if data == "ok"),
+        "{msg:?}"
+    );
+
+    // interim response with END_STREAM, `101`
+    for (id, status, flags) in [(3, b'3', 5), (5, b'1', 4)] {
+        let (_snd, rcv) = client
+            .send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await
+            .unwrap();
+        srv.write([0, 0, 5, 1, flags, 0, 0, 0, id, 0x08, 3, b'1', b'0', status]);
+        let msg = rcv.recv().await.unwrap();
+        let MessageKind::Eof(ntex_h2::StreamEof::Error(err)) = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(err.into_error(), ntex_h2::StreamError::InvalidInformational);
+    }
+    assert!(!client.is_closed());
+}

@@ -2,6 +2,10 @@
 
 ## [4.1.0] - Unreleased
 
+* Client delivers interim `1xx` responses and waits for the final response, a following `HEADERS`
+  was rejected as trailers without end of stream, an interim response with `END_STREAM` or `101`
+  status is malformed (new `StreamError::InvalidInformational`)
+
 * Client ignores late `HEADERS` for its closed streams without updating the last peer stream id,
   `HEADERS` for an idle client stream is a connection error
 
