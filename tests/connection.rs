@@ -909,6 +909,33 @@ async fn test_stream_recv_window_exceeded() {
     assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
 }
 
+/// The frame that exceeds the stream receive window does not update the
+/// stream window, the stream is reset.
+#[ntex::test]
+async fn test_stream_recv_window_exceeded_no_window_update() {
+    // the window update threshold is a third of the window
+    let srv = start_idle_server(ServiceConfig::new().set_initial_window_size(30_000)).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    send_data(&io, &codec, 2, 16_384).await;
+
+    let rst = ntex::time::timeout(Millis(2000), async {
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Reset(rst) => return rst,
+                frame::Frame::WindowUpdate(upd) if upd.stream_id() == frame::StreamId::CLIENT => {
+                    panic!("unexpected {upd:?}")
+                }
+                _ => (),
+            }
+        }
+    })
+    .await
+    .expect("stream is not reset");
+    assert_eq!(rst.stream_id(), frame::StreamId::CLIENT);
+    assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
+}
+
 /// Data beyond the connection receive window closes the connection.
 #[ntex::test]
 async fn test_connection_recv_window_exceeded() {

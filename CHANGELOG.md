@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* DATA frame exceeding the stream receive window does not trigger a stream WINDOW_UPDATE
+  before the stream reset
+
 * A received GOAWAY honors `last_stream_id` (RFC 9113 §6.8): only locally initiated streams
   above it are failed, remaining streams complete, new streams are refused with
   `ConnectionError::GoAway`, the connection closes once the remaining streams are done
