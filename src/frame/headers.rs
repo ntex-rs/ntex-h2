@@ -271,18 +271,12 @@ impl From<Headers> for Frame {
 
 impl fmt::Debug for Headers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut builder = f.debug_struct("Headers");
-        builder
+        f.debug_struct("Headers")
             .field("stream_id", &self.stream_id)
             .field("flags", &self.flags)
-            .field("pseudo", &self.header_block.pseudo);
-
-        if let Some(ref protocol) = self.header_block.pseudo.protocol {
-            builder.field("protocol", protocol);
-        }
-
-        // `fields` and `pseudo` purposefully not included
-        builder.finish()
+            .field("pseudo", &self.header_block.pseudo)
+            // header `fields` are purposefully not included
+            .finish()
     }
 }
 
@@ -708,8 +702,7 @@ mod tests {
             format!("{hdrs:?}"),
             "Headers { stream_id: StreamId(3), flags: (0x4: END_HEADERS), \
              pseudo: PseudoHeaders { method: Some(CONNECT), scheme: None, authority: None, \
-             path: None, protocol: Some(\"websocket\"), status: None }, \
-             protocol: \"websocket\" }"
+             path: None, protocol: Some(\"websocket\"), status: None } }"
         );
     }
 }
