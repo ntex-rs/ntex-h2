@@ -133,7 +133,7 @@ where
         _: Ctx<'_, Self, ()>,
     ) -> Result<Self::Res, Self::Error> {
         #[cfg(feature = "trace")]
-        log::debug!("{}: Handle h2 message: {reqt:?}", self.connection.tag());
+        log::debug!("{}: Handle h2 message: {req:?}", self.connection.tag());
 
         match req {
             DispatchItem::Item(frame) if let Err(err) = self.connection.check_first_frame(&frame) => {
@@ -208,6 +208,17 @@ where
             DispatchItem::Stop(DispReason::Decoder(err)) => {
                 let err = Error::new(ConnectionError::from(err), self.connection.service());
                 let streams = self.connection.proto_error(&err);
+                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                control(Control::proto_error(err), &self.inner).await
+            }
+            DispatchItem::Stop(DispReason::KeepAlive) if self.connection.is_settings_timeout() => {
+                log::warn!(
+                    "{}: did not receive settings ack in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.settings_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::SettingsTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
                 control(Control::proto_error(err), &self.inner).await
             }

@@ -15,6 +15,9 @@ use crate::{connection::Connection, default::DefaultControlService, dispatcher::
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
 /// Client for HTTP/2 connection.
+///
+/// Clones share the connection. Dropping the last clone starts a graceful
+/// disconnect, the connection is closed after the open streams complete.
 #[derive(Clone)]
 pub struct SimpleClient(Rc<ClientRef>);
 
@@ -29,6 +32,10 @@ struct ClientRef {
 
 impl SimpleClient {
     /// Creates a client over an established HTTP/2 transport.
+    ///
+    /// The transport must be ready for the HTTP/2 connection preface. The
+    /// [`ServiceConfig`] is taken from the transport's shared configuration,
+    /// `authority` is sent as the `:authority` pseudo-header of requests.
     #[allow(clippy::needless_pass_by_value)]
     pub fn new<T>(io: T, scheme: Scheme, authority: ByteString) -> Self
     where
@@ -111,6 +118,11 @@ impl SimpleClient {
 
     #[inline]
     /// Opens a stream and sends request headers to the peer.
+    ///
+    /// Waits until the peer's concurrent stream limit allows a new stream.
+    /// `path` is the `:path` pseudo-header including the query. If `eof` is
+    /// `true` the headers end the request, otherwise the body is sent with the
+    /// returned [`SendStream`].
     pub async fn send(
         &self,
         method: Method,
@@ -156,7 +168,7 @@ impl SimpleClient {
     #[inline]
     /// Waits until the connection can open another stream.
     ///
-    /// Client is ready when it is possible to start new stream
+    /// Fails if the connection is failed or disconnecting.
     pub async fn ready(&self) -> Result<(), Error<OperationError>> {
         self.0.con.ready().await
     }
@@ -245,13 +257,13 @@ impl SimpleClient {
     }
 
     #[doc(hidden)]
-    /// Get access to underlining io object
+    /// Returns the underlying I/O object.
     pub fn io_ref(&self) -> &IoRef {
         self.0.con.io()
     }
 
     #[doc(hidden)]
-    /// Get access to underlining http/2 connection object
+    /// Returns the underlying HTTP/2 connection object.
     pub fn connection(&self) -> &Connection {
         &self.0.con
     }

@@ -30,6 +30,7 @@ bitflags::bitflags! {
         const UNKNOWN_STREAMS         = 0b0000_0100;
         const DISCONNECT_WHEN_READY   = 0b0000_1000;
         const SECURE                  = 0b0001_0000;
+        const SETTINGS_TIMEOUT        = 0b0010_0000;
         const KA_TIMER                = 0b0100_0000;
         const RECV_PONG               = 0b1000_0000;
         const REMOTE_SETTINGS         = 0b0001_0000_0000;
@@ -163,6 +164,11 @@ impl Connection {
         // start ping/pong
         if con.0.local_config.ping_timeout.non_zero() {
             spawn(ping(con.clone(), con.0.local_config.ping_timeout, io));
+        }
+
+        // wait for the local settings acknowledgment
+        if con.0.local_config.settings_timeout.non_zero() {
+            spawn(settings_timer(con.clone(), con.0.local_config.settings_timeout));
         }
 
         con
@@ -1131,23 +1137,23 @@ impl RecvHalfConnection {
     }
 
     pub(crate) fn ping_timeout(&self) -> HashMap<StreamId, StreamRef> {
-        let err: Error<OperationError> = Error::new(ConnectionError::KeepaliveTimeout, self.service());
-        self.0.error.set(Some(err.clone()));
-        self.0.readiness.borrow_mut().clear();
-
-        let streams = mem::take(&mut *self.0.streams.borrow_mut());
-        for stream in streams.values() {
-            stream.set_failed_stream(err.clone());
-        }
-
-        self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
-        self.0.io.close();
-        self.0.notify_capacity();
-        streams
+        self.timeout(ConnectionError::KeepaliveTimeout, frame::Reason::NO_ERROR)
     }
 
     pub(crate) fn read_timeout(&self) -> HashMap<StreamId, StreamRef> {
-        let err: Error<OperationError> = Error::new(ConnectionError::ReadTimeout, self.service());
+        self.timeout(ConnectionError::ReadTimeout, frame::Reason::NO_ERROR)
+    }
+
+    pub(crate) fn settings_timeout(&self) -> HashMap<StreamId, StreamRef> {
+        self.timeout(ConnectionError::SettingsTimeout, frame::Reason::SETTINGS_TIMEOUT)
+    }
+
+    pub(crate) fn is_settings_timeout(&self) -> bool {
+        self.flags().contains(ConnectionFlags::SETTINGS_TIMEOUT)
+    }
+
+    fn timeout(&self, err: ConnectionError, reason: frame::Reason) -> HashMap<StreamId, StreamRef> {
+        let err: Error<OperationError> = Error::new(err, self.service());
         self.0.error.set(Some(err.clone()));
         self.0.readiness.borrow_mut().clear();
 
@@ -1156,7 +1162,7 @@ impl RecvHalfConnection {
             stream.set_failed_stream(err.clone());
         }
 
-        self.encode(frame::GoAway::new(frame::Reason::NO_ERROR));
+        self.encode(frame::GoAway::new(reason));
         self.0.io.close();
         self.0.notify_capacity();
         streams
@@ -1248,6 +1254,15 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         st.unset_flags(ConnectionFlags::RECV_PONG);
         st.encode(frame::Ping::new(counter.to_be_bytes()));
         st.0.pings_count.set(st.0.pings_count.get() + 1);
+    }
+}
+
+/// Closes the connection if the peer does not acknowledge the local settings in time.
+async fn settings_timer(st: Connection, timeout: time::Seconds) {
+    sleep(timeout).await;
+    if !st.is_closed() && !st.settings_processed() {
+        st.set_flags(ConnectionFlags::SETTINGS_TIMEOUT);
+        st.0.io.notify_timeout();
     }
 }
 

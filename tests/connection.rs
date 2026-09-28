@@ -2041,3 +2041,58 @@ async fn test_client_head_response() {
     assert_eq!(err.into_error(), ntex_h2::StreamError::NonEmptyPayload);
     assert!(!client.is_closed());
 }
+
+/// A peer that does not acknowledge the local settings in time gets
+/// `GOAWAY(SETTINGS_TIMEOUT)` (RFC 9113 §6.5.3).
+#[ntex::test]
+async fn test_settings_timeout() {
+    for ack in [false, true] {
+        let srv = start_idle_server(
+            ServiceConfig::new()
+                .set_ping_timeout(Seconds::ZERO)
+                .set_settings_timeout(Seconds(1)),
+        )
+        .await;
+        let io = connect(srv.addr()).await;
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.encode(frame::Settings::default().into(), &codec).unwrap();
+
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Settings(s) if !s.is_ack() => {
+                    if ack {
+                        io.encode(frame::Settings::ack().into(), &codec).unwrap();
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if ack {
+            // the connection stays usable
+            sleep(Millis(1500)).await;
+            io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+            loop {
+                match io.recv(&codec).await.unwrap().unwrap() {
+                    frame::Frame::Ping(ping) => {
+                        assert!(ping.is_ack());
+                        break;
+                    }
+                    frame::Frame::GoAway(frm) => panic!("unexpected goaway: {frm:?}"),
+                    _ => {}
+                }
+            }
+        } else {
+            let frm = loop {
+                if let frame::Frame::GoAway(frm) = io.recv(&codec).await.unwrap().unwrap() {
+                    break frm;
+                }
+            };
+            assert_eq!(frm.reason(), Reason::SETTINGS_TIMEOUT);
+            sleep(Millis(100)).await;
+            assert!(io.is_closed());
+        }
+    }
+}

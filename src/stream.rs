@@ -754,7 +754,17 @@ impl StreamRef {
         }
     }
 
-    /// Sends response headers.
+    /// Sends response headers for a peer-initiated stream.
+    ///
+    /// If `eof` is `true` the headers end the stream, otherwise the stream
+    /// moves to the payload state and the body is sent with
+    /// [`send_payload`](Self::send_payload) or
+    /// [`send_trailers`](Self::send_trailers).
+    ///
+    /// Fails with [`OperationError::Payload`] if headers are already sent,
+    /// with [`OperationError::Closed`] if the send side is closed, and with
+    /// [`OperationError::HeaderListTooLarge`] if the headers exceed the
+    /// peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
     pub fn send_response(
         &self,
         status: StatusCode,
@@ -784,6 +794,8 @@ impl StreamRef {
     }
 
     /// Sends payload bytes, waiting for flow-control capacity as needed.
+    ///
+    /// See [`send_pages`](Self::send_pages).
     pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         Bytes: From<D>,
@@ -792,6 +804,19 @@ impl StreamRef {
     }
 
     /// Sends paged payload data, waiting for flow-control capacity as needed.
+    ///
+    /// The data is split into `DATA` frames by the available send window and
+    /// the peer's maximum frame size. If `eof` is `true` the last frame ends
+    /// the stream, empty data with `eof` sends an empty `DATA` frame with
+    /// `END_STREAM`.
+    ///
+    /// Fails with [`OperationError::Idle`] if headers are not sent yet, with
+    /// [`OperationError::Closed`] if the send side is closed, and with
+    /// [`StreamError::CapacityTimeout`] if send capacity is not available in
+    /// time, see [`send_capacity`](Self::send_capacity).
+    ///
+    /// Dropping the future before it completes may leave part of the data
+    /// sent, the stream stays in the payload state.
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
@@ -1124,6 +1149,7 @@ impl StreamData {
         }
     }
 
+    #[allow(clippy::used_underscore_binding)]
     fn encode(
         &mut self,
         _tag: &'static str,

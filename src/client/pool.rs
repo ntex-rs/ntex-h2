@@ -53,6 +53,9 @@ impl Client {
     }
 
     /// Sends a request using an available connection.
+    ///
+    /// Waits for a connection that can open a stream, see
+    /// [`SimpleClient::send`] for the arguments.
     pub async fn send(
         &self,
         method: Method,
@@ -67,7 +70,10 @@ impl Client {
             .map_err(|e| e.map(ClientError::from))
     }
 
-    /// Returns a connection that can open stream.
+    /// Returns a connection that can open a stream.
+    ///
+    /// Waits for an existing connection, or opens a new one within the
+    /// connection limit.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
@@ -234,7 +240,7 @@ impl Client {
     #[inline]
     /// Waits until the pool can start another request.
     ///
-    /// Client is ready when it is possible to start new stream
+    /// See [`is_ready`](Self::is_ready).
     pub async fn ready(&self) {
         loop {
             if self.is_ready() {
@@ -347,6 +353,8 @@ where
     A: Address + Clone,
 {
     /// Creates a builder using the default transport connector.
+    ///
+    /// Same as [`ClientBuilder::new`].
     pub fn with_default<U>(addr: U) -> Self
     where
         Connect<A>: From<U>,
@@ -393,8 +401,9 @@ where
     #[must_use]
     /// Sets the maximum lifetime of a connection.
     ///
-    /// Connection lifetime is max lifetime of any opened connection
-    /// until it is closed regardless of keep-alive period.
+    /// A connection older than the lifetime is not used for new requests and
+    /// is disconnected gracefully, regardless of its activity. The lifetime is
+    /// checked when the pool selects a connection for a request.
     ///
     /// Default lifetime period is not set.
     pub fn lifetime<U: Into<Seconds>>(mut self, dur: U) -> Self {
@@ -407,6 +416,9 @@ where
     #[must_use]
     /// Sets the timeout for establishing a connection, including the
     /// transport connect and TLS handshake.
+    ///
+    /// The pool does not use
+    /// [`ServiceConfig::set_handshake_timeout`](crate::ServiceConfig::set_handshake_timeout).
     ///
     /// The default is 1 second.
     pub fn connect_timeout<U: Into<Millis>>(mut self, timeout: U) -> Self {

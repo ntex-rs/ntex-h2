@@ -50,6 +50,9 @@ pub enum ConnectionError {
     /// Keep-alive ping timed out.
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
+    /// The peer did not acknowledge the local settings in time.
+    #[error("Settings acknowledgment timeout")]
+    SettingsTimeout,
     /// Frame reading timed out.
     #[error("Read timeout")]
     ReadTimeout,
@@ -99,6 +102,9 @@ impl ConnectionError {
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
+            ConnectionError::SettingsTimeout => {
+                GoAway::new(Reason::SETTINGS_TIMEOUT).set_data("Settings acknowledgment timeout")
+            }
             ConnectionError::ReadTimeout => GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout"),
             ConnectionError::WriteTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Frame write timeout")
@@ -124,6 +130,7 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
             ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
             ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
+            ConnectionError::SettingsTimeout => "h2-conn-SettingsTimeout",
             ConnectionError::ReadTimeout => "h2-conn-ReadTimeout",
             ConnectionError::WriteTimeout => "h2-conn-WriteTimeout",
         }
@@ -257,15 +264,17 @@ pub enum OperationError {
     #[error("{0}")]
     Connection(#[from] ConnectionError),
 
-    /// Cannot process operation for idle stream
+    /// The operation requires sent headers, the stream is idle.
     #[error("Cannot process operation for idle stream")]
     Idle,
 
-    /// Cannot process operation for stream in payload state
+    /// Headers are already sent, the stream is in the payload state.
     #[error("Cannot process operation for stream in payload state")]
     Payload,
 
-    /// Stream is closed
+    /// The local send side is closed.
+    ///
+    /// Contains the reset reason if the stream was closed by a reset.
     #[error("Stream is closed {0:?}")]
     Closed(Option<Reason>),
 
@@ -292,11 +301,12 @@ pub enum OperationError {
         max: usize,
     },
 
-    /// Disconnecting
+    /// The connection is disconnecting gracefully and does not accept new
+    /// streams.
     #[error("Connection is disconnecting")]
     Disconnecting,
 
-    /// Disconnected
+    /// The connection is closed.
     #[error("Connection is closed")]
     Disconnected,
 }

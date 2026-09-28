@@ -2,6 +2,12 @@
 
 ## [4.1.0] - Unreleased
 
+* Fix build with the `trace` feature, API docs updates
+
+* Close the connection with `SETTINGS_TIMEOUT` if the peer does not acknowledge local settings
+  in time, new `ServiceConfig::set_settings_timeout()` (default 5 seconds) and
+  `ConnectionError::SettingsTimeout`
+
 * Server resets a request with the `:protocol` pseudo header with `PROTOCOL_ERROR`, extended
   CONNECT is not enabled
 

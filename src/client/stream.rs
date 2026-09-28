@@ -134,7 +134,9 @@ impl SendStream {
     }
 
     #[inline]
-    /// Sends payload bytes.
+    /// Sends payload bytes, waiting for flow-control capacity as needed.
+    ///
+    /// See [`StreamRef::send_pages`](crate::StreamRef::send_pages).
     pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         Bytes: From<D>,
@@ -143,7 +145,9 @@ impl SendStream {
     }
 
     #[inline]
-    /// Sends paged payload data.
+    /// Sends paged payload data, waiting for flow-control capacity as needed.
+    ///
+    /// See [`StreamRef::send_pages`](crate::StreamRef::send_pages).
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
