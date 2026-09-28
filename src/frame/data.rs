@@ -215,4 +215,43 @@ mod tests {
         let frm = Data::new(StreamId::from(1), Bytes::from_static(b"data"));
         assert_eq!(frm.flow_controlled_len(), 4);
     }
+
+    #[test]
+    fn data_debug() {
+        let mut frm = Data::new(StreamId::from(1), Bytes::from_static(b"secret"));
+        assert_eq!(format!("{frm:?}"), "Data { stream_id: StreamId(1), data_len: 6 }");
+
+        frm.set_end_stream();
+        assert_eq!(
+            format!("{frm:?}"),
+            "Data { stream_id: StreamId(1), data_len: 6, flags: (0x1: END_STREAM) }"
+        );
+
+        let head = Head::new(Kind::Data, PADDED | END_STREAM, StreamId::from(3));
+        let frm = Data::load(head, Bytes::from_static(b"\x03data\0\0\0")).unwrap();
+        assert_eq!(
+            format!("{frm:?}"),
+            "Data { stream_id: StreamId(3), data_len: 4, flags: (0x9: END_STREAM | PADDED) }"
+        );
+    }
+
+    #[test]
+    fn data_flags_debug() {
+        assert_eq!(format!("{:?}", DataFlags::load(0)), "(0x0)");
+        assert_eq!(format!("{:?}", DataFlags::load(END_STREAM)), "(0x1: END_STREAM)");
+        assert_eq!(format!("{:?}", DataFlags::load(PADDED)), "(0x8: PADDED)");
+        assert_eq!(
+            format!("{:?}", DataFlags::load(ALL)),
+            "(0x9: END_STREAM | PADDED)"
+        );
+        // unknown bits are dropped on load
+        assert_eq!(
+            format!("{:?}", DataFlags::load(0xff)),
+            "(0x9: END_STREAM | PADDED)"
+        );
+
+        let mut flags = DataFlags::load(0);
+        flags.set_padded();
+        assert_eq!(format!("{flags:?}"), "(0x8: PADDED)");
+    }
 }

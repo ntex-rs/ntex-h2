@@ -1,7 +1,7 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
-use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header, uri};
+use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, header};
 
 use crate::hpack;
 
@@ -303,49 +303,6 @@ impl PseudoHeaders {
         })
     }
 
-    /// Creates request pseudo headers from a method and URI.
-    ///
-    /// An empty path becomes `/`, except for `OPTIONS` and `CONNECT`.
-    pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
-        let parts = uri::Parts::from(uri);
-
-        let mut path = parts
-            .path_and_query
-            .map_or(ByteString::from_static(""), |v| ByteString::from(v.as_str()));
-
-        match method {
-            Method::OPTIONS | Method::CONNECT => {}
-            _ if path.is_empty() => {
-                path = ByteString::from_static("/");
-            }
-            _ => {}
-        }
-
-        let mut pseudo = PseudoHeaders {
-            method: Some(method),
-            scheme: None,
-            authority: None,
-            path: Some(path).filter(|p| !p.is_empty()),
-            protocol,
-            status: None,
-        };
-
-        // If the URI includes a scheme component, add it to the pseudo headers
-        //
-        // TODO: Scheme must be set...
-        if let Some(ref scheme) = parts.scheme {
-            pseudo.set_scheme(scheme);
-        }
-
-        // If the URI includes an authority component, add it to the pseudo
-        // headers
-        if let Some(authority) = parts.authority {
-            pseudo.set_authority(ByteString::from(authority.as_str()));
-        }
-
-        pseudo
-    }
-
     /// Creates response pseudo headers.
     pub fn response(status: StatusCode) -> Self {
         PseudoHeaders {
@@ -356,30 +313,6 @@ impl PseudoHeaders {
             protocol: None,
             status: Some(status),
         }
-    }
-
-    /// Sets `:status`.
-    pub fn set_status(&mut self, value: StatusCode) {
-        self.status = Some(value);
-    }
-
-    /// Sets `:scheme`.
-    pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
-        self.scheme = Some(match scheme.as_str() {
-            "http" => ByteString::from_static("http"),
-            "https" => ByteString::from_static("https"),
-            s => ByteString::from(s),
-        });
-    }
-
-    /// Sets `:protocol`.
-    pub fn set_protocol(&mut self, protocol: Protocol) {
-        self.protocol = Some(protocol);
-    }
-
-    /// Sets `:authority`.
-    pub fn set_authority(&mut self, authority: ByteString) {
-        self.authority = Some(authority);
     }
 }
 
@@ -725,5 +658,58 @@ mod tests {
         assert!(dst.len() > HDRS_BUF_MAX_RETAINED);
         let cap = HDRS_BUF.with(|b| b.borrow().capacity());
         assert!(cap <= HDRS_BUF_MAX_RETAINED, "retained {cap} bytes");
+    }
+
+    #[test]
+    fn headers_flag_debug() {
+        assert_eq!(format!("{:?}", HeadersFlag::empty()), "(0x0)");
+        assert_eq!(format!("{:?}", HeadersFlag::default()), "(0x4: END_HEADERS)");
+        assert_eq!(
+            format!("{:?}", HeadersFlag::load(ALL)),
+            "(0x2d: END_HEADERS | END_STREAM | PADDED | PRIORITY)"
+        );
+
+        let mut flags = HeadersFlag::empty();
+        flags.set_end_stream();
+        assert_eq!(format!("{flags:?}"), "(0x1: END_STREAM)");
+        assert_eq!(
+            format!("{:?}", HeadersFlag::load(0xff)),
+            format!("{:?}", HeadersFlag::load(ALL))
+        );
+    }
+
+    #[test]
+    fn headers_debug() {
+        let mut fields = HeaderMap::new();
+        fields.insert(
+            HeaderName::from_static("x-secret"),
+            HeaderValue::from_static("value"),
+        );
+        let hdrs = Headers::new(
+            StreamId::from(1),
+            PseudoHeaders::response(StatusCode::OK),
+            fields,
+            true,
+        );
+        assert_eq!(
+            format!("{hdrs:?}"),
+            "Headers { stream_id: StreamId(1), flags: (0x5: END_HEADERS | END_STREAM), \
+             pseudo: PseudoHeaders { method: None, scheme: None, authority: None, \
+             path: None, protocol: None, status: Some(200) } }"
+        );
+
+        let pseudo = PseudoHeaders {
+            method: Some(Method::CONNECT),
+            protocol: Some(Protocol::from("websocket")),
+            ..Default::default()
+        };
+        let hdrs = Headers::new(StreamId::from(3), pseudo, HeaderMap::new(), false);
+        assert_eq!(
+            format!("{hdrs:?}"),
+            "Headers { stream_id: StreamId(3), flags: (0x4: END_HEADERS), \
+             pseudo: PseudoHeaders { method: Some(CONNECT), scheme: None, authority: None, \
+             path: None, protocol: Some(\"websocket\"), status: None }, \
+             protocol: \"websocket\" }"
+        );
     }
 }

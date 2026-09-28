@@ -86,22 +86,6 @@ where
 // Headers helpers
 
 impl Mock<frame::Headers> {
-    pub fn request<M, U>(self, method: M, uri: U) -> Self
-    where
-        M: TryInto<http::Method>,
-        M::Error: fmt::Debug,
-        U: TryInto<http::Uri>,
-        U::Error: fmt::Debug,
-    {
-        let method = method.try_into().unwrap();
-        let uri = uri.try_into().unwrap();
-        let (id, _, fields) = self.into_parts();
-        let extensions = Default::default();
-        let pseudo = PseudoHeaders::request(method, uri, extensions);
-        let frame = frame::Headers::new(id, pseudo, fields, false);
-        Mock(frame)
-    }
-
     pub fn method<M>(self, method: M) -> Self
     where
         M: TryInto<http::Method>,
@@ -155,25 +139,23 @@ impl Mock<frame::Headers> {
     pub fn status(self, value: StatusCode) -> Self {
         let (id, mut pseudo, fields) = self.into_parts();
 
-        pseudo.set_status(value);
+        pseudo.status = Some(value);
 
         Mock(frame::Headers::new(id, pseudo, fields, false))
     }
 
     pub fn scheme(self, value: &str) -> Self {
         let (id, mut pseudo, fields) = self.into_parts();
-        let value = value.parse().unwrap();
 
-        pseudo.set_scheme(&value);
+        pseudo.scheme = Some(value.into());
 
         Mock(frame::Headers::new(id, pseudo, fields, false))
     }
 
     pub fn protocol(self, value: &str) -> Self {
         let (id, mut pseudo, fields) = self.into_parts();
-        let value = Protocol::from(value);
 
-        pseudo.set_protocol(value);
+        pseudo.protocol = Some(Protocol::from(value));
 
         Mock(frame::Headers::new(id, pseudo, fields, false))
     }

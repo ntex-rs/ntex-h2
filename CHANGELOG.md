@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Remove unused `PseudoHeaders::request()`, `set_status()`, `set_scheme()`, `set_protocol()`
+  and `set_authority()`, pseudo header fields are public
+
 * Remove unreachable `Stream` re-export, unused `client::Observer` and `unstable` feature,
   `ClientBuilder::with_default()` and `SimpleClient::connection()`
 
