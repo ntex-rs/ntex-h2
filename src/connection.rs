@@ -2482,4 +2482,299 @@ mod tests {
         assert_eq!(rst.stream_id(), stream.id());
         assert_eq!(rst.reason(), Reason::CANCEL);
     }
+
+    /// SETTINGS frame with `SETTINGS_INITIAL_WINDOW_SIZE`
+    fn initial_window_frame(window: u32) -> Vec<u8> {
+        let mut frm = vec![0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4];
+        frm.extend_from_slice(&window.to_be_bytes());
+        frm
+    }
+
+    fn window_update_frame(id: u32, inc: u32) -> Vec<u8> {
+        let mut frm = vec![0, 0, 4, 8, 0];
+        frm.extend_from_slice(&id.to_be_bytes());
+        frm.extend_from_slice(&inc.to_be_bytes());
+        frm
+    }
+
+    /// Client without capacity timeout, the peer sets the initial stream window
+    async fn window_client(window: u32) -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
+        let (io, srv) = ntex::io::testing::IoTest::create();
+        srv.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("CLI")
+            .add(ServiceConfig::new().set_capacity_timeout(Seconds::ZERO))
+            .build();
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        srv.write(initial_window_frame(window));
+        sleep(Millis(50)).await;
+        (client, srv)
+    }
+
+    /// Decodes the frames written by the client since the last call
+    fn client_frames(srv: &ntex::io::testing::IoTest, codec: &Codec) -> Vec<frame::Frame> {
+        use ntex_codec::Decoder;
+
+        let data = srv.read_any();
+        let data = data.strip_prefix(&PREFACE[..]).unwrap_or(&data);
+        let mut buf = ntex::util::BytesMut::from(data);
+        let mut frames = Vec::new();
+        while let Some(frm) = codec.decode(&mut buf).unwrap() {
+            frames.push(frm);
+        }
+        assert!(buf.is_empty());
+        frames
+    }
+
+    /// Sizes and `END_STREAM` flags of the DATA frames written by the client
+    fn client_data(srv: &ntex::io::testing::IoTest, codec: &Codec) -> Vec<(usize, bool)> {
+        client_frames(srv, codec)
+            .into_iter()
+            .filter_map(|frm| match frm {
+                frame::Frame::Data(data) => Some((data.payload().len(), data.is_end_stream())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Sum of the window updates written by the client for the stream `id`
+    fn client_window_updates(srv: &ntex::io::testing::IoTest, codec: &Codec, id: frame::StreamId) -> i32 {
+        client_frames(srv, codec)
+            .into_iter()
+            .filter_map(|frm| match frm {
+                frame::Frame::WindowUpdate(upd) if upd.stream_id() == id => Some(upd.size_increment()),
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Payload is split by the stream send window, the sender waits for
+    /// window updates.
+    #[ntex::test]
+    async fn test_send_limited_by_stream_window() {
+        let (client, srv) = window_client(10).await;
+        let codec = Codec::default();
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        assert_eq!(stream.stream().available_send_capacity(), 10);
+        let _ = client_frames(&srv, &codec);
+
+        let s = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 25]), true).await });
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(10, false)]);
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        srv.write(window_update_frame(1, 10));
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(10, false)]);
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        srv.write(window_update_frame(1, 100));
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(5, true)]);
+        assert!(fut.await.unwrap().is_ok());
+        assert_eq!(stream.stream().available_send_capacity(), 95);
+    }
+
+    /// Payload is limited by the connection send window, stream window
+    /// updates do not release data while the connection window is exhausted.
+    #[ntex::test]
+    async fn test_send_limited_by_connection_window() {
+        let (client, srv) = window_client(1_000_000).await;
+        let codec = Codec::default();
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let _ = client_frames(&srv, &codec);
+
+        // the default connection window is 65535 bytes
+        let conn_window = frame::DEFAULT_INITIAL_WINDOW_SIZE as usize;
+        assert_eq!(stream.stream().available_send_capacity() as usize, conn_window);
+
+        let s = stream.stream().clone();
+        let fut =
+            ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 70_000]), true).await });
+        sleep(Millis(50)).await;
+        let frames = client_data(&srv, &codec);
+        assert!(
+            frames
+                .iter()
+                .all(|(size, eof)| *size <= frame::DEFAULT_MAX_FRAME_SIZE as usize && !eof)
+        );
+        assert_eq!(frames.iter().map(|(size, _)| size).sum::<usize>(), conn_window);
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        // stream window update does not help
+        srv.write(window_update_frame(1, 1000));
+        sleep(Millis(50)).await;
+        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        // connection window update releases the rest
+        srv.write(window_update_frame(0, 10_000));
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(70_000 - conn_window, true)]);
+        assert!(fut.await.unwrap().is_ok());
+        assert_eq!(
+            stream.stream().available_send_capacity() as usize,
+            10_000 - (70_000 - conn_window)
+        );
+    }
+
+    /// `SETTINGS_INITIAL_WINDOW_SIZE` changes adjust open stream windows, the
+    /// window can become negative (RFC 9113 §6.9.2).
+    #[ntex::test]
+    async fn test_send_window_adjusted_by_settings() {
+        let (client, srv) = window_client(10).await;
+        let codec = Codec::default();
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        stream
+            .send_payload(Bytes::from(vec![b'x'; 10]), false)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(10, false)]);
+
+        // window is -5
+        srv.write(initial_window_frame(5));
+        sleep(Millis(50)).await;
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        let s = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 3]), true).await });
+
+        // window is 0
+        srv.write(window_update_frame(1, 5));
+        sleep(Millis(50)).await;
+        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(stream.stream().available_send_capacity(), 0);
+
+        // window is 2
+        srv.write(window_update_frame(1, 2));
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(2, false)]);
+
+        // settings grow the window by 15 and wake the sender
+        srv.write(initial_window_frame(20));
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(1, true)]);
+        assert!(fut.await.unwrap().is_ok());
+        assert_eq!(stream.stream().available_send_capacity(), 14);
+
+        // new streams use the current initial window
+        let (stream2, _recv2) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        assert_eq!(stream2.stream().available_send_capacity(), 20);
+    }
+
+    /// Empty payload without eof sends nothing and does not wait for capacity.
+    #[ntex::test]
+    async fn test_send_empty_payload_zero_window() {
+        let (client, srv) = window_client(0).await;
+        let codec = Codec::default();
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let _ = client_frames(&srv, &codec);
+
+        let res = ntex::time::timeout(Millis(500), stream.send_payload(Bytes::new(), false)).await;
+        assert!(res.unwrap().is_ok());
+
+        srv.write(window_update_frame(1, 10));
+        sleep(Millis(50)).await;
+        stream.send_payload(Bytes::new(), false).await.unwrap();
+        sleep(Millis(50)).await;
+        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(stream.stream().available_send_capacity(), 10);
+
+        // empty payload with eof ends the stream regardless of the window
+        stream.send_payload(Bytes::new(), true).await.unwrap();
+        sleep(Millis(50)).await;
+        assert_eq!(client_data(&srv, &codec), [(0, true)]);
+    }
+
+    /// Received data capacity is released on consume, stream window updates
+    /// are sent once the released size reaches the threshold.
+    #[ntex::test]
+    async fn test_recv_capacity_consume() {
+        let (client, srv) = window_client(65_535).await;
+        let codec = Codec::default();
+        let (_stream, recv) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+        let _ = client_frames(&srv, &codec);
+
+        // response headers and 30000 bytes of data
+        srv.write([0, 0, 1, 1, 4, 0, 0, 0, 1, 0x88]);
+        for _ in 0..2 {
+            srv.write([0, 0x3a, 0x98, 0, 0, 0, 0, 0, 1]);
+            srv.write(vec![0; 15_000]);
+        }
+        let _hdrs = recv.recv().await.unwrap();
+        let mut caps = Vec::new();
+        for _ in 0..2 {
+            match recv.recv().await.unwrap().kind {
+                h2::MessageKind::Data(data, cap) => {
+                    assert_eq!(data.len(), 15_000);
+                    assert_eq!(cap.size(), 15_000);
+                    caps.push(cap);
+                }
+                kind => panic!("unexpected message: {kind:?}"),
+            }
+        }
+
+        // capacities of the same stream can be combined
+        let mut cap = recv.stream().empty_capacity();
+        assert_eq!(cap.size(), 0);
+        cap += caps.pop().unwrap();
+        let cap = cap + caps.pop().unwrap();
+        assert_eq!(cap.size(), 30_000);
+
+        // over-consume panics without releasing capacity
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cap.consume(30_001)));
+        assert!(res.is_err());
+        assert_eq!(cap.size(), 30_000);
+
+        // 10000 bytes are below the update threshold
+        let id = frame::StreamId::CLIENT;
+        cap.consume(10_000);
+        assert_eq!(cap.size(), 20_000);
+        sleep(Millis(50)).await;
+        assert_eq!(client_window_updates(&srv, &codec, id), 0);
+
+        // 25000 bytes reach the threshold
+        cap.consume(15_000);
+        sleep(Millis(50)).await;
+        assert_eq!(client_window_updates(&srv, &codec, id), 25_000);
+
+        // remaining 5000 bytes are released on drop, below the threshold
+        drop(cap);
+        sleep(Millis(50)).await;
+        assert_eq!(client_window_updates(&srv, &codec, id), 0);
+
+        // the window is replenished, the peer can send the full window
+        let mut frm = vec![0, 0x3f, 0xff, 0, 0, 0, 0, 0, 1];
+        frm.resize(9 + 16_383, 0);
+        for _ in 0..3 {
+            srv.write(frm.clone());
+        }
+        for _ in 0..3 {
+            assert!(matches!(
+                recv.recv().await.unwrap().kind,
+                h2::MessageKind::Data(..)
+            ));
+        }
+        assert!(!client.is_closed());
+    }
 }

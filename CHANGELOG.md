@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Sending empty payload without eof does not wait for send capacity and does not
+  send an empty `DATA` frame
+
 * Remove unused `PseudoHeaders::request()`, `set_status()`, `set_scheme()`, `set_protocol()`
   and `set_authority()`, pseudo header fields are public
 

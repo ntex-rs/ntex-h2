@@ -808,7 +808,7 @@ impl StreamRef {
     /// The data is split into `DATA` frames by the available send window and
     /// the peer's maximum frame size. If `eof` is `true` the last frame ends
     /// the stream, empty data with `eof` sends an empty `DATA` frame with
-    /// `END_STREAM`.
+    /// `END_STREAM`, empty data without `eof` sends nothing.
     ///
     /// Fails with [`OperationError::Idle`] if headers are not sent yet, with
     /// [`OperationError::Closed`] if the send side is closed, and with
@@ -838,13 +838,15 @@ impl StreamRef {
                 );
 
                 // eof and empty data
-                if eof && data.is_empty() {
-                    let mut data = Data::new(self.0.id, Bytes::new());
-                    data.set_end_stream();
-                    self.0.state_send_close(None);
+                if data.is_empty() {
+                    if eof {
+                        let mut data = Data::new(self.0.id, Bytes::new());
+                        data.set_end_stream();
+                        self.0.state_send_close(None);
 
-                    // write to io buffer
-                    self.0.con.encode(data);
+                        // write to io buffer
+                        self.0.con.encode(data);
+                    }
                     return Ok(());
                 }
 
