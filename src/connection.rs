@@ -2631,6 +2631,90 @@ mod tests {
         );
     }
 
+    /// Large peer windows do not let a sender buffer unbounded data while
+    /// the peer does not read, the io write back-pressure pauses the sender.
+    #[ntex::test]
+    async fn test_send_waits_for_write_backpressure() {
+        const SIZE: usize = 1024 * 1024;
+
+        let (client, srv) = window_client(i32::MAX as u32).await;
+        let codec = Codec::default();
+        srv.write(window_update_frame(
+            0,
+            i32::MAX as u32 - frame::DEFAULT_INITIAL_WINDOW_SIZE as u32,
+        ));
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+        let _ = client_frames(&srv, &codec);
+        assert!(stream.stream().available_send_capacity() as usize > SIZE);
+
+        // the peer does not read
+        srv.remote_buffer_cap(0);
+        let done = std::rc::Rc::new(std::cell::Cell::new(false));
+        let done2 = done.clone();
+        let s = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move {
+            let res = s.send_payload(Bytes::from(vec![b'x'; SIZE]), true).await;
+            done2.set(true);
+            res
+        });
+        sleep(Millis(100)).await;
+        assert!(!done.get());
+        assert!(stream.stream().available_send_capacity() as usize > i32::MAX as usize - SIZE);
+
+        // the peer reads, the rest of the payload is sent
+        srv.remote_buffer_cap(SIZE * 2);
+        let mut received = 0;
+        let mut eof = false;
+        for _ in 0..100 {
+            for (size, end) in client_data(&srv, &codec) {
+                received += size;
+                eof |= end;
+            }
+            if eof {
+                break;
+            }
+            sleep(Millis(20)).await;
+        }
+        assert!(eof);
+        assert_eq!(received, SIZE);
+        assert!(fut.await.unwrap().is_ok());
+        assert!(done.get());
+    }
+
+    /// A sender waiting for the write back-pressure release fails on reset.
+    #[ntex::test]
+    async fn test_write_backpressure_wait_fails_on_reset() {
+        let (client, srv) = window_client(i32::MAX as u32).await;
+        let codec = Codec::default();
+        srv.write(window_update_frame(
+            0,
+            i32::MAX as u32 - frame::DEFAULT_INITIAL_WINDOW_SIZE as u32,
+        ));
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+        let _ = client_frames(&srv, &codec);
+
+        srv.remote_buffer_cap(0);
+        let s = stream.stream().clone();
+        let fut =
+            ntex::rt::spawn(
+                async move { s.send_payload(Bytes::from(vec![b'x'; 1024 * 1024]), true).await },
+            );
+        sleep(Millis(100)).await;
+        assert!(!fut.is_finished());
+
+        stream.stream().reset(Reason::CANCEL);
+        let res = ntex::time::timeout(Millis(500), fut).await;
+        assert!(res.unwrap().unwrap().is_err());
+    }
+
     /// `SETTINGS_INITIAL_WINDOW_SIZE` changes adjust open stream windows, the
     /// window can become negative (RFC 9113 §6.9.2).
     #[ntex::test]

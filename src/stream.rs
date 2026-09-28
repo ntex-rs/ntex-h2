@@ -1,4 +1,5 @@
-use std::{cell::Cell, cmp, fmt, future::poll_fn, hash, ops, rc::Rc, task::Context, task::Poll};
+use std::task::{Context, Poll};
+use std::{cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin, rc::Rc};
 
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
@@ -809,7 +810,9 @@ impl StreamRef {
     /// The data is split into `DATA` frames by the available send window and
     /// the peer's maximum frame size. If `eof` is `true` the last frame ends
     /// the stream, empty data with `eof` sends an empty `DATA` frame with
-    /// `END_STREAM`, empty data without `eof` sends nothing.
+    /// `END_STREAM`, empty data without `eof` sends nothing. While the io
+    /// write buffer is above its high watermark, sending pauses until the
+    /// peer reads enough of it.
     ///
     /// Fails with [`OperationError::Idle`] if headers are not sent yet, with
     /// [`OperationError::Closed`] if the send side is closed, and with
@@ -852,6 +855,11 @@ impl StreamRef {
                 }
 
                 loop {
+                    // the io write buffer is full, wait until the peer reads it
+                    if self.0.con.io().is_wr_backpressure() {
+                        self.write_ready().await?;
+                    }
+
                     // calaculate available send window size
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
@@ -1012,6 +1020,28 @@ impl StreamRef {
             self.start_capacity_timer();
             Poll::Pending
         }
+    }
+
+    /// Waits until the io write back-pressure is released.
+    ///
+    /// Fails if the stream is reset or failed, or its send side is closed.
+    async fn write_ready(&self) -> Result<(), Error<OperationError>> {
+        let mut ready = pin::pin!(self.0.con.io().write_ready());
+        poll_fn(|cx| {
+            if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
+                return Poll::Ready(Err(err));
+            }
+            if let HalfState::Closed(reason) = self.0.send.get() {
+                return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
+            }
+            // stream state changes wake the send task
+            self.0.send_cap.register(cx.waker());
+            ready
+                .as_mut()
+                .poll(cx)
+                .map_err(|_| Error::new(OperationError::Disconnected, self.service()))
+        })
+        .await
     }
 
     /// Checks if the stream is reset or failed.

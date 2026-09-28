@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Sending payload waits for the io write back-pressure release, a peer with large flow-control
+  windows that does not read could make the sender buffer unbounded data
+
 * Stream window updates do not restart the capacity timeout while the connection
   window is exhausted
 
