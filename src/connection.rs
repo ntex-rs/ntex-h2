@@ -2316,6 +2316,25 @@ mod tests {
         assert!(fut.await.unwrap().is_err());
     }
 
+    /// Timer task cancellation releases registered streams.
+    #[ntex::test]
+    async fn test_capacity_timer_released_on_timer_cancel() {
+        let (client, _srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        let waiter = stream.stream().clone();
+        let _fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        sleep(Millis(50)).await;
+        assert!(crate::timer::is_registered(stream.stream()));
+
+        // timer task is dropped, e.g. on runtime shutdown
+        crate::timer::cancel();
+        assert!(!crate::timer::is_registered(stream.stream()));
+    }
+
     #[ntex::test]
     async fn test_dropped_capacity_wait_stops_timer() {
         let (client, srv) = zero_window_client().await;

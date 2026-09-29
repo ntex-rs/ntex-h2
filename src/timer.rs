@@ -1,6 +1,6 @@
 #![allow(clippy::mutable_key_type)]
 use std::collections::{BTreeMap, VecDeque};
-use std::{cell::Cell, cell::RefCell, time::Duration, time::Instant};
+use std::{cell::Cell, cell::RefCell, mem, time::Duration, time::Instant};
 
 use ntex_util::time::{Seconds, now, sleep};
 use ntex_util::{HashMap, HashSet, spawn};
@@ -147,11 +147,25 @@ struct TimerGuard;
 
 impl Drop for TimerGuard {
     fn drop(&mut self) {
-        TIMER.with(|timer| {
-            timer.running.set(false);
-            timer.storage.borrow_mut().notifications.clear();
-        });
+        // thread local storage can be destroyed already on thread shutdown
+        let (streams, _notifications) = TIMER
+            .try_with(|timer| {
+                timer.running.set(false);
+                let mut inner = timer.storage.borrow_mut();
+                (mem::take(&mut inner.streams), mem::take(&mut inner.notifications))
+            })
+            .unwrap_or_default();
+
+        // release stream references outside of the storage borrow
+        for io in streams.into_keys() {
+            io.stop_capacity_timer();
+        }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn cancel() {
+    drop(TimerGuard);
 }
 
 #[cfg(test)]

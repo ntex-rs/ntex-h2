@@ -2,6 +2,8 @@
 
 ## [4.1.0] - Unreleased
 
+* Capacity timer task cancellation, e.g. on runtime shutdown, releases registered stream references
+
 * DATA frame exceeding the stream receive window does not trigger a stream WINDOW_UPDATE
   before the stream reset
 
