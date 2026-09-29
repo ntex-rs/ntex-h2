@@ -18,6 +18,8 @@
 
 * Accept `te: trailers` case-insensitively, drop unknown HEADERS flags instead of keeping them
 
+* DATA frames with the `PADDED` flag are encoded with a pad length field, the frame was malformed
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset

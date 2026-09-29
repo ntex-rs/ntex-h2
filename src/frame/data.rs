@@ -69,8 +69,14 @@ impl Data {
     }
 
     /// Sets the value for the `PADDED` flag on this frame.
+    ///
+    /// The frame is encoded with a pad length field and no padding, the
+    /// padding of a received frame is not preserved.
     pub fn set_padded(&mut self) {
-        self.flags.set_padded();
+        if !self.flags.is_padded() {
+            self.flags.set_padded();
+            self.flow_len += 1;
+        }
     }
 
     /// Returns a reference to this frame's payload.
@@ -132,9 +138,13 @@ impl Data {
 
     /// Encode the data frame into the `dst` buffer.
     pub(crate) fn encode(self, dst: &mut BytePages) {
-        // Encode the frame head to the buffer
-        self.head().encode(self.payload.len(), dst);
-        // Encode payload
+        if self.flags.is_padded() {
+            self.head().encode(self.payload.len() + 1, dst);
+            // pad length
+            dst.extend_from_slice(&[0]);
+        } else {
+            self.head().encode(self.payload.len(), dst);
+        }
         dst.append(self.payload);
     }
 }
@@ -214,6 +224,24 @@ mod tests {
 
         let frm = Data::new(StreamId::from(1), Bytes::from_static(b"data"));
         assert_eq!(frm.flow_controlled_len(), 4);
+    }
+
+    #[test]
+    fn padded_frame_encodes_pad_length() {
+        let mut frm = Data::new(StreamId::from(1), Bytes::from_static(b"data"));
+        frm.set_padded();
+        frm.set_padded();
+        assert_eq!(frm.flow_controlled_len(), 5);
+
+        let mut dst = BytePages::default();
+        frm.encode(&mut dst);
+        let buf = dst.take().unwrap().freeze();
+        assert_eq!(&buf[..], b"\0\0\x05\0\x08\0\0\0\x01\0data");
+
+        let head = Head::new(Kind::Data, PADDED, StreamId::from(1));
+        let frm = Data::load(head, buf.slice(9..)).unwrap();
+        assert_eq!(frm.payload(), &Bytes::from_static(b"data"));
+        assert_eq!(frm.flow_controlled_len(), 5);
     }
 
     #[test]
