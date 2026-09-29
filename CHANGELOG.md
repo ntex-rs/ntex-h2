@@ -2,6 +2,22 @@
 
 ## [4.1.0] - Unreleased
 
+* Do not answer a received RST_STREAM with RST_STREAM (RFC 9113 §5.4.2)
+
+* GOAWAY frames report the last stream opened by the peer, `last_stream_id` was always 0
+
+* Client treats HEADERS on a server-initiated stream as a connection error, push is not enabled
+
+* Check `content-length` when a message ends with the headers or with trailers,
+  a `304` response can describe the omitted body
+
+* `Client` pool wakes waiting requests when a stream is released, including
+  cancelled streams, waiters were woken only on the end of a response
+
+* GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
+
+* Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
+
 * Add `StreamRef::is_reset()`, `StreamRef::on_reset()` and the same methods on `SendStream`,
   `on_reset()` returns an io waiter that completes when the stream is reset or the connection closes
 

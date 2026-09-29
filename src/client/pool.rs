@@ -73,7 +73,8 @@ impl Client {
     /// Returns a connection that can open a stream.
     ///
     /// Waits for an existing connection, or opens a new one within the
-    /// connection limit.
+    /// connection limit. The pool uses [`SimpleClient::on_capacity`] of its
+    /// connections, replacing the callback stops waking the pool's waiters.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
@@ -180,11 +181,6 @@ impl Client {
         ntex_util::spawn(async move {
             let res = match timeout_checked(inner.config.conn_timeout, (*inner.connector)()).await {
                 Ok(Ok(io)) => {
-                    // callbacks for end of stream
-                    let waiters2 = waiters.clone();
-                    let storage = InflightStorage::new(move |_| {
-                        notify(&mut waiters2.borrow_mut());
-                    });
                     // construct client
                     let client = SimpleClient::with_params(
                         io,
@@ -192,9 +188,14 @@ impl Client {
                         &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
-                        storage,
+                        InflightStorage::default(),
                         inner.config.pool.clone(),
                     );
+                    // a stream is released, the limit is changed or the connection failed
+                    let waiters2 = waiters.clone();
+                    client.on_capacity(move || {
+                        notify(&mut waiters2.borrow_mut());
+                    });
                     inner.config.connections.borrow_mut().push(client);
                     inner
                         .config

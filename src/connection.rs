@@ -337,6 +337,11 @@ impl Connection {
         self.0.active_local_streams.get()
     }
 
+    /// Returns the last stream initiated by the peer, for `GOAWAY` frames.
+    pub(crate) fn last_stream_id(&self) -> StreamId {
+        self.0.last_id.get()
+    }
+
     /// Sets a callback that is called when the connection's capacity for local streams changes.
     pub(crate) fn set_on_capacity(&self, f: Option<Rc<dyn Fn()>>) {
         self.0.on_capacity.set(f);
@@ -658,6 +663,11 @@ impl RecvHalfConnection {
         self.0.io.tag()
     }
 
+    /// Returns the last stream initiated by the peer, for `GOAWAY` frames.
+    pub(crate) fn last_stream_id(&self) -> StreamId {
+        self.0.last_id.get()
+    }
+
     fn query(&self, id: StreamId) -> Option<StreamRef> {
         self.0.streams.borrow().get(&id).cloned()
     }
@@ -687,8 +697,9 @@ impl RecvHalfConnection {
         let id = frm.stream_id();
         let is_server = self.0.flags.get().contains(ConnectionFlags::SERVER);
 
-        // 1. Check if ID parity is correct (Client must send odd, Server even)
-        if is_server && !id.is_client_initiated() {
+        // 1. Check if ID parity is correct, a server can open streams only
+        // with PUSH_PROMISE, push is never enabled (RFC 9113 §5.1.1, §8.4)
+        if !id.is_client_initiated() {
             return Err(Either::Left(Error::new(
                 ConnectionError::InvalidStreamId("Invalid id in received headers frame"),
                 self.service(),
@@ -746,82 +757,75 @@ impl RecvHalfConnection {
         // 4. Update last_id (Valid new stream)
         self.0.last_id.set(id);
 
-        // 5. Handle specific client closed/pending cases for new streams
-        if !is_server && (!self.0.err_unknown_streams() || self.0.local_pending_reset.is_pending(id)) {
-            // if client and no stream, then it was closed
-            self.encode(frame::Reset::new(id, frame::Reason::STREAM_CLOSED));
-            Ok(None)
+        // 5. New Stream Validation Logic (Disconnect, Max Concurrency, Pseudo Headers)
+
+        // Refuse all new streams if connection is preparing for disconnect,
+        // the peer might not know yet, so refusals are not counted
+        if self
+            .0
+            .flags
+            .get()
+            .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+        {
+            self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
+            if self.0.err_unknown_streams() {
+                self.0.local_pending_reset.add(id, &self.0.local_config);
+            }
+            return Ok(None);
+        }
+
+        // Max concurrent streams check, exceeding the limit is a stream
+        // error (RFC 9113 §5.1.2), refusals count toward the reset limit
+        if let Some(max) = self.0.local_config.remote_max_concurrent_streams
+            && self.0.active_remote_streams.get() >= max
+        {
+            log::debug!("{}: refusing {id:?}, max concurrent streams {max}", self.tag());
+            self.0.streams_count.set(self.0.streams_count.get() + 1);
+            return self.reset_unknown_stream(id, frame::Reason::REFUSED_STREAM);
+        }
+
+        // Pseudo-headers validation, a malformed request is
+        // a stream error (RFC 9113 §8.1.1)
+        let pseudo = frm.pseudo();
+        // CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5)
+        let connect = pseudo.method == Some(Method::CONNECT);
+        let err = if pseudo.method.is_none() {
+            Some(StreamError::MissingPseudo("method"))
+        } else if pseudo.protocol.is_some() {
+            // extended CONNECT is not supported, `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+            // is never sent (RFC 8441 §4)
+            Some(StreamError::UnexpectedPseudo("protocol"))
+        } else if connect && pseudo.authority.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+            Some(StreamError::MissingPseudo("authority"))
+        } else if connect && pseudo.scheme.is_some() {
+            Some(StreamError::UnexpectedPseudo("scheme"))
+        } else if connect && pseudo.path.is_some() {
+            Some(StreamError::UnexpectedPseudo("path"))
+        } else if !connect && pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+            Some(StreamError::MissingPseudo("path"))
+        } else if !connect && pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
+            Some(StreamError::MissingPseudo("scheme"))
+        } else if pseudo.status.is_some() {
+            Some(StreamError::UnexpectedPseudo("status"))
         } else {
-            // 6. New Stream Validation Logic (Disconnect, Max Concurrency, Pseudo Headers)
+            None
+        };
 
-            // Refuse all new streams if connection is preparing for disconnect,
-            // the peer might not know yet, so refusals are not counted
-            if self
-                .0
-                .flags
-                .get()
-                .contains(ConnectionFlags::DISCONNECT_WHEN_READY)
-            {
-                self.encode(frame::Reset::new(id, frame::Reason::REFUSED_STREAM));
-                if self.0.err_unknown_streams() {
-                    self.0.local_pending_reset.add(id, &self.0.local_config);
-                }
-                return Ok(None);
-            }
-
-            // Max concurrent streams check, exceeding the limit is a stream
-            // error (RFC 9113 §5.1.2), refusals count toward the reset limit
-            if let Some(max) = self.0.local_config.remote_max_concurrent_streams
-                && self.0.active_remote_streams.get() >= max
-            {
-                log::debug!("{}: refusing {id:?}, max concurrent streams {max}", self.tag());
-                self.0.streams_count.set(self.0.streams_count.get() + 1);
-                return self.reset_unknown_stream(id, frame::Reason::REFUSED_STREAM);
-            }
-
-            // Pseudo-headers validation, a malformed request is
-            // a stream error (RFC 9113 §8.1.1)
-            let pseudo = frm.pseudo();
-            // CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5)
-            let connect = pseudo.method == Some(Method::CONNECT);
-            let err = if pseudo.method.is_none() {
-                Some(StreamError::MissingPseudo("method"))
-            } else if pseudo.protocol.is_some() {
-                // extended CONNECT is not supported, `SETTINGS_ENABLE_CONNECT_PROTOCOL`
-                // is never sent (RFC 8441 §4)
-                Some(StreamError::UnexpectedPseudo("protocol"))
-            } else if connect && pseudo.authority.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Some(StreamError::MissingPseudo("authority"))
-            } else if connect && pseudo.scheme.is_some() {
-                Some(StreamError::UnexpectedPseudo("scheme"))
-            } else if connect && pseudo.path.is_some() {
-                Some(StreamError::UnexpectedPseudo("path"))
-            } else if !connect && pseudo.path.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Some(StreamError::MissingPseudo("path"))
-            } else if !connect && pseudo.scheme.as_ref().is_none_or(|s| s.as_str().is_empty()) {
-                Some(StreamError::MissingPseudo("scheme"))
-            } else if pseudo.status.is_some() {
-                Some(StreamError::UnexpectedPseudo("status"))
-            } else {
-                None
-            };
-
-            if let Some(err) = err {
-                log::debug!("{}: malformed request on {id:?}: {err}", self.tag());
-                self.0.streams_count.set(self.0.streams_count.get() + 1);
-                self.reset_unknown_stream(id, err.reason())
-            } else {
-                // Create the new stream
-                let stream = StreamRef::new(id, true, Connection(self.0.clone()));
-                self.0.streams_count.set(self.0.streams_count.get() + 1);
-                self.0.streams.borrow_mut().insert(id, stream.clone());
-                self.0
-                    .active_remote_streams
-                    .set(self.0.active_remote_streams.get() + 1);
-                match stream.recv_headers(frm) {
-                    Ok(item) => Ok(item.map(move |msg| (stream, msg))),
-                    Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
-                }
+        if let Some(err) = err {
+            log::debug!("{}: malformed request on {id:?}: {err}", self.tag());
+            self.0.streams_count.set(self.0.streams_count.get() + 1);
+            self.reset_unknown_stream(id, err.reason())
+        } else {
+            // Create the new stream
+            let stream = StreamRef::new(id, true, Connection(self.0.clone()));
+            self.0.streams_count.set(self.0.streams_count.get() + 1);
+            self.0.streams.borrow_mut().insert(id, stream.clone());
+            self.0
+                .active_remote_streams
+                .set(self.0.active_remote_streams.get() + 1);
+            match stream.recv_headers(frm) {
+                Ok(item) => Ok(item.map(move |msg| (stream, msg))),
+                Err(kind) => Err(Either::Right(StreamErrorInner::new(stream, kind))),
             }
         }
     }
@@ -841,13 +845,26 @@ impl RecvHalfConnection {
             return Err(Either::Right(StreamErrorInner::new(stream, err)));
         }
 
+        // PRIORITY can be sent for any stream, resetting an idle
+        // stream is a connection error for the peer (RFC 9113 §5.1)
+        if frm.kind() == frame::Kind::Priority {
+            return Ok(None);
+        }
+
         // an invalid HEADERS frame still opens and closes the stream
         if frm.kind() == frame::Kind::Headers {
-            if self.0.flags.get().contains(ConnectionFlags::SERVER) && !id.is_client_initiated() {
+            if !id.is_client_initiated() {
                 return Err(Either::Left(Error::new(
                     ConnectionError::InvalidStreamId("Invalid id in received headers frame"),
                     self.service(),
                 )));
+            }
+            // `last_id` tracks streams opened by the peer only
+            if !self.0.flags.get().contains(ConnectionFlags::SERVER) {
+                if self.0.local_pending_reset.is_pending(id) {
+                    return Ok(None);
+                }
+                return self.reset_unknown_stream(id, err.reason());
             }
             if self.0.last_id.get() >= id {
                 return Err(Either::Left(Error::new(
@@ -1189,7 +1206,7 @@ impl RecvHalfConnection {
             stream.set_failed_stream(err.clone());
         }
 
-        self.encode(frame::GoAway::new(reason));
+        self.encode(frame::GoAway::new(reason).set_last_stream_id(self.0.last_id.get()));
         self.0.io.close();
         self.0.notify_capacity();
         streams
@@ -3211,6 +3228,103 @@ mod tests {
                 h2::MessageKind::Data(..)
             ));
         }
+        assert!(!client.is_closed());
+    }
+
+    /// Encodes a frame sent by the peer
+    fn peer_frame(codec: &Codec, frm: impl Into<frame::Frame>) -> Bytes {
+        use ntex_codec::Encoder;
+
+        let mut buf = ntex_bytes::BytePages::default();
+        codec.encode(frm.into(), &mut buf).unwrap();
+        buf.freeze()
+    }
+
+    fn response(id: frame::StreamId, status: u16, len: Option<&str>, eof: bool) -> frame::Headers {
+        let mut hdrs = HeaderMap::new();
+        if let Some(len) = len {
+            hdrs.insert(ntex::http::header::CONTENT_LENGTH, len.try_into().unwrap());
+        }
+        let status = ntex::http::StatusCode::from_u16(status).unwrap();
+        frame::Headers::new(id, frame::PseudoHeaders::response(status), hdrs, eof)
+    }
+
+    /// A server cannot open streams with HEADERS, push is not enabled
+    /// (RFC 9113 §8.4).
+    #[ntex::test]
+    async fn test_client_rejects_server_initiated_stream() {
+        let (client, srv) = window_client(1024).await;
+        let codec = Codec::default();
+        let _ = client_frames(&srv, &codec);
+
+        srv.write(peer_frame(&codec, response(2.into(), 200, None, false)));
+        sleep(Millis(50)).await;
+        assert!(client.is_closed());
+        assert!(
+            client_frames(&srv, &codec)
+                .iter()
+                .any(|f| matches!(f, frame::Frame::GoAway(g) if g.reason() == Reason::PROTOCOL_ERROR))
+        );
+    }
+
+    /// `content-length` must match the payload if the message ends with
+    /// the headers or the trailers (RFC 9113 §8.1.1).
+    #[ntex::test]
+    async fn test_content_length_without_data() {
+        let (client, srv) = window_client(1024).await;
+        let enc = Codec::default();
+        let dec = Codec::default();
+
+        // headers with END_STREAM
+        let (_s1, r1) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        srv.write(peer_frame(&enc, response(r1.id(), 200, Some("10"), true)));
+        let msg = r1.recv().await.unwrap();
+        let h2::MessageKind::Eof(h2::StreamEof::Error(err)) = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(*err, h2::StreamError::WrongPayloadLength);
+        sleep(Millis(50)).await;
+        assert!(client_frames(&srv, &dec).iter().any(
+            |f| matches!(f, frame::Frame::Reset(r) if r.stream_id() == r1.id() && r.reason() == Reason::PROTOCOL_ERROR)
+        ));
+
+        // trailers before the end of content
+        let (_s2, r2) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        srv.write(peer_frame(&enc, response(r2.id(), 200, Some("10"), false)));
+        srv.write(peer_frame(
+            &enc,
+            frame::Data::new(r2.id(), Bytes::from_static(b"12345")),
+        ));
+        let trailers = frame::Headers::trailers(r2.id(), HeaderMap::new());
+        srv.write(peer_frame(&enc, trailers));
+        assert!(matches!(
+            r2.recv().await.unwrap().kind,
+            h2::MessageKind::Headers { .. }
+        ));
+        assert!(matches!(r2.recv().await.unwrap().kind, h2::MessageKind::Data(..)));
+        let msg = r2.recv().await.unwrap();
+        let h2::MessageKind::Eof(h2::StreamEof::Error(err)) = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(*err, h2::StreamError::WrongPayloadLength);
+
+        // `304` describes the omitted body
+        let (_s3, r3) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        srv.write(peer_frame(&enc, response(r3.id(), 304, Some("10"), true)));
+        let msg = r3.recv().await.unwrap();
+        assert!(
+            matches!(msg.kind, h2::MessageKind::Headers { eof: true, .. }),
+            "{msg:?}"
+        );
         assert!(!client.is_closed());
     }
 }

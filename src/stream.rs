@@ -583,27 +583,40 @@ impl StreamRef {
                 }
 
                 let eof = hdrs.is_end_stream();
-                if eof {
-                    self.0.state_recv_close(None);
-                } else {
-                    self.0.state_recv_payload();
-                }
                 let (pseudo, headers) = hdrs.into_parts();
 
                 if self.0.content_length.get() != ContentLength::Head
                     && let Some(content_length) = headers.get(CONTENT_LENGTH)
                 {
-                    if let Some(v) = parse_u64(content_length.as_bytes()) {
-                        self.0.content_length.set(ContentLength::Remaining(v));
-                    } else {
+                    let Some(v) = parse_u64(content_length.as_bytes()) else {
                         proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
                         return Err(Error::new(StreamError::InvalidContentLength, self.service()));
+                    };
+                    // a `304` response describes the omitted body (RFC 9110 §8.6),
+                    // otherwise a message without DATA frames has no content
+                    // (RFC 9113 §8.1.1)
+                    if eof && v != 0 && pseudo.status != Some(StatusCode::NOT_MODIFIED) {
+                        proto_err!(stream: "content-length with empty body; stream={:?}", self.0.id);
+                        return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
                     }
+                    self.0.content_length.set(ContentLength::Remaining(v));
+                }
+
+                if eof {
+                    self.0.state_recv_close(None);
+                } else {
+                    self.0.state_recv_payload();
                 }
                 Ok(Some(Message::new(pseudo, headers, eof, self)))
             }
             HalfState::Payload => {
                 // trailers
+                if let ContentLength::Remaining(rem) = self.0.content_length.get()
+                    && rem != 0
+                {
+                    proto_err!(stream: "trailers before the end of content; stream={:?}", self.0.id);
+                    return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
+                }
                 if hdrs.is_end_stream() {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::trailers(hdrs.into_fields(), self)))

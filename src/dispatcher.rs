@@ -23,7 +23,6 @@ struct Inner<Err, PErr> {
     publish: Pipeline<Message, (), PErr>,
     control: PipelineBinding<Control<PErr>, ControlAck, Err>,
     connection: Connection,
-    last_stream_id: StreamId,
     disconnected: Cell<bool>,
 }
 
@@ -39,7 +38,6 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                 publish,
                 connection,
                 control,
-                last_stream_id: 0.into(),
                 disconnected: Cell::new(false),
             }),
         }
@@ -59,22 +57,27 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                 );
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             Err(Either::Right(err)) => {
                 let (stream, kind) = err.into_inner();
 
                 if matches!(&*kind, StreamError::Reset(_)) {
+                    // a received RST_STREAM must not be answered with
+                    // another RST_STREAM (RFC 9113 §5.4.2)
                     stream.set_failed_stream(kind.clone().map(OperationError::from));
                 } else {
                     log::error!(
                         "{}: Failed to handle frame, err: {kind:?} stream: {stream:?}",
                         stream.tag(),
                     );
-                }
-
-                if !stream.reset_silent(kind.reason()) {
-                    self.connection.encode(Reset::new(stream.id(), kind.reason()));
+                    if !stream.reset_silent(kind.reason()) {
+                        self.connection.encode(Reset::new(stream.id(), kind.reason()));
+                    }
                 }
                 publish(Message::error(kind, &stream), stream, &self.inner).await
             }
@@ -109,7 +112,12 @@ where
             if let Err(e) = res2 {
                 Err(e)
             } else {
-                match self.inner.control.call(Control::error(e, None)).await {
+                match self
+                    .inner
+                    .control
+                    .call(Control::error(e, self.inner.connection.last_stream_id()))
+                    .await
+                {
                     Ok(_) => {
                         self.connection.disconnect();
                         Ok(())
@@ -147,7 +155,11 @@ where
                     Err(Either::Left(err)) => {
                         let streams = self.connection.proto_error(&err);
                         self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                        control(Control::proto_error(err), &self.inner).await
+                        control(
+                            Control::proto_error(err, self.connection.last_stream_id()),
+                            &self.inner,
+                        )
+                        .await
                     }
                     Err(Either::Right(errs)) => {
                         // handle stream errors
@@ -207,13 +219,21 @@ where
                 let err = Error::new(ConnectionError::from(err), self.connection.service());
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::Decoder(err)) => {
                 let err = Error::new(ConnectionError::from(err), self.connection.service());
                 let streams = self.connection.proto_error(&err);
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::KeepAlive) if self.connection.is_settings_timeout() => {
                 log::warn!(
@@ -224,7 +244,11 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::SettingsTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::KeepAlive) => {
                 log::warn!(
@@ -235,7 +259,11 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::KeepaliveTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::ReadTimeout) => {
                 log::warn!(
@@ -246,7 +274,11 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::ReadTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::WriteTimeout) => {
                 log::warn!(
@@ -257,7 +289,11 @@ where
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::WriteTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(Control::proto_error(err), &self.inner).await
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
             }
             DispatchItem::Stop(DispReason::Io(err)) => {
                 let streams = self.connection.disconnect();
@@ -276,7 +312,8 @@ where
                     Error::new(OperationError::Disconnected, self.connection.service()),
                 );
                 self.inner.connection.encode(
-                    GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(self.inner.last_stream_id),
+                    GoAway::new(Reason::INTERNAL_ERROR)
+                        .set_last_stream_id(self.inner.connection.last_stream_id()),
                 );
                 self.inner.connection.close();
                 Ok(None)
@@ -333,7 +370,7 @@ where
 
     match result {
         Ok(()) => Ok(None),
-        Err(e) => control(Control::error(e, Some(&stream)), inner).await,
+        Err(e) => control(Control::error(e, inner.connection.last_stream_id()), inner).await,
     }
 }
 
@@ -398,9 +435,9 @@ where
         }
         Err(err) => {
             // we cannot handle control service errors, close connection
-            inner
-                .connection
-                .encode(GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.last_stream_id));
+            inner.connection.encode(
+                GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.connection.last_stream_id()),
+            );
             inner.connection.close();
             Err(err)
         }

@@ -62,8 +62,10 @@ impl<E> Control<E> {
     }
 
     /// Create a new `Control` message for app level errors
-    pub(super) fn error(err: E, stream: Option<&StreamRef>) -> Self {
-        Control::Disconnect(Reason::Error(Error::new(err, stream)))
+    ///
+    /// `last_id` is the last stream initiated by the peer.
+    pub(super) fn error(err: E, last_id: frame::StreamId) -> Self {
+        Control::Disconnect(Reason::Error(Error::new(err, last_id)))
     }
 
     /// Create a new `Control` message from GOAWAY packet.
@@ -77,8 +79,15 @@ impl<E> Control<E> {
     }
 
     /// Create a new `Control` message for protocol level errors
-    pub(super) fn proto_error(err: ntex_error::Error<error::ConnectionError>) -> Self {
-        Control::Disconnect(Reason::ProtocolError(ConnectionError::new(err)))
+    ///
+    /// `last_id` is the last stream initiated by the peer.
+    pub(super) fn proto_error(
+        err: ntex_error::Error<error::ConnectionError>,
+        last_id: frame::StreamId,
+    ) -> Self {
+        let mut err = ConnectionError::new(err);
+        err.frm = err.frm.set_last_stream_id(last_id);
+        Control::Disconnect(Reason::ProtocolError(err))
     }
 
     /// Returns the default acknowledgment for this event.
@@ -110,13 +119,8 @@ pub struct Error<E> {
 }
 
 impl<E> Error<E> {
-    fn new(err: E, stream: Option<&StreamRef>) -> Self {
-        let goaway = if let Some(stream) = stream {
-            frame::GoAway::new(frame::Reason::INTERNAL_ERROR).set_last_stream_id(stream.id())
-        } else {
-            frame::GoAway::new(frame::Reason::INTERNAL_ERROR)
-        };
-
+    fn new(err: E, last_id: frame::StreamId) -> Self {
+        let goaway = frame::GoAway::new(frame::Reason::INTERNAL_ERROR).set_last_stream_id(last_id);
         Self { err, goaway }
     }
 

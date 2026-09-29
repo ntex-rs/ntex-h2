@@ -279,6 +279,10 @@ impl Decoder for Codec {
                     })?
                     .into(),
                 Kind::GoAway => {
+                    if head.stream_id() != 0 {
+                        proto_err!(conn: "invalid GO_AWAY stream ID {:?}", head.stream_id());
+                        return Err(frame::FrameError::InvalidStreamId);
+                    }
                     bytes.advance_to(frame::HEADER_LEN);
                     frame::GoAway::load(bytes)
                         .inspect_err(|e| {

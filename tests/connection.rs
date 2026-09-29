@@ -999,8 +999,12 @@ async fn test_stream_cancel() {
         .await
         .unwrap();
 
-    let reset = get_reset(io.recv(&codec).await.unwrap().unwrap());
-    assert!(reset.reason() == frame::Reason::CANCEL);
+    // a received RST_STREAM is not answered with RST_STREAM (RFC 9113 §5.4.2)
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame {frm:?}"),
+    }
 }
 
 #[ntex::test]
@@ -1042,7 +1046,6 @@ async fn test_goaway_on_reset() {
         id = id.next_id().unwrap();
         io.encode(hdrs.into(), &codec).unwrap();
         io.send(rst.into(), &codec).await.unwrap();
-        io.recv(&codec).await.unwrap().unwrap(); // headers
     }
     let rst = frame::Reset::new(id, Reason::NO_ERROR);
     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
@@ -1051,6 +1054,8 @@ async fn test_goaway_on_reset() {
 
     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    // the last stream opened by the peer is reported
+    assert_eq!(res.last_stream_id(), id);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
@@ -2366,4 +2371,77 @@ async fn test_settings_timeout() {
             assert!(io.is_closed());
         }
     }
+}
+
+/// A pool waiter continues when a stream is cancelled without a
+/// final response.
+#[ntex::test]
+async fn test_pool_waiter_woken_on_stream_cancel() {
+    let srv = start_server().await;
+    let addr = srv.addr();
+    let client = Client::builder("localhost")
+        .scheme(Scheme::HTTPS)
+        .connection_limit(1)
+        .connector(async move |_| Ok(connect(addr).await))
+        .build(SharedCfg::default());
+
+    // wait for the peer's stream limit
+    let con = client.client().await.unwrap();
+    while con.max_streams() != Some(1) {
+        sleep(Millis(50)).await;
+    }
+
+    // the request body is never sent, the server waits for it
+    let (snd, rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+
+    let (tx, rx) = oneshot::channel();
+    let client2 = client.clone();
+    ntex::rt::spawn(async move {
+        let res = client2
+            .send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await;
+        let _ = tx.send(res.is_ok());
+    });
+    sleep(Millis(150)).await;
+    assert!(!client.is_ready());
+
+    drop(snd);
+    drop(rcv);
+    let res = ntex::time::timeout(Millis(2_000), rx).await;
+    assert_eq!(res, Ok(Ok(true)));
+}
+
+/// An invalid PRIORITY frame for an idle stream is ignored, an idle
+/// stream must not be reset (RFC 9113 §5.1).
+#[ntex::test]
+async fn test_invalid_priority_for_idle_stream_ignored() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    // PRIORITY with a 4 byte payload for idle stream 5
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&[0, 0, 4, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0]));
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame: {frm:?}"),
+    }
+}
+
+/// GOAWAY with a stream identifier is a connection error (RFC 9113 §6.8),
+/// our GOAWAY reports the last stream opened by the peer.
+#[ntex::test]
+async fn test_goaway_with_stream_id() {
+    let srv = start_idle_server(ServiceConfig::new()).await;
+    let (io, codec) = open_raw_stream(&srv).await;
+
+    let _ = io.with_write_src(|buf| {
+        buf.extend_from_slice(&[0, 0, 8, 7, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+    });
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+    assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+    assert_eq!(res.last_stream_id(), frame::StreamId::from(1));
 }

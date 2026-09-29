@@ -19,7 +19,6 @@ pub(super) struct InflightStorage(Rc<InflightStorageInner>);
 #[derive(Default)]
 struct InflightStorageInner {
     inflight: RefCell<HashMap<StreamId, Inflight>>,
-    cb: Option<Box<dyn Fn(StreamId)>>,
 }
 
 #[derive(Debug)]
@@ -304,18 +303,7 @@ impl Service<(), Message> for HandleService {
     async fn call(&self, msg: Message, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
         let id = msg.id();
         if let Some(inflight) = self.0.0.inflight.borrow_mut().get_mut(&id) {
-            let eof = match msg.kind() {
-                MessageKind::Headers { eof, .. } => *eof,
-                MessageKind::Eof(..) | MessageKind::Disconnect(..) => true,
-                MessageKind::Data(..) => false,
-            };
             inflight.push(msg);
-
-            if eof {
-                self.0.notify(id);
-                #[cfg(feature = "trace")]
-                log::debug!("Stream {id:?} is closed, notify");
-            }
         } else if !matches!(msg.kind(), MessageKind::Disconnect(_)) {
             log::error!(
                 "{}: Received message for unknown stream, {msg:?}",
@@ -327,22 +315,6 @@ impl Service<(), Message> for HandleService {
 }
 
 impl InflightStorage {
-    pub(super) fn new<F>(f: F) -> Self
-    where
-        F: Fn(StreamId) + 'static,
-    {
-        InflightStorage(Rc::new(InflightStorageInner {
-            inflight: RefCell::default(),
-            cb: Some(Box::new(f)),
-        }))
-    }
-
-    pub(super) fn notify(&self, id: StreamId) {
-        if let Some(ref cb) = self.0.cb {
-            (*cb)(id);
-        }
-    }
-
     pub(super) fn inflight(&self, stream: Stream) -> (SendStream, RecvStream) {
         let id = stream.id();
         // the send half resets the stream on drop
