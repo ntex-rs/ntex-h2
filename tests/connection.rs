@@ -1890,6 +1890,67 @@ async fn test_request_body_after_response_is_published() {
     assert!(matches!(msgs[2], MessageKind::Eof(_)));
 }
 
+/// Informational responses are sent before the final response and keep the
+/// stream idle.
+#[ntex::test]
+async fn test_server_informational_responses() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, OperationError, server};
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            if matches!(msg.kind, MessageKind::Headers { .. }) {
+                let stream = msg.stream();
+                stream
+                    .send_informational(http::StatusCode::EARLY_HINTS, HeaderMap::new())
+                    .unwrap();
+                stream
+                    .send_informational(http::StatusCode::CONTINUE, HeaderMap::new())
+                    .unwrap();
+                stream
+                    .send_response(http::StatusCode::OK, HeaderMap::new(), false)
+                    .unwrap();
+                let err = stream
+                    .send_informational(http::StatusCode::CONTINUE, HeaderMap::new())
+                    .unwrap_err();
+                assert!(matches!(*err, OperationError::Payload));
+                stream.send_payload("ok", true).await.unwrap();
+            }
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let (_snd, rcv) = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    for status in [103, 100, 200] {
+        let msg = rcv.recv().await.unwrap();
+        let MessageKind::Headers { pseudo, eof, .. } = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(pseudo.status.unwrap().as_u16(), status);
+        assert!(!eof);
+    }
+    let msg = rcv.recv().await.unwrap();
+    assert!(
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data, _)) if data == "ok"),
+        "{msg:?}"
+    );
+    assert!(!client.is_closed());
+}
+
 /// Remote reset of a server stream publishes the final error message.
 #[ntex::test]
 async fn test_remote_reset_is_published() {

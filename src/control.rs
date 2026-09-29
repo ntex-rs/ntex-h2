@@ -2,7 +2,9 @@
 
 use std::io;
 
-use crate::frame::Frame;
+use ntex_http::{HeaderMap, StatusCode};
+
+use crate::frame::{Frame, PseudoHeaders};
 use crate::{error, frame, stream::StreamRef};
 
 /// Connection control event.
@@ -10,6 +12,11 @@ use crate::{error, frame, stream::StreamRef};
 pub enum Control<E> {
     /// The connection is preparing to disconnect.
     Disconnect(Reason<E>),
+    /// A request contains `Expect: 100-continue`.
+    ///
+    /// The server does not emit this event, it is created by the application
+    /// layer with [`Control::expect`] before the request is processed.
+    Expect(Expect),
 }
 
 #[derive(Debug)]
@@ -29,9 +36,31 @@ pub enum Reason<E> {
 #[derive(Clone, Debug)]
 pub struct ControlAck {
     pub(crate) frame: Option<Frame>,
+    pub(crate) expect: Option<ExpectResult>,
+}
+
+impl ControlAck {
+    fn frame(frame: Option<Frame>) -> Self {
+        ControlAck { frame, expect: None }
+    }
+
+    #[inline]
+    /// Returns the result of the [`Control::Expect`] event.
+    pub fn into_expect(self) -> Option<ExpectResult> {
+        self.expect
+    }
 }
 
 impl<E> Control<E> {
+    /// Creates a new `Control` message for a request with `Expect: 100-continue`.
+    pub fn expect(stream: StreamRef, pseudo: PseudoHeaders, headers: HeaderMap) -> Self {
+        Control::Expect(Expect {
+            stream,
+            pseudo,
+            headers,
+        })
+    }
+
     /// Create a new `Control` message for app level errors
     pub(super) fn error(err: E, stream: Option<&StreamRef>) -> Self {
         Control::Disconnect(Reason::Error(Error::new(err, stream)))
@@ -56,6 +85,7 @@ impl<E> Control<E> {
     pub fn ack(self) -> ControlAck {
         match self {
             Control::Disconnect(item) => item.ack(),
+            Control::Expect(item) => item.ack(),
         }
     }
 }
@@ -107,9 +137,7 @@ impl<E> Error<E> {
     #[inline]
     /// Acknowledges the error and returns a `GOAWAY` response.
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: Some(self.goaway.into()),
-        }
+        ControlAck::frame(Some(self.goaway.into()))
     }
 }
 
@@ -146,9 +174,7 @@ impl ConnectionError {
     #[inline]
     /// Acknowledges the error and returns a `GOAWAY` response.
     pub fn ack(self) -> ControlAck {
-        ControlAck {
-            frame: Some(self.frm.into()),
-        }
+        ControlAck::frame(Some(self.frm.into()))
     }
 }
 
@@ -169,7 +195,7 @@ impl PeerGone {
 
     /// Acknowledges the event without sending a frame.
     pub fn ack(self) -> ControlAck {
-        ControlAck { frame: None }
+        ControlAck::frame(None)
     }
 }
 
@@ -185,6 +211,82 @@ impl GoAway {
 
     /// Acknowledges the event without sending a frame.
     pub fn ack(self) -> ControlAck {
-        ControlAck { frame: None }
+        ControlAck::frame(None)
     }
+}
+
+/// A request containing an `Expect: 100-continue` header.
+#[derive(Clone, Debug)]
+pub struct Expect {
+    stream: StreamRef,
+    pseudo: PseudoHeaders,
+    headers: HeaderMap,
+}
+
+impl Expect {
+    #[inline]
+    /// Returns the request stream.
+    pub fn stream(&self) -> &StreamRef {
+        &self.stream
+    }
+
+    #[inline]
+    /// Returns the request pseudo headers.
+    pub fn pseudo(&self) -> &PseudoHeaders {
+        &self.pseudo
+    }
+
+    #[inline]
+    /// Returns the request headers.
+    pub fn headers(&self) -> &HeaderMap {
+        &self.headers
+    }
+
+    #[inline]
+    /// Returns mutable access to the request headers.
+    pub fn headers_mut(&mut self) -> &mut HeaderMap {
+        &mut self.headers
+    }
+
+    #[inline]
+    /// Returns the request stream, pseudo headers and headers.
+    pub fn into_parts(self) -> (StreamRef, PseudoHeaders, HeaderMap) {
+        (self.stream, self.pseudo, self.headers)
+    }
+
+    #[inline]
+    /// Accepts the expectation, `100 Continue` is sent and the request is processed.
+    pub fn ack(self) -> ControlAck {
+        ControlAck {
+            frame: None,
+            expect: Some(ExpectResult::Continue(self)),
+        }
+    }
+
+    #[inline]
+    /// Rejects the expectation, the response with `status` and `headers`
+    /// completes the request.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `status` is informational.
+    pub fn fail(self, status: StatusCode, headers: HeaderMap) -> ControlAck {
+        assert!(
+            !status.is_informational(),
+            "Status {status} is not a final status"
+        );
+        ControlAck {
+            frame: None,
+            expect: Some(ExpectResult::Failed(self, status, headers)),
+        }
+    }
+}
+
+/// Result of the [`Control::Expect`] event.
+#[derive(Clone, Debug)]
+pub enum ExpectResult {
+    /// Send `100 Continue` and process the request.
+    Continue(Expect),
+    /// Complete the request with the response status and headers.
+    Failed(Expect, StatusCode, HeaderMap),
 }

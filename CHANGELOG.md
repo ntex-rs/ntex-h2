@@ -2,6 +2,11 @@
 
 ## [4.1.0] - Unreleased
 
+* Add `StreamRef::send_informational()`, sends `1xx` interim responses before the final response
+
+* Add `Control::Expect` for requests with `Expect: 100-continue`, created by the application layer,
+  `ControlAck::into_expect()` returns the request back with the result
+
 * `StreamEof::Data` carries the receive-window `Capacity` of the final DATA frame, the connection
   window was released before the application consumed the data, `StreamEof` is not `Clone`
 

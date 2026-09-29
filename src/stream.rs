@@ -757,6 +757,44 @@ impl StreamRef {
         }
     }
 
+    /// Sends an informational (`1xx`) response for a peer-initiated stream.
+    ///
+    /// The stream stays idle, informational responses may be sent any number
+    /// of times before the final response is sent with
+    /// [`send_response`](Self::send_response).
+    ///
+    /// Fails with [`OperationError::Payload`] if the final response is already
+    /// sent, with [`OperationError::Closed`] if the send side is closed, and
+    /// with [`OperationError::HeaderListTooLarge`] if the headers exceed the
+    /// peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `status` is not informational or is `101 Switching Protocols`,
+    /// which is not allowed in HTTP/2.
+    pub fn send_informational(
+        &self,
+        status: StatusCode,
+        headers: HeaderMap,
+    ) -> Result<(), Error<OperationError>> {
+        assert!(
+            status.is_informational() && status != StatusCode::SWITCHING_PROTOCOLS,
+            "Status {status} is not a valid HTTP/2 informational status"
+        );
+        self.0.check_error()?;
+
+        match self.0.send.get() {
+            HalfState::Idle => {
+                let pseudo = PseudoHeaders::response(status);
+                self.0.con.check_header_list_size(&pseudo, &headers)?;
+                self.0.con.encode(Headers::new(self.0.id, pseudo, headers, false));
+                Ok(())
+            }
+            HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),
+            HalfState::Closed(r) => Err(Error::new(OperationError::Closed(r), self.0.con.service())),
+        }
+    }
+
     /// Sends response headers for a peer-initiated stream.
     ///
     /// If `eof` is `true` the headers end the stream, otherwise the stream
