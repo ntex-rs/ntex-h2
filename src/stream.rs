@@ -125,6 +125,13 @@ pub(super) enum ContentLength {
 }
 
 /// Cloneable reference to an HTTP/2 stream.
+///
+/// Only one task at a time may send payload or wait for send capacity on a
+/// stream, see [`send_pages`](Self::send_pages) and
+/// [`send_capacity`](Self::send_capacity). The stream keeps a single send
+/// waker, so a second concurrent sender or capacity waiter replaces the
+/// first one's waker and ends its capacity wait. Debug builds panic on
+/// concurrent capacity waiters.
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
@@ -860,6 +867,9 @@ impl StreamRef {
     ///
     /// Dropping the future before it completes may leave part of the data
     /// sent, the stream stays in the payload state.
+    ///
+    /// Only one task at a time may send payload or wait for capacity on the
+    /// stream, see [`StreamRef`].
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
@@ -1018,6 +1028,14 @@ impl StreamRef {
     /// Fails with [`OperationError::Closed`] if the send side is closed, and
     /// with [`StreamError::CapacityTimeout`] and resets the stream if
     /// capacity is not available within the configured capacity timeout.
+    ///
+    /// Only one task at a time may wait for capacity or send payload on the
+    /// stream, see [`StreamRef`].
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if another task is already waiting for
+    /// capacity on this stream.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         let _guard = CapacityWaiter(self);
         poll_fn(|cx| self.poll_send_capacity(cx)).await
@@ -1034,6 +1052,14 @@ impl StreamRef {
     /// Starts the capacity timeout while capacity is unavailable, see
     /// [`StreamRef::send_capacity`]. The timeout stays armed if the caller
     /// stops polling before capacity becomes available.
+    ///
+    /// Only one task at a time may wait for capacity or send payload on the
+    /// stream, see [`StreamRef`].
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if another task is already waiting for
+    /// capacity on this stream.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
@@ -1054,11 +1080,29 @@ impl StreamRef {
             self.cancel_capacity_wait();
             Poll::Ready(Ok(win))
         } else {
+            self.register_send_waker(cx);
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
-            self.0.send_cap.register(cx.waker());
             self.start_capacity_timer();
             Poll::Pending
         }
+    }
+
+    /// Registers the waker of the task sending on the stream.
+    ///
+    /// Only one task may wait for capacity at a time, debug builds check that
+    /// a pending capacity wait belongs to the current task.
+    fn register_send_waker(&self, cx: &Context<'_>) {
+        #[cfg(debug_assertions)]
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            && let Some(prev) = self.0.send_cap.take()
+        {
+            assert!(
+                prev.will_wake(cx.waker()),
+                "{:?}: concurrent send capacity waiters, only one task may send on a stream",
+                self.0.id
+            );
+        }
+        self.0.send_cap.register(cx.waker());
     }
 
     /// Waits until the io write back-pressure is released.
@@ -1074,7 +1118,7 @@ impl StreamRef {
                 return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
             }
             // stream state changes wake the send task
-            self.0.send_cap.register(cx.waker());
+            self.register_send_waker(cx);
             ready
                 .as_mut()
                 .poll(cx)

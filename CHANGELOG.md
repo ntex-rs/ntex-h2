@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Document that only one task at a time may send payload or wait for send capacity on a stream,
+  debug builds panic on concurrent capacity waiters
+
 * Add `StreamRef::send_informational()`, sends `1xx` interim responses before the final response
 
 * Add `Control::Expect` for requests with `Expect: 100-continue`, created by the application layer,

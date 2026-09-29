@@ -2277,6 +2277,48 @@ mod tests {
         (client, srv)
     }
 
+    /// Only one task may wait for send capacity on a stream.
+    #[cfg(debug_assertions)]
+    #[ntex::test]
+    #[should_panic(expected = "concurrent send capacity waiters")]
+    async fn test_concurrent_capacity_waiters_panic() {
+        let (client, _srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        let waiter = stream.stream().clone();
+        let _fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        sleep(Millis(50)).await;
+
+        let _ = ntex::util::lazy(|cx| stream.stream().poll_send_capacity(cx)).await;
+    }
+
+    /// The same task may poll for send capacity repeatedly.
+    #[ntex::test]
+    async fn test_capacity_waiter_repoll() {
+        let (client, _srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        let st = stream.stream();
+        assert!(
+            ntex::util::lazy(|cx| st.poll_send_capacity(cx))
+                .await
+                .is_pending()
+        );
+        assert!(
+            ntex::util::lazy(|cx| st.poll_send_capacity(cx))
+                .await
+                .is_pending()
+        );
+        assert!(stream.reset(Reason::CANCEL));
+        assert!(ntex::util::lazy(|cx| st.poll_send_capacity(cx)).await.is_ready());
+    }
+
     #[ntex::test]
     async fn test_capacity_timer_stopped_on_close() {
         let (client, _srv) = zero_window_client().await;
