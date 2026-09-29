@@ -9,6 +9,8 @@ pub(crate) const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 256;
 // no smaller than 100
 pub(crate) const DEFAULT_REMOTE_MAX_CONCURRENT_STREAMS: u32 = 100;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
+// number of recent peer streams the rapid-reset ratio is measured over
+pub(crate) const RESET_RATIO_WINDOW: u32 = 1024;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
 pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 4_194_304;
 pub(crate) const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 48 * 1024;

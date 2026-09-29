@@ -574,8 +574,18 @@ impl ConnectionState {
     }
 
     fn update_rst_count(&self) -> Result<(), Error<ConnectionError>> {
-        let count = self.rst_count.get() + 1;
-        let streams_count = self.streams_count.get();
+        // old history decays, a long-lived connection cannot bank
+        // allowance for a burst of resets
+        let mut count = self.rst_count.get();
+        let mut streams_count = self.streams_count.get();
+        while streams_count >= consts::RESET_RATIO_WINDOW {
+            streams_count >>= 1;
+            count >>= 1;
+        }
+        self.streams_count.set(streams_count);
+        self.rst_count.set(count);
+
+        let count = count + 1;
         if streams_count >= 10 && count >= streams_count >> 1 {
             Err(Error::new(
                 ConnectionError::StreamResetsLimit,
@@ -3348,5 +3358,30 @@ mod tests {
             "{msg:?}"
         );
         assert!(!client.is_closed());
+    }
+
+    /// Old streams do not allow an unbounded burst of resets.
+    #[ntex::test]
+    async fn test_rst_count_decays() {
+        let (client, _srv) = window_client(1024).await;
+        let (stream, _recv) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        let con = stream.stream().0.con.0.clone();
+
+        // long-lived connection with a healthy reset ratio
+        con.streams_count.set(100_000);
+        con.rst_count.set(40_000);
+        con.update_rst_count().unwrap();
+        assert!(con.streams_count.get() < crate::consts::RESET_RATIO_WINDOW);
+
+        let resets = (0..crate::consts::RESET_RATIO_WINDOW)
+            .take_while(|_| con.update_rst_count().is_ok())
+            .count();
+        assert!(
+            resets < crate::consts::RESET_RATIO_WINDOW as usize / 2,
+            "{resets}"
+        );
     }
 }

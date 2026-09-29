@@ -20,6 +20,9 @@
 
 * DATA frames with the `PADDED` flag are encoded with a pad length field, the frame was malformed
 
+* The rapid-reset ratio is measured over recent streams, a long-lived connection allowed
+  an unbounded burst of resets
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
