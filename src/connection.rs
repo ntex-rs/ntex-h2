@@ -3449,4 +3449,77 @@ mod tests {
             |f| matches!(f, frame::Frame::Reset(rst) if rst.stream_id() == r.id() && rst.reason() == Reason::PROTOCOL_ERROR)
         ));
     }
+
+    #[ntex::test]
+    async fn test_recv_woken_on_local_reset() {
+        use std::{cell::Cell, rc::Rc};
+
+        async fn waiting_recv(r: h2::client::RecvStream) -> Rc<Cell<bool>> {
+            let done = Rc::new(Cell::new(false));
+            let done2 = done.clone();
+            ntex::rt::spawn(async move {
+                assert!(r.recv().await.is_none());
+                done2.set(true);
+            });
+            sleep(Millis(50)).await;
+            assert!(!done.get());
+            done
+        }
+
+        let (client, _srv) = zero_window_client().await;
+
+        // capacity timeout through StreamRef
+        let (s, r) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let done = waiting_recv(r).await;
+        assert!(s.stream().send_capacity().await.is_err());
+        sleep(Millis(50)).await;
+        assert!(done.get());
+
+        // capacity timeout without an active waiter
+        let (s, r) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let done = waiting_recv(r).await;
+        std::future::poll_fn(|cx| {
+            assert!(s.poll_send_capacity(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        sleep(Millis(2500)).await;
+        assert!(s.stream().recv_state().is_closed());
+        assert!(done.get());
+
+        // reset through StreamRef
+        let (s, r) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let done = waiting_recv(r).await;
+        s.stream().reset(Reason::CANCEL);
+        sleep(Millis(50)).await;
+        assert!(done.get());
+    }
+
+    /// A failed stream is not reported as closed before its final message.
+    #[ntex::test]
+    async fn test_recv_waits_for_disconnect_message() {
+        let (client, srv) = window_client(1024).await;
+        let (_s, r) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        let fut = ntex::rt::spawn(async move { r.recv().await });
+        sleep(Millis(50)).await;
+
+        srv.close().await;
+        let msg = ntex::time::timeout(Millis(500), fut).await.unwrap().unwrap();
+        assert!(matches!(
+            msg.map(|m| m.kind),
+            Some(h2::MessageKind::Disconnect(_))
+        ));
+    }
 }

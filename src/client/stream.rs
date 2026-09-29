@@ -26,6 +26,8 @@ pub(super) struct Inflight {
     _stream: Stream,
     response: Option<Either<Message, VecDeque<Message>>>,
     waker: LocalWaker,
+    /// The final message is received
+    last: bool,
 }
 
 impl Inflight {
@@ -44,6 +46,10 @@ impl Inflight {
     }
 
     fn push(&mut self, item: Message) {
+        self.last |= matches!(
+            item.kind(),
+            MessageKind::Headers { eof: true, .. } | MessageKind::Eof(_) | MessageKind::Disconnect(_)
+        );
         match self.response.take() {
             Some(Either::Left(msg)) => {
                 let mut msgs = VecDeque::with_capacity(8);
@@ -68,14 +74,13 @@ impl Inflight {
 /// Sending can continue after the [`RecvStream`] is dropped only if the
 /// response is fully received, dropping it earlier resets the whole stream
 /// with [`Reason::CANCEL`].
-pub struct SendStream(StreamRef, InflightStorage);
+pub struct SendStream(StreamRef);
 
 impl Drop for SendStream {
     fn drop(&mut self) {
         self.0.set_reset_on_drop(true);
         if !self.0.send_state().is_closed() {
             self.0.reset(Reason::CANCEL);
-            self.wake_recv();
 
             if self.0.is_disconnect_on_drop() {
                 self.0.0.con.disconnect_when_ready();
@@ -85,20 +90,6 @@ impl Drop for SendStream {
 }
 
 impl SendStream {
-    /// Wakes the receiving half, local reset does not produce a message.
-    fn wake_recv(&self) {
-        if let Some(inflight) = self.1.0.inflight.borrow().get(&self.0.id()) {
-            inflight.waker.wake();
-        }
-    }
-
-    fn wake_on_err<T>(&self, res: Result<T, Error<OperationError>>) -> Result<T, Error<OperationError>> {
-        if res.is_err() {
-            self.wake_recv();
-        }
-        res
-    }
-
     #[inline]
     /// Returns the stream identifier.
     pub fn id(&self) -> StreamId {
@@ -132,7 +123,7 @@ impl SendStream {
     /// and resets the stream if capacity is not available within the configured
     /// capacity timeout.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
-        self.wake_on_err(self.0.send_capacity().await)
+        self.0.send_capacity().await
     }
 
     #[inline]
@@ -154,7 +145,7 @@ impl SendStream {
     where
         StreamData: From<D>,
     {
-        self.wake_on_err(self.0.send_pages(data, eof).await)
+        self.0.send_pages(data, eof).await
     }
 
     #[inline]
@@ -171,9 +162,7 @@ impl SendStream {
     /// has been sent to the peer.
     #[inline]
     pub fn reset(&self, reason: Reason) -> bool {
-        let res = self.0.reset(reason);
-        self.wake_recv();
-        res
+        self.0.reset(reason)
     }
 
     #[inline]
@@ -206,10 +195,7 @@ impl SendStream {
         &self,
         cx: &Context<'_>,
     ) -> Poll<Result<WindowSize, Error<OperationError>>> {
-        match self.0.poll_send_capacity(cx) {
-            Poll::Ready(res) => Poll::Ready(self.wake_on_err(res)),
-            Poll::Pending => Poll::Pending,
-        }
+        self.0.poll_send_capacity(cx)
     }
 }
 
@@ -217,7 +203,7 @@ impl SendStream {
 /// Receiving half of a client-initiated HTTP/2 stream.
 ///
 /// Dropping an unfinished receive stream resets it with [`Reason::CANCEL`].
-pub struct RecvStream(StreamRef, InflightStorage);
+pub struct RecvStream(StreamRef, InflightStorage, Waiter<'static>);
 
 impl RecvStream {
     #[inline]
@@ -249,15 +235,32 @@ impl RecvStream {
         poll_fn(|cx| self.poll_recv(cx)).await
     }
 
+    /// Checks if the stream is reset locally while the receive side is open.
+    fn local_close(&self, inflight: &mut Inflight) -> bool {
+        inflight.last = self.0.recv_state().is_closed() && self.0.take_local_close().is_some();
+        inflight.last
+    }
+
     /// Polls the next message, returning `None` after the receive side closes.
     pub fn poll_recv(&self, cx: &mut Context<'_>) -> Poll<Option<Message>> {
         if let Some(inflight) = self.1.0.inflight.borrow_mut().get_mut(&self.0.id()) {
             if let Some(msg) = inflight.pop() {
                 Poll::Ready(Some(msg))
-            } else if self.0.recv_state().is_closed() {
+            } else if inflight.last || self.local_close(inflight) {
                 Poll::Ready(None)
             } else {
                 inflight.waker.register(cx.waker());
+                // woken when the stream closes, only a local reset does not
+                // publish the final message
+                while self.2.poll_ready(cx).is_ready() {
+                    if self.local_close(inflight) {
+                        return Poll::Ready(None);
+                    }
+                    // a closed io keeps the waiter ready
+                    if self.0.recv_state().is_closed() || self.0.0.con.io().is_closed() {
+                        break;
+                    }
+                }
                 Poll::Pending
             }
         } else {
@@ -319,12 +322,13 @@ impl InflightStorage {
         let id = stream.id();
         // the send half resets the stream on drop
         stream.set_reset_on_drop(false);
-        let snd = SendStream(stream.clone(), self.clone());
-        let rcv = RecvStream(stream.clone(), self.clone());
+        let snd = SendStream(stream.clone());
+        let rcv = RecvStream(stream.clone(), self.clone(), stream.on_reset().into_static());
         let inflight = Inflight {
             _stream: stream,
             response: None,
             waker: LocalWaker::default(),
+            last: false,
         };
         self.0.inflight.borrow_mut().insert(id, inflight);
         (snd, rcv)

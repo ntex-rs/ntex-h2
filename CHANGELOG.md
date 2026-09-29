@@ -32,6 +32,8 @@
 * Keep-alive accepts only the PING ACK carrying the payload of the last keep-alive ping,
   any PING ACK was treated as a pong
 
+* Client `RecvStream` is woken when the stream is reset locally, including capacity timeout and resets through `StreamRef`
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
