@@ -14,6 +14,8 @@
 * `Client` pool wakes waiting requests when a stream is released, including
   cancelled streams, waiters were woken only on the end of a response
 
+* Server graceful shutdown sends GOAWAY(NO_ERROR) with the last processed stream (RFC 9113 §6.8)
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset

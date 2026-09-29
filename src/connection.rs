@@ -378,14 +378,32 @@ impl Connection {
         }
     }
 
+    /// Starts graceful shutdown, new streams are refused and the connection
+    /// closes after all streams are closed.
     pub(crate) fn disconnect_when_ready(&self) {
         self.0.readiness.borrow_mut().clear();
+
+        // the client learns which of its streams are processed (RFC 9113 §6.8),
+        // a failed connection has sent GOAWAY already. client does not send
+        // GOAWAY, push is not supported and the server would close the
+        // connection before reserved streams are opened
+        let flags = self.flags();
+        if flags.contains(ConnectionFlags::SERVER)
+            && !flags.contains(ConnectionFlags::DISCONNECT_WHEN_READY)
+            && !self.0.io.is_closed()
+            && self.check_error().is_ok()
+        {
+            self.encode(
+                frame::GoAway::new(frame::Reason::NO_ERROR).set_last_stream_id(self.0.last_id.get()),
+            );
+        }
+        self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
+
         if self.0.streams.borrow().is_empty() && self.0.reserved_streams.get() == 0 {
             log::trace!("{}: All streams are closed, disconnecting", self.tag());
             self.0.io.close();
         } else {
             log::trace!("{}: Not all streams are closed, set disconnect flag", self.tag());
-            self.set_flags(ConnectionFlags::DISCONNECT_WHEN_READY);
         }
     }
 
@@ -2024,7 +2042,11 @@ mod tests {
         let mut id = frame::StreamId::CLIENT;
         let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
         io.send(hdrs.into(), &codec).await.unwrap();
-        sleep(Millis(100)).await;
+
+        // shutdown is announced, the open stream is processed
+        let frm = goaway(io.recv(&codec).await.unwrap().unwrap());
+        assert_eq!(frm.reason(), Reason::NO_ERROR);
+        assert_eq!(frm.last_stream_id(), id);
 
         for _ in 0..32 {
             id = id.next_id().unwrap();
