@@ -29,6 +29,9 @@
 
 * Resetting a stream twice refreshes its pending reset entry, a duplicate entry forgot the stream early
 
+* Keep-alive accepts only the PING ACK carrying the payload of the last keep-alive ping,
+  any PING ACK was treated as a pong
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset

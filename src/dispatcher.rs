@@ -186,7 +186,7 @@ where
                     #[cfg(feature = "trace")]
                     log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
                     if ping.is_ack() {
-                        self.connection.recv_pong(ping);
+                        self.connection.recv_pong(&ping);
                         Ok(None)
                     } else {
                         Ok(Some(Ping::pong(ping.into_payload()).into()))

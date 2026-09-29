@@ -1158,6 +1158,48 @@ async fn test_ping_timeout_on_idle() {
     assert!(io.is_closed());
 }
 
+/// Only the ack for the keep-alive ping counts as a pong.
+#[ntex::test]
+async fn test_ping_timeout_unexpected_ack() {
+    let srv = test::server_with_config(
+        async move |_| {
+            openssl(
+                ssl_acceptor(),
+                HttpService::h2(async move |_: http::Request| {
+                    Ok::<_, io::Error>(Response::Ok().body("test body"))
+                }),
+            )
+            .map_err(|_| ())
+        },
+        SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds(1))),
+    );
+
+    for valid in [true, false] {
+        let io = connect(srv.addr()).await;
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.encode(frame::Settings::default().into(), &codec).unwrap();
+
+        // settings & window
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+        let _ = io.recv(&codec).await;
+
+        let frame::Frame::Ping(ping) = io.recv(&codec).await.unwrap().unwrap() else {
+            panic!("expected ping")
+        };
+        assert!(!ping.is_ack());
+        let payload = if valid { *ping.payload() } else { [0xff; 8] };
+        io.send(frame::Ping::pong(payload).into(), &codec).await.unwrap();
+
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Ping(ping) if valid => assert!(!ping.is_ack()),
+            frame::Frame::GoAway(_) if !valid => (),
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
+    }
+}
+
 #[ntex::test]
 async fn test_max_headers() {
     let srv = test::server_with_config(

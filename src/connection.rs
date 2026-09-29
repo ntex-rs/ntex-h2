@@ -57,6 +57,8 @@ struct ConnectionState {
     rst_count: Cell<u32>,
     streams_count: Cell<u32>,
     pings_count: Cell<u16>,
+    // payload of the last keep-alive ping
+    ping_payload: Cell<[u8; 8]>,
     last_id: Cell<StreamId>,
 
     // Local config
@@ -150,6 +152,7 @@ impl Connection {
             rst_count: Cell::new(0),
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
+            ping_payload: Cell::new([0; 8]),
             last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
             on_capacity: Cell::new(None),
@@ -1165,8 +1168,13 @@ impl RecvHalfConnection {
         }
     }
 
-    pub(crate) fn recv_pong(&self, _: frame::Ping) {
-        self.set_flags(ConnectionFlags::RECV_PONG);
+    pub(crate) fn recv_pong(&self, ping: &frame::Ping) {
+        // only the ack for the last keep-alive ping proves the peer is alive
+        if *ping.payload() == self.0.ping_payload.get() {
+            self.set_flags(ConnectionFlags::RECV_PONG);
+        } else {
+            log::trace!("{}: unexpected ping ack {:?}", self.tag(), ping.payload());
+        }
     }
 
     /// Handles a received GOAWAY frame (RFC 9113 §6.8).
@@ -1335,6 +1343,7 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
 
         counter += 1;
         st.unset_flags(ConnectionFlags::RECV_PONG);
+        st.0.ping_payload.set(counter.to_be_bytes());
         st.encode(frame::Ping::new(counter.to_be_bytes()));
         st.0.pings_count.set(st.0.pings_count.get() + 1);
     }
