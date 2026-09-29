@@ -741,7 +741,7 @@ async fn test_refuse_on_overflow() {
         match io.recv(&codec).await.unwrap().unwrap() {
             frame::Frame::Reset(rst) => assert_eq!(rst.reason(), Reason::REFUSED_STREAM),
             frame::Frame::GoAway(res) => {
-                assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+                assert_eq!(res.reason(), Reason::ENHANCE_YOUR_CALM);
                 assert_eq!(res.data().as_ref(), b"Stream rapid reset count achieved");
                 break;
             }
@@ -1053,7 +1053,7 @@ async fn test_goaway_on_reset() {
     io.send(rst.into(), &codec).await.unwrap();
 
     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
-    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert_eq!(res.reason(), Reason::ENHANCE_YOUR_CALM);
     // the last stream opened by the peer is reported
     assert_eq!(res.last_stream_id(), id);
     assert!(io.recv(&codec).await.unwrap().is_none());
@@ -1112,7 +1112,7 @@ async fn test_goaway_on_reset2() {
     io.recv(&codec).await.unwrap().unwrap(); // data eof
 
     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
-    assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
+    assert_eq!(res.reason(), Reason::ENHANCE_YOUR_CALM);
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 

@@ -97,7 +97,7 @@ impl ConnectionError {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Connection receive window is exceeded")
             }
             ConnectionError::StreamResetsLimit => {
-                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Stream rapid reset count achieved")
+                GoAway::new(Reason::ENHANCE_YOUR_CALM).set_data("Stream rapid reset count achieved")
             }
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")

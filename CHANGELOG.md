@@ -23,6 +23,8 @@
 * The rapid-reset ratio is measured over recent streams, a long-lived connection allowed
   an unbounded burst of resets
 
+* Exceeding the rapid-reset limit closes the connection with ENHANCE_YOUR_CALM instead of FLOW_CONTROL_ERROR
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
