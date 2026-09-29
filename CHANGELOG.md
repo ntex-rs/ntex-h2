@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Add `StreamRef::is_reset()`, `StreamRef::on_reset()` and the same methods on `SendStream`,
+  `on_reset()` returns an io waiter that completes when the stream is reset or the connection closes
+
 * Document that only one task at a time may send payload or wait for send capacity on a stream,
   debug builds panic on concurrent capacity waiters
 

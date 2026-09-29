@@ -296,10 +296,10 @@ where
     PErr: 'static,
 {
     // the final message of a reset stream is always published
-    let result = if stream.is_remote() && !stream.is_reset() {
-        // the stream id is the waiter tag, a reset wakes all publish calls of the stream
+    let result = if stream.is_remote() && !stream.has_error() {
+        // a reset wakes all publish calls of the stream
         let io = inner.connection.io();
-        let waiter = io.waiter(u32::from(stream.id()) as usize);
+        let waiter = stream.on_reset();
         let fut = inner.publish.call(msg);
         let mut pinned = std::pin::pin!(fut);
         let mut watch = true;
@@ -307,7 +307,7 @@ where
             // the stream is reset during the call, the request body
             // can outlive the response
             while watch && waiter.poll_ready(cx).is_ready() {
-                if stream.is_reset() {
+                if stream.has_error() {
                     log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
                     return Poll::Ready(None);
                 }

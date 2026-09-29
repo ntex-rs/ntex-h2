@@ -4,6 +4,7 @@ use std::{cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin,
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
 use ntex_http::{HeaderMap, Method, StatusCode, header::CONTENT_LENGTH};
+use ntex_io::Waiter;
 use ntex_util::{future::Either, task::LocalWaker};
 
 use crate::error::{OperationError, StreamError};
@@ -272,8 +273,8 @@ impl StreamState {
     #[allow(clippy::used_underscore_binding)]
     fn review_state(&self) {
         if self.recv.get().is_closed() {
-            // wakes the publish calls of the stream
-            self.con.io().wake(u32::from(self.id) as usize);
+            // wakes the publish calls and reset waiters of the stream
+            self.con.io().wake(waiter_tag(self.id));
 
             if let HalfState::Closed(_reason) = self.send.get() {
                 // stream is closed
@@ -1128,9 +1129,32 @@ impl StreamRef {
     }
 
     /// Checks if the stream is reset or failed.
-    pub(crate) fn is_reset(&self) -> bool {
+    pub(crate) fn has_error(&self) -> bool {
         self.0.check_error().is_err() || self.0.con.check_error().is_err()
     }
+
+    /// Returns `true` if the stream is reset by either side, has failed, or
+    /// the connection is closed.
+    pub fn is_reset(&self) -> bool {
+        self.has_error() || self.0.con.is_closed()
+    }
+
+    /// Returns a waiter that completes when the stream state changes.
+    ///
+    /// The waiter completes once the receive side of the stream closes,
+    /// which includes a reset by either side and a stream failure, and while
+    /// the connection is closed. A wake does not always mean a reset, check
+    /// [`is_reset`](Self::is_reset) after it completes and poll again to
+    /// keep waiting. The waiter registers on its first poll and misses
+    /// earlier changes, check [`is_reset`](Self::is_reset) before waiting.
+    pub fn on_reset(&self) -> Waiter<'_> {
+        self.0.con.io().waiter(waiter_tag(self.0.id))
+    }
+}
+
+/// Returns the io waiter tag of the stream.
+pub(crate) fn waiter_tag(id: StreamId) -> usize {
+    u32::from(id) as usize
 }
 
 /// Stops the capacity wait if the `send_capacity()` future is dropped.

@@ -4,6 +4,7 @@ use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, 
 use ntex_bytes::Bytes;
 use ntex_error::Error;
 use ntex_http::HeaderMap;
+use ntex_io::Waiter;
 use ntex_service::{Ctx, Service};
 use ntex_util::{HashMap, Stream as FutStream, future::Either, task::LocalWaker};
 
@@ -174,6 +175,21 @@ impl SendStream {
         let res = self.0.reset(reason);
         self.wake_recv();
         res
+    }
+
+    #[inline]
+    /// Returns `true` if the stream is reset by either side, has failed, or
+    /// the connection is closed.
+    pub fn is_reset(&self) -> bool {
+        self.0.is_reset()
+    }
+
+    #[inline]
+    /// Returns a waiter that completes when the stream state changes.
+    ///
+    /// See [`StreamRef::on_reset`](crate::StreamRef::on_reset).
+    pub fn on_reset(&self) -> Waiter<'_> {
+        self.0.on_reset()
     }
 
     #[inline]

@@ -2277,6 +2277,51 @@ mod tests {
         (client, srv)
     }
 
+    /// Reset waiter completes on a remote reset.
+    #[ntex::test]
+    async fn test_on_reset_remote_reset() {
+        let (client, srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        assert!(!stream.is_reset());
+
+        let st = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move {
+            st.on_reset().await;
+            st.is_reset()
+        });
+        sleep(Millis(50)).await;
+        assert!(!fut.is_finished());
+
+        srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
+        let res = ntex::time::timeout(Millis(500), fut).await;
+        assert!(res.unwrap().unwrap());
+        assert!(stream.is_reset());
+    }
+
+    /// Reset waiter completes once the connection is closed.
+    #[ntex::test]
+    async fn test_on_reset_connection_closed() {
+        let (client, srv) = zero_window_client().await;
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+
+        let st = stream.stream().clone();
+        let fut = ntex::rt::spawn(async move {
+            st.on_reset().await;
+            st.is_reset()
+        });
+        sleep(Millis(50)).await;
+
+        srv.close().await;
+        let res = ntex::time::timeout(Millis(500), fut).await;
+        assert!(res.unwrap().unwrap());
+    }
+
     /// Only one task may wait for send capacity on a stream.
     #[cfg(debug_assertions)]
     #[ntex::test]
