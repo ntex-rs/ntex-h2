@@ -477,6 +477,41 @@ fn many_small_continuation_frames() {
 }
 
 #[test]
+fn headers_unknown_flags_are_ignored() {
+    let mut buf = BytesMut::from(&raw_frame(1, 0xc0 | END_HEADERS, 1, &REQUEST_PSEUDO)[..]);
+    match Codec::default().decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert!(format!("{hdrs:?}").contains("flags: (0x4: END_HEADERS)"));
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn te_trailers_is_case_insensitive() {
+    let block = |value: &[u8]| {
+        let mut block = REQUEST_PSEUDO.to_vec();
+        block.extend(literal_field(b"te", value));
+        BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..])
+    };
+
+    for value in [&b"trailers"[..], b"Trailers", b"TRAILERS"] {
+        match Codec::default().decode(&mut block(value)) {
+            Ok(Some(frame::Frame::Headers(hdrs))) => {
+                assert_eq!(hdrs.fields().get("te").unwrap().as_bytes(), value);
+            }
+            res => panic!("unexpected result: {res:?}"),
+        }
+    }
+    assert_invalid(
+        Codec::default().decode(&mut block(b"gzip")),
+        frame::Kind::Headers,
+        1,
+        FrameError::MalformedMessage,
+    );
+}
+
+#[test]
 fn continuation_frames_keep_headers_flags() {
     let block = REQUEST_PSEUDO;
     // HEADERS with END_STREAM, the block ends in a CONTINUATION

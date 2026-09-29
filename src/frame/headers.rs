@@ -114,7 +114,7 @@ impl Headers {
     /// A self dependency is a stream error, the header block still must be
     /// decoded to keep the HPACK state in sync.
     pub(crate) fn load_head(head: Head, src: &mut Bytes) -> Result<(Self, bool), FrameError> {
-        let flags = HeadersFlag(head.flag());
+        let flags = HeadersFlag::load(head.flag());
         let mut self_dependency = false;
 
         if head.stream_id().is_zero() {
@@ -486,7 +486,7 @@ impl HeaderBlock {
                     {
                         log::trace!("load_hpack; connection level header");
                         malformed = true;
-                    } else if name == header::TE && value != "trailers" {
+                    } else if name == header::TE && !value.as_bytes().eq_ignore_ascii_case(b"trailers") {
                         log::trace!("load_hpack; TE header not set to trailers; val={value:?}");
                         malformed = true;
                     } else {

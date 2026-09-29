@@ -367,7 +367,7 @@ impl ServiceConfig {
     /// service, control events are counted as well. Once the limit is reached
     /// the connection stops processing incoming frames until a call completes.
     ///
-    /// The value must be between 1 and 32,767. The default value is 16,384.
+    /// The value must be between 1 and 32,767. The default value is 8,192.
     ///
     /// # Panics
     ///

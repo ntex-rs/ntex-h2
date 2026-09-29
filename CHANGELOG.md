@@ -16,6 +16,8 @@
 
 * Server graceful shutdown sends GOAWAY(NO_ERROR) with the last processed stream (RFC 9113 §6.8)
 
+* Accept `te: trailers` case-insensitively, drop unknown HEADERS flags instead of keeping them
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
