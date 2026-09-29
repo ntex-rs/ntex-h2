@@ -25,6 +25,8 @@
 
 * Exceeding the rapid-reset limit closes the connection with ENHANCE_YOUR_CALM instead of FLOW_CONTROL_ERROR
 
+* Trailers with pseudo-headers are a stream error (RFC 9113 §8.1), the pseudo-headers were dropped
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset

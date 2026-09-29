@@ -617,6 +617,11 @@ impl StreamRef {
                     proto_err!(stream: "trailers before the end of content; stream={:?}", self.0.id);
                     return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
                 }
+                // trailers must not include pseudo-headers (RFC 9113 §8.1)
+                if let Some(name) = pseudo_name(hdrs.pseudo()) {
+                    proto_err!(stream: "pseudo-header in trailers; stream={:?}", self.0.id);
+                    return Err(Error::new(StreamError::UnexpectedPseudo(name), self.service()));
+                }
                 if hdrs.is_end_stream() {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::trailers(hdrs.into_fields(), self)))
@@ -1330,5 +1335,24 @@ impl StreamData {
             }
             false
         }
+    }
+}
+
+/// Returns the name of the first pseudo-header present.
+fn pseudo_name(pseudo: &PseudoHeaders) -> Option<&'static str> {
+    if pseudo.method.is_some() {
+        Some("method")
+    } else if pseudo.scheme.is_some() {
+        Some("scheme")
+    } else if pseudo.authority.is_some() {
+        Some("authority")
+    } else if pseudo.path.is_some() {
+        Some("path")
+    } else if pseudo.protocol.is_some() {
+        Some("protocol")
+    } else if pseudo.status.is_some() {
+        Some("status")
+    } else {
+        None
     }
 }

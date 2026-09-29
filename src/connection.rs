@@ -3384,4 +3384,32 @@ mod tests {
             "{resets}"
         );
     }
+
+    /// Trailers must not include pseudo-headers (RFC 9113 §8.1).
+    #[ntex::test]
+    async fn test_pseudo_header_in_trailers() {
+        let (client, srv) = window_client(1024).await;
+        let enc = Codec::default();
+        let dec = Codec::default();
+
+        let (_s, r) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        srv.write(peer_frame(&enc, response(r.id(), 200, None, false)));
+        srv.write(peer_frame(&enc, response(r.id(), 200, None, true)));
+        assert!(matches!(
+            r.recv().await.unwrap().kind,
+            h2::MessageKind::Headers { .. }
+        ));
+        let msg = r.recv().await.unwrap();
+        let h2::MessageKind::Eof(h2::StreamEof::Error(err)) = msg.kind else {
+            panic!("unexpected message: {msg:?}")
+        };
+        assert_eq!(*err, h2::StreamError::UnexpectedPseudo("status"));
+        sleep(Millis(50)).await;
+        assert!(client_frames(&srv, &dec).iter().any(
+            |f| matches!(f, frame::Frame::Reset(rst) if rst.stream_id() == r.id() && rst.reason() == Reason::PROTOCOL_ERROR)
+        ));
+    }
 }

@@ -200,7 +200,7 @@ pub enum StreamError {
     /// A required request pseudo-header is missing.
     #[error("Missing pseudo header {0:?}")]
     MissingPseudo(&'static str),
-    /// A pseudo-header is not valid in a request.
+    /// A pseudo-header is not valid in a request, a response or trailers.
     #[error("Unexpected pseudo header {0:?}")]
     UnexpectedPseudo(&'static str),
     /// An informational response ended the stream or used `101` status.
