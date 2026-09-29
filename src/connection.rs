@@ -1384,6 +1384,14 @@ impl Pending {
     fn add(&self, id: StreamId, config: &ServiceConfig) {
         let mut inner = self.0.take().unwrap();
 
+        // a repeated reset refreshes the entry, a stale duplicate would
+        // forget the id early
+        if inner.ids.remove(&id)
+            && let Some(idx) = inner.queue.iter().position(|item| item.0 == id)
+        {
+            inner.queue.remove(idx);
+        }
+
         let current_time = now();
 
         // remove old ids
@@ -1471,6 +1479,26 @@ mod tests {
         pending.add(id, &config);
 
         assert!(pending.is_pending(id));
+    }
+
+    #[test]
+    fn test_pending_reset_duplicates() {
+        let pending = super::Pending::default();
+        let mut config = ServiceConfig::new();
+        config.reset_max = 2;
+        let id1 = frame::StreamId::CLIENT;
+        let id2 = id1.next_id().unwrap();
+
+        pending.add(id1, &config);
+        pending.add(id1, &config);
+        pending.add(id2, &config);
+        assert!(pending.is_pending(id1));
+        assert!(pending.is_pending(id2));
+
+        assert!(pending.remove(id1));
+        pending.add(id1, &config);
+        pending.add(id1.next_id().unwrap().next_id().unwrap(), &config);
+        assert!(pending.is_pending(id1));
     }
 
     #[ntex::test]

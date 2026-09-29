@@ -27,6 +27,8 @@
 
 * Trailers with pseudo-headers are a stream error (RFC 9113 §8.1), the pseudo-headers were dropped
 
+* Resetting a stream twice refreshes its pending reset entry, a duplicate entry forgot the stream early
+
 * GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
 
 * Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
