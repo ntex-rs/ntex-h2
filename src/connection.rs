@@ -2448,6 +2448,57 @@ mod tests {
         assert_eq!(conn_window_updates(&srv, &codec), 30_000);
     }
 
+    #[ntex::test]
+    async fn test_connection_window_released_on_eof_data_consume() {
+        let (io, srv) = ntex::io::testing::IoTest::create();
+        srv.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("CLI")
+            .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
+            .build();
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        sleep(Millis(50)).await;
+
+        let (_stream1, recv1) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        let (_stream3, recv3) = client
+            .send(Method::GET, "/".into(), HeaderMap::default(), true)
+            .await
+            .unwrap();
+        sleep(Millis(50)).await;
+
+        // skip preface, settings and the initial connection window update
+        let codec = Codec::default();
+        let _ = srv.read_any();
+
+        // response headers and 15000 bytes of data with END_STREAM for both streams,
+        // 30000 bytes are above the connection window update threshold
+        let mut msgs = Vec::new();
+        for (id, recv) in [(1, &recv1), (3, &recv3)] {
+            srv.write([0, 0, 1, 1, 4, 0, 0, 0, id, 0x88]);
+            srv.write([0, 0x3a, 0x98, 0, 1, 0, 0, 0, id]);
+            srv.write(vec![0; 15_000]);
+
+            let _hdrs = recv.recv().await.unwrap();
+            let msg = recv.recv().await.unwrap();
+            assert!(matches!(
+                msg.kind(),
+                h2::MessageKind::Eof(h2::StreamEof::Data(..))
+            ));
+            msgs.push(msg);
+        }
+        sleep(Millis(50)).await;
+
+        // unconsumed final data does not replenish the connection window
+        assert_eq!(conn_window_updates(&srv, &codec), 0);
+
+        drop(msgs);
+        sleep(Millis(50)).await;
+        assert_eq!(conn_window_updates(&srv, &codec), 30_000);
+    }
+
     /// Returns stream 1 window updates, consumes the data received by the client.
     async fn stream_window_updates(reset: bool) -> i32 {
         use ntex_codec::Decoder;

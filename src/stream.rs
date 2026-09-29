@@ -153,7 +153,6 @@ pub(crate) struct StreamState {
     send: Cell<HalfState>,
     send_window: Cell<Window>,
     send_cap: LocalWaker,
-    send_reset: LocalWaker,
     /// Connection config
     pub(crate) con: Connection,
     /// error state
@@ -266,7 +265,8 @@ impl StreamState {
     #[allow(clippy::used_underscore_binding)]
     fn review_state(&self) {
         if self.recv.get().is_closed() {
-            self.send_reset.wake();
+            // wakes the publish calls of the stream
+            self.con.io().wake(u32::from(self.id) as usize);
 
             if let HalfState::Closed(_reason) = self.send.get() {
                 // stream is closed
@@ -368,7 +368,6 @@ impl StreamRef {
             send: Cell::new(HalfState::Idle),
             send_window: Cell::new(send_window),
             send_cap: LocalWaker::new(),
-            send_reset: LocalWaker::new(),
             error: Cell::new(None),
             local_close: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
@@ -437,8 +436,8 @@ impl StreamRef {
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
     /// has been sent to the peer. If the receive side of a remote stream is
-    /// still open, the in-flight publish call is replaced with the final
-    /// [`StreamError::LocalReset`] message.
+    /// still open, the in-flight publish calls are cancelled and the final
+    /// [`StreamError::LocalReset`] message is published.
     ///
     /// The final message is published only if the stream has a publish call
     /// in flight. A remote stream reset outside of a publish call, for example
@@ -622,7 +621,7 @@ impl StreamRef {
         // capacity is released immediately
         let len = data.payload().len() as u32;
         let cap = Capacity::new(data.flow_controlled_len(), &self.0);
-        if data.flow_controlled_len() > len && !data.is_end_stream() {
+        if data.flow_controlled_len() > len {
             cap.consume(data.flow_controlled_len() - len);
         }
 
@@ -661,7 +660,7 @@ impl StreamRef {
 
                 if eof {
                     self.0.state_recv_close(None);
-                    Ok(Some(Message::eof_data(data.into_payload(), self)))
+                    Ok(Some(Message::eof_data(data.into_payload(), cap, self)))
                 } else {
                     Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
@@ -1049,28 +1048,6 @@ impl StreamRef {
     /// Checks if the stream is reset or failed.
     pub(crate) fn is_reset(&self) -> bool {
         self.0.check_error().is_err() || self.0.con.check_error().is_err()
-    }
-
-    /// Polls until the stream is reset or failed.
-    pub(crate) fn poll_reset(&self, cx: &Context<'_>) -> Poll<()> {
-        if self.is_reset() {
-            Poll::Ready(())
-        } else {
-            self.0.send_reset.register(cx.waker());
-            Poll::Pending
-        }
-    }
-
-    /// Polls until the local send side closes or the stream fails.
-    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
-        if self.0.send.get().is_closed() {
-            Poll::Ready(Ok(()))
-        } else {
-            self.0.check_error()?;
-            self.0.con.check_error()?;
-            self.0.send_reset.register(cx.waker());
-            Poll::Pending
-        }
     }
 }
 

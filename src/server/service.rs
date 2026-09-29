@@ -127,6 +127,7 @@ where
         let con2 = con.clone();
 
         // start protocol dispatcher
+        let max_inflight = u32::from(con.config().max_inflight);
         let mut fut = IoDispatcher::new(
             io,
             codec,
@@ -138,7 +139,8 @@ where
                     self.control.bind_state(st),
                 ),
             ),
-        );
+        )
+        .max_inflight(max_inflight);
 
         poll_fn(|cx| {
             if con2.config().is_shutdown() {
@@ -215,11 +217,13 @@ pub async fn handle_one<Err: 'static, PErr: 'static>(
     let con2 = con.clone();
 
     // start protocol dispatcher
+    let max_inflight = u32::from(con.config().max_inflight);
     let mut fut = IoDispatcher::new(
         io,
         codec,
         Pipeline::new((), Dispatcher::new(con, pub_svc, ctl_svc)),
-    );
+    )
+    .max_inflight(max_inflight);
 
     poll_fn(|cx| {
         if con2.config().is_shutdown() {

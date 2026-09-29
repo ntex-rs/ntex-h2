@@ -196,12 +196,6 @@ impl SendStream {
             Poll::Pending => Poll::Pending,
         }
     }
-
-    #[inline]
-    /// Polls until the local send side closes or the stream fails.
-    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
-        self.0.poll_send_reset(cx)
-    }
 }
 
 #[derive(Debug)]

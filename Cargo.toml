@@ -62,8 +62,8 @@ env_logger = "0.11"
 [patch.crates-io]
 ntex-h2 = { path = "." }
 
-ntex = { git = "https://github.com/ntex-rs/ntex.git" }
-ntex-io = { git = "https://github.com/ntex-rs/ntex.git" }
+ntex = { git = "https://github.com/ntex-rs/ntex.git", branch = "various-fixes" }
+ntex-io = { git = "https://github.com/ntex-rs/ntex.git", branch = "various-fixes" }
 ntex-net = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-util = { git = "https://github.com/ntex-rs/ntex.git" }
 ntex-bytes = { git = "https://github.com/ntex-rs/ntex.git" }

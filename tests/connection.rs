@@ -1824,7 +1824,7 @@ async fn test_no_error_reset_after_complete_response() {
     assert!(matches!(msg.kind, MessageKind::Headers { eof: false, .. }));
     let msg = recv_stream.recv().await.unwrap();
     assert!(
-        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref d)) if d == "ok"),
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref d, _)) if d == "ok"),
         "{msg:?}"
     );
     assert!(recv_stream.recv().await.is_none());
@@ -1933,6 +1933,189 @@ async fn test_remote_reset_is_published() {
     );
 }
 
+/// Remote reset cancels the in-flight HEADERS publish call after DATA
+/// frames are published for the stream.
+#[ntex::test]
+async fn test_remote_reset_cancels_handler_after_data() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, frame::StreamId, server};
+    use std::{cell::RefCell, future::pending};
+
+    struct Guard(StreamId, Rc<RefCell<Vec<StreamId>>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.1.borrow_mut().push(self.0);
+        }
+    }
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let dropped = Rc::new(RefCell::new(Vec::new()));
+    let (tx, rx) = ntex::channel::mpsc::channel::<()>();
+    let dropped2 = dropped.clone();
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            let _ = tx.send(());
+            if matches!(msg.kind, MessageKind::Headers { .. }) {
+                let _guard = Guard(msg.id(), dropped2.clone());
+                pending::<()>().await;
+            }
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+
+    // the first pending call is polled by the dispatcher task itself,
+    // the handler of the second stream runs in a spawned task
+    let (_snd1, _rcv1) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    rx.recv().await.unwrap();
+
+    let (snd, _rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    rx.recv().await.unwrap();
+    snd.send_payload(Bytes::from_static(b"data"), false)
+        .await
+        .unwrap();
+    rx.recv().await.unwrap();
+    assert!(dropped.borrow().is_empty());
+
+    snd.reset(Reason::CANCEL);
+    sleep(Millis(100)).await;
+    assert_eq!(&*dropped.borrow(), &[snd.id()], "handler is not cancelled");
+}
+
+/// Remote reset cancels all in-flight publish calls of the stream,
+/// including DATA publish calls.
+#[ntex::test]
+async fn test_remote_reset_cancels_data_publish() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, server};
+    use std::future::pending;
+
+    struct Guard(Rc<Cell<usize>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let dropped = Rc::new(Cell::new(0));
+    let (tx, rx) = ntex::channel::mpsc::channel::<()>();
+    let dropped2 = dropped.clone();
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            let _ = tx.send(());
+            if matches!(msg.kind, MessageKind::Data(..)) {
+                let _guard = Guard(dropped2.clone());
+                pending::<()>().await;
+            }
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+
+    let (snd, _rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    rx.recv().await.unwrap();
+    for _ in 0..2 {
+        snd.send_payload(Bytes::from_static(b"data"), false)
+            .await
+            .unwrap();
+        rx.recv().await.unwrap();
+    }
+    assert_eq!(dropped.get(), 0);
+
+    snd.reset(Reason::CANCEL);
+    sleep(Millis(100)).await;
+    assert_eq!(dropped.get(), 2, "DATA publish calls are not cancelled");
+}
+
+/// The connection stops processing frames once the in-flight publish
+/// calls limit is reached.
+#[ntex::test]
+async fn test_max_inflight_messages() {
+    use ntex::io::{Io, testing::IoTest};
+    use ntex_h2::{Message, server};
+
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1_000_000);
+    srv.remote_buffer_cap(1_000_000);
+
+    let (tx, rx) = ntex::channel::mpsc::channel::<()>();
+    let (done_tx, done_rx) = ntex::channel::mpsc::channel::<()>();
+    let done_rx = Rc::new(done_rx);
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async move |msg: Message| {
+            let _ = tx.send(());
+            if matches!(msg.kind, MessageKind::Data(..)) {
+                let _ = done_rx.recv().await;
+            }
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(
+            srv,
+            SharedCfg::new("SRV").add(ServiceConfig::new().set_max_inflight_messages(2)),
+        ))
+        .await;
+    });
+
+    let client = SimpleClient::new(
+        Io::new(cli, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+
+    let (snd, _rcv) = client
+        .send(Method::POST, "/".into(), HeaderMap::new(), false)
+        .await
+        .unwrap();
+    rx.recv().await.unwrap();
+    for _ in 0..3 {
+        snd.send_payload(Bytes::from_static(b"data"), false)
+            .await
+            .unwrap();
+    }
+    sleep(Millis(100)).await;
+
+    // the third DATA frame waits for a completed publish call
+    rx.recv().await.unwrap();
+    rx.recv().await.unwrap();
+    assert!(
+        ntex::time::timeout(Millis(100), rx.recv()).await.is_err(),
+        "the in-flight limit is not applied"
+    );
+
+    done_tx.send(()).unwrap();
+    rx.recv().await.unwrap();
+}
+
 /// Late HEADERS for closed client streams do not affect the connection,
 /// HEADERS for an idle client stream is a connection error (N5).
 #[ntex::test]
@@ -2005,7 +2188,7 @@ async fn test_client_interim_responses() {
     }
     let msg = rcv.recv().await.unwrap();
     assert!(
-        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data)) if data == "ok"),
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data, _)) if data == "ok"),
         "{msg:?}"
     );
 
@@ -2048,7 +2231,7 @@ async fn test_client_head_response() {
     assert!(!eof);
     let msg = rcv.recv().await.unwrap();
     assert!(
-        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data)) if data.is_empty()),
+        matches!(msg.kind, MessageKind::Eof(ntex_h2::StreamEof::Data(ref data, _)) if data.is_empty()),
         "{msg:?}"
     );
 

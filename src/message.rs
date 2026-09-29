@@ -36,10 +36,10 @@ pub enum MessageKind {
 }
 
 /// Final event for an HTTP/2 stream.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StreamEof {
-    /// Final payload bytes.
-    Data(Bytes),
+    /// Final payload bytes and their receive-window capacity.
+    Data(Bytes, Capacity),
     /// Trailing headers.
     Trailers(HeaderMap),
     /// Stream-level error.
@@ -61,10 +61,10 @@ impl Message {
         }
     }
 
-    pub(crate) fn eof_data(data: Bytes, stream: &StreamRef) -> Self {
+    pub(crate) fn eof_data(data: Bytes, capacity: Capacity, stream: &StreamRef) -> Self {
         Message {
             stream: stream.clone(),
-            kind: MessageKind::Eof(StreamEof::Data(data)),
+            kind: MessageKind::Eof(StreamEof::Data(data, capacity)),
         }
     }
 

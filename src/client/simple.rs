@@ -5,7 +5,7 @@ use ntex_bytes::{BufMut, ByteString, BytesMut};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method, uri::Scheme};
-use ntex_io::{IoBoxed, IoRef, OnDisconnect};
+use ntex_io::{IoBoxed, IoRef, Waiter};
 use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
@@ -78,7 +78,8 @@ impl SimpleClient {
             ),
         );
 
-        let fut = IoDispatcher::new(io, con.codec().clone(), disp);
+        let fut = IoDispatcher::new(io, con.codec().clone(), disp)
+            .max_inflight(u32::from(con.config().max_inflight));
         ntex_util::spawn(async move {
             let _ = fut.await;
         });
@@ -209,7 +210,7 @@ impl SimpleClient {
 
     #[inline]
     /// Returns a notification future for connection closure.
-    pub fn on_disconnect(&self) -> OnDisconnect {
+    pub fn on_disconnect(&self) -> Waiter<'static> {
         self.0.con.io().on_disconnect()
     }
 
@@ -328,7 +329,7 @@ impl fmt::Debug for SimpleClient {
 #[derive(Debug)]
 pub struct ClientDisconnect {
     client: SimpleClient,
-    disconnect: OnDisconnect,
+    disconnect: Waiter<'static>,
     timeout: Option<Sleep>,
 }
 

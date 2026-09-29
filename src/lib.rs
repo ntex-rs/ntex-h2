@@ -34,8 +34,8 @@
 //! * [`MessageKind::Headers`] opens the stream with the request headers.
 //! * [`MessageKind::Data`] delivers payload bytes with their receive-window
 //!   [`Capacity`].
-//! * [`MessageKind::Eof`] is the final event, with the final payload,
-//!   trailers, or a stream error.
+//! * [`MessageKind::Eof`] is the final event, with the final payload and its
+//!   [`Capacity`], trailers, or a stream error.
 //! * [`MessageKind::Disconnect`] is the final event if the connection fails.
 //!
 //! The response is sent through [`Message::stream`], with

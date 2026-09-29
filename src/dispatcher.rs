@@ -10,7 +10,8 @@ use crate::connection::{Connection, EitherError, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
 use crate::error::{ConnectionError, OperationError, StreamError};
 use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
-use crate::{codec::Codec, message::Message, stream::StreamRef};
+use crate::message::Message;
+use crate::{codec::Codec, stream::StreamRef};
 
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Err, PErr> {
@@ -296,20 +297,26 @@ where
 {
     // the final message of a reset stream is always published
     let result = if stream.is_remote() && !stream.is_reset() {
-        let result = {
-            let fut = inner.publish.call(msg);
-            let mut pinned = std::pin::pin!(fut);
-            future::poll_fn(|cx| {
-                // the stream is reset during the call, the request body
-                // can outlive the response
-                if stream.poll_reset(cx).is_ready() {
+        // the stream id is the waiter tag, a reset wakes all publish calls of the stream
+        let io = inner.connection.io();
+        let waiter = io.waiter(u32::from(stream.id()) as usize);
+        let fut = inner.publish.call(msg);
+        let mut pinned = std::pin::pin!(fut);
+        let mut watch = true;
+        let result = future::poll_fn(|cx| {
+            // the stream is reset during the call, the request body
+            // can outlive the response
+            while watch && waiter.poll_ready(cx).is_ready() {
+                if stream.is_reset() {
                     log::trace!("{}: Stream is closed {:?}", stream.tag(), stream.id());
                     return Poll::Ready(None);
                 }
-                pinned.as_mut().poll(cx).map(Some)
-            })
-            .await
-        };
+                // a closed io keeps the waiter ready
+                watch = !io.is_closed();
+            }
+            pinned.as_mut().poll(cx).map(Some)
+        })
+        .await;
 
         // a stream reset by the local side gets the final message,
         // the publish call is dropped or completed

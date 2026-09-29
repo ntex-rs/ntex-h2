@@ -2,6 +2,19 @@
 
 ## [4.1.0] - Unreleased
 
+* `StreamEof::Data` carries the receive-window `Capacity` of the final DATA frame, the connection
+  window was released before the application consumed the data, `StreamEof` is not `Clone`
+
+* Remove `StreamRef::poll_send_reset()` and `SendStream::poll_send_reset()`
+
+* `SimpleClient::on_disconnect()` returns `ntex_io::Waiter<'static>`, `OnDisconnect` is removed from ntex-io
+
+* Stream reset cancels all in-flight publish calls of the stream (HEADERS, DATA, trailers),
+  only the HEADERS publish call was cancelled on reset
+
+* Add `ServiceConfig::set_max_inflight_messages()`, limits in-flight service calls
+  of a connection, default is 16,384
+
 * Capacity timer task cancellation, e.g. on runtime shutdown, releases registered stream references
 
 * DATA frame exceeding the stream receive window does not trigger a stream WINDOW_UPDATE

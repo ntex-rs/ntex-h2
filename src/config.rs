@@ -33,6 +33,8 @@ pub struct ServiceConfig {
     pub(crate) max_headers: usize,
     /// Capacity availability timeout
     pub(crate) capacity_timeout: Option<Seconds>,
+    /// Maximum number of in-flight publish calls
+    pub(crate) max_inflight: u16,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
@@ -87,6 +89,7 @@ impl ServiceConfig {
             max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             capacity_timeout: Some(consts::DEFAULT_CAPACITY_TIMEOUT),
+            max_inflight: consts::DEFAULT_MAX_INFLIGHT,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
             settings_timeout: Seconds(5),
@@ -354,6 +357,27 @@ impl ServiceConfig {
         } else {
             self.capacity_timeout = Some(timeout);
         }
+        self
+    }
+
+    #[must_use]
+    /// Sets the maximum number of in-flight service calls of a connection.
+    ///
+    /// Every received HEADERS, DATA or trailers frame is published to the
+    /// service, control events are counted as well. Once the limit is reached
+    /// the connection stops processing incoming frames until a call completes.
+    ///
+    /// The value must be between 1 and 32,767. The default value is 16,384.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max` is not within the range specified above.
+    pub fn set_max_inflight_messages(mut self, max: u16) -> Self {
+        assert!(
+            (1..=u16::MAX / 2).contains(&max),
+            "max in-flight messages must be between 1 and 32767"
+        );
+        self.max_inflight = max;
         self
     }
 }
