@@ -6,6 +6,7 @@ use ntex_h2::{Codec, frame, frame::FrameError};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode};
 use ntex_io::testing::IoTest;
 use ntex_util::future::join;
+use ntex_util::time::{Millis, sleep};
 
 use support::{build_large_headers, frames};
 
@@ -190,143 +191,119 @@ fn read_goaway_with_debug_data() {
     assert_eq!(&**data.data(), b"too_many_pings");
 }
 
-// #[tokio::test]
-// async fn write_continuation_frames() {
-//     // An invalid dependency ID results in a stream level error. The hpack
-//     // payload should still be decoded.
-//     h2_support::trace_init!();
-//     let (io, mut srv) = mock::new();
+#[ntex::test]
+async fn write_continuation_frames() {
+    let (cli, srv) = IoTest::create();
+    let large = build_large_headers();
+    let expected = large
+        .iter()
+        .fold(HeaderMap::new(), |mut map, &(name, ref value)| {
+            map.append(HeaderName::try_from(name).unwrap(), value.parse().unwrap());
+            map
+        });
 
-//     let large = build_large_headers();
+    let srv_rx = support::start_server(srv);
+    let client = support::start_client(cli);
 
-//     // Build the large request frame
-//     let frame = large.iter().fold(
-//         frames::headers(1).request("GET", "https://http2.akamai.com/"),
-//         |frame, &(name, ref value)| frame.field(name, &value[..]),
-//     );
+    let server = async move {
+        let msg = srv_rx.recv().await.unwrap();
+        msg.stream()
+            .send_response(StatusCode::NO_CONTENT, HeaderMap::new(), true)
+            .unwrap();
+        let (pseudo, headers, eof) = get_headers!(msg);
+        assert_eq!(pseudo.path, Some("/index.html".into()));
+        assert_eq!(headers, expected);
+        assert!(eof);
+    };
 
-//     let srv = async move {
-//         let settings = srv.assert_client_handshake().await;
-//         assert_default_settings!(settings);
-//         srv.recv_frame(frame.eos()).await;
-//         srv.send_frame(frames::headers(1).response(204).eos()).await;
-//     };
+    let client = async move {
+        let headers = large
+            .iter()
+            .fold(HeaderMap::new(), |mut map, &(name, ref value)| {
+                map.append(HeaderName::try_from(name).unwrap(), value.parse().unwrap());
+                map
+            });
+        let (_snd, rcv) = client
+            .send(Method::GET, "/index.html".into(), headers, true)
+            .await
+            .unwrap();
+        let msg = rcv.recv().await.unwrap();
+        let (pseudo, _, eof) = get_headers!(msg);
+        assert_eq!(pseudo.status, Some(StatusCode::NO_CONTENT));
+        assert!(eof);
+    };
 
-//     let client = async move {
-//         let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+    join(server, client).await;
+}
 
-//         let mut request = Request::builder();
-//         request = request.uri("https://http2.akamai.com/");
+fn frame_payload(buf: &[u8], kind: u8, stream_id: u32) -> &[u8] {
+    let mut pos = 0;
+    while pos + 9 <= buf.len() {
+        let len =
+            (usize::from(buf[pos]) << 16) | (usize::from(buf[pos + 1]) << 8) | usize::from(buf[pos + 2]);
+        let end = pos + 9 + len;
+        assert!(end <= buf.len(), "incomplete frame");
+        let id = u32::from_be_bytes(buf[pos + 5..pos + 9].try_into().unwrap()) & 0x7fff_ffff;
+        if buf[pos + 3] == kind && id == stream_id {
+            return &buf[pos + 9..end];
+        }
+        pos = end;
+    }
+    panic!("frame type {kind} for stream {stream_id} not found");
+}
 
-//         for &(name, ref value) in &large {
-//             request = request.header(name, &value[..]);
-//         }
+#[ntex::test]
+async fn client_settings_header_table_size() {
+    let (cli, srv) = IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = support::start_client(cli);
 
-//         let request = request.body(()).unwrap();
+    // SETTINGS_HEADER_TABLE_SIZE = 0
+    srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+    let _ = srv.read_any();
 
-//         let req = async {
-//             let res = client
-//                 .send_request(request, true)
-//                 .expect("send_request1")
-//                 .0
-//                 .await;
-//             let response = res.unwrap();
-//             assert_eq!(response.status(), StatusCode::NO_CONTENT);
-//         };
+    let _ = client
+        .send(Method::GET, "/".into(), HeaderMap::new(), true)
+        .await
+        .unwrap();
+    sleep(Millis(50)).await;
 
-//         conn.drive(req).await;
-//         conn.await.unwrap();
-//     };
+    let bytes = srv.read_any();
+    let payload = frame_payload(&bytes, 1, 1);
+    assert_eq!(payload.first(), Some(&0x20));
+}
 
-//     join(srv, client).await;
-// }
+#[ntex::test]
+async fn server_settings_header_table_size() {
+    let (srv, cli) = IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    cli.remote_buffer_cap(1024 * 1024);
 
-// #[tokio::test]
-// async fn client_settings_header_table_size() {
-//     // A server sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
-//     // client doesn't send indexed headers.
-//     h2_support::trace_init!();
+    let messages = support::start_server(srv);
+    cli.write(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+    // SETTINGS_HEADER_TABLE_SIZE = 0
+    cli.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0]);
+    sleep(Millis(50)).await;
+    let _ = cli.read_any();
 
-//     let io = mock_io::Builder::new()
-//         // Read SETTINGS_HEADER_TABLE_SIZE = 0
-//         .handshake_read_settings(&[
-//             0, 0, 6, // len
-//             4, // type
-//             0, // flags
-//             0, 0, 0, 0, // stream id
-//             0, 0x1, // id = SETTINGS_HEADER_TABLE_SIZE
-//             0, 0, 0, 0, // value = 0
-//         ])
-//         // Write GET / (1st)
-//         .write(&[
-//             0, 0, 0x10, 1, 5, 0, 0, 0, 1, 0x82, 0x87, 0x41, 0x8B, 0x9D, 0x29, 0xAC, 0x4B, 0x8F,
-//             0xA8, 0xE9, 0x19, 0x97, 0x21, 0xE9, 0x84,
-//         ])
-//         .write(frames::SETTINGS_ACK)
-//         // Read response
-//         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 1, 137])
-//         // Write GET / (2nd, doesn't use indexed headers)
-//         // - Sends 0x20 about size change
-//         // - Sends :authority as literal instead of indexed
-//         .write(&[
-//             0, 0, 0x11, 1, 5, 0, 0, 0, 3, 0x20, 0x82, 0x87, 0x1, 0x8B, 0x9D, 0x29, 0xAC, 0x4B,
-//             0x8F, 0xA8, 0xE9, 0x19, 0x97, 0x21, 0xE9, 0x84,
-//         ])
-//         .read(&[0, 0, 1, 1, 5, 0, 0, 0, 3, 137])
-//         .build();
+    // acknowledge the server settings and send GET /
+    cli.write(frames::SETTINGS_ACK);
+    cli.write([
+        0, 0, 0x10, 1, 5, 0, 0, 0, 1, 0x82, 0x86, 0x41, 0x8B, 0x9D, 0x29, 0xAC, 0x4B, 0x8F, 0xA8, 0xE9,
+        0x19, 0x97, 0x21, 0xE9, 0x84,
+    ]);
 
-//     let (mut client, mut conn) = client::handshake(io).await.expect("handshake");
+    let msg = messages.recv().await.unwrap();
+    let mut headers = HeaderMap::new();
+    headers.insert("a".parse().unwrap(), "b".parse().unwrap());
+    msg.stream().send_response(StatusCode::OK, headers, true).unwrap();
+    sleep(Millis(50)).await;
 
-//     let req1 = client.get("https://http2.akamai.com");
-//     conn.drive(req1).await.expect("req1");
-
-//     let req2 = client.get("https://http2.akamai.com");
-//     conn.drive(req2).await.expect("req1");
-// }
-
-// #[tokio::test]
-// async fn server_settings_header_table_size() {
-//     // A client sets the SETTINGS_HEADER_TABLE_SIZE to 0, test that the
-//     // server doesn't send indexed headers.
-//     h2_support::trace_init!();
-
-//     let io = mock_io::Builder::new()
-//         .read(MAGIC_PREFACE)
-//         // Read SETTINGS_HEADER_TABLE_SIZE = 0
-//         .read(&[
-//             0, 0, 6, // len
-//             4, // type
-//             0, // flags
-//             0, 0, 0, 0, // stream id
-//             0, 0x1, // id = SETTINGS_HEADER_TABLE_SIZE
-//             0, 0, 0, 0, // value = 0
-//         ])
-//         .write(frames::SETTINGS)
-//         .write(frames::SETTINGS_ACK)
-//         .read(frames::SETTINGS_ACK)
-//         // Write GET /
-//         .read(&[
-//             0, 0, 0x10, 1, 5, 0, 0, 0, 1, 0x82, 0x87, 0x41, 0x8B, 0x9D, 0x29, 0xAC, 0x4B, 0x8F,
-//             0xA8, 0xE9, 0x19, 0x97, 0x21, 0xE9, 0x84,
-//         ])
-//         // Read response
-//         //.write(&[0, 0, 6, 1, 5, 0, 0, 0, 1, 136, 64, 129, 31, 129, 143])
-//         .write(&[0, 0, 7, 1, 5, 0, 0, 0, 1, 32, 136, 0, 129, 31, 129, 143])
-//         .build();
-
-//     let mut srv = server::handshake(io).await.expect("handshake");
-
-//     let (_req, mut stream) = srv.accept().await.unwrap().unwrap();
-
-//     let rsp = http::Response::builder()
-//         .status(200)
-//         .header("a", "b")
-//         .body(())
-//         .unwrap();
-//     stream.send_response(rsp, true).unwrap();
-
-//     assert!(srv.accept().await.is_none());
-// }
+    let bytes = cli.read_any();
+    let payload = frame_payload(&bytes, 1, 1);
+    assert_eq!(payload.first(), Some(&0x20));
+}
 
 // ===== SETTINGS =====
 
