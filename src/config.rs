@@ -33,11 +33,14 @@ pub struct ServiceConfig {
     pub(crate) max_headers: usize,
     /// Capacity availability timeout
     pub(crate) capacity_timeout: Option<Seconds>,
+    /// Maximum number of in-flight publish calls
+    pub(crate) max_inflight: u16,
     // /// If extended connect protocol is enabled.
     // pub extended_connect_protocol_enabled: bool,
     /// Connection timeouts
     pub(crate) handshake_timeout: Seconds,
     pub(crate) ping_timeout: Seconds,
+    pub(crate) settings_timeout: Seconds,
 
     config: CfgContext,
 }
@@ -86,8 +89,10 @@ impl ServiceConfig {
             max_headers: consts::DEFAULT_MAX_HEADERS,
             max_header_continuations: consts::DEFAULT_MAX_COUNTINUATIONS,
             capacity_timeout: Some(consts::DEFAULT_CAPACITY_TIMEOUT),
+            max_inflight: consts::DEFAULT_MAX_INFLIGHT,
             handshake_timeout: Seconds(5),
             ping_timeout: Seconds(10),
+            settings_timeout: Seconds(5),
             config: CfgContext::default(),
         }
     }
@@ -99,9 +104,13 @@ impl ServiceConfig {
     /// flow control for received data.
     ///
     /// The initial window of a stream is used as part of flow control. For more
-    /// details, see [`FlowControl`].
+    /// details, see [flow control](https://www.rfc-editor.org/rfc/rfc9113#section-5.2).
     ///
     /// The default value is 65,535.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size` is negative.
     pub fn set_initial_window_size(mut self, size: i32) -> Self {
         assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
 
@@ -117,9 +126,19 @@ impl ServiceConfig {
     /// for received data.
     ///
     /// The initial window of a connection is used as part of flow control. For more details,
-    /// see [`FlowControl`].
+    /// see [flow control](https://www.rfc-editor.org/rfc/rfc9113#section-5.2).
     ///
-    /// The default value is 1 MiB.
+    /// The window is released when received data is consumed, so it bounds the amount of
+    /// unconsumed data buffered for all streams of the connection.
+    ///
+    /// The connection window starts at 65,535 and can only be increased with
+    /// `WINDOW_UPDATE` frames, smaller values do not shrink it.
+    ///
+    /// The default value is 4 MiB.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `size` is negative.
     pub fn set_initial_connection_window_size(mut self, size: i32) -> Self {
         assert!((0..=consts::MAX_WINDOW_SIZE).contains(&size));
         self.connection_window_sz = size;
@@ -128,12 +147,12 @@ impl ServiceConfig {
     }
 
     #[must_use]
-    /// Indicates the size (in octets) of the largest HTTP/2 frame payload that the
-    /// configured server is able to accept.
+    /// Indicates the size (in octets) of the largest HTTP/2 frame payload that
+    /// the local endpoint is able to accept.
     ///
-    /// The sender may send data frames that are **smaller** than this value,
-    /// but any data larger than `max` will be broken up into multiple `DATA`
-    /// frames.
+    /// The value is advertised to the peer with `SETTINGS_MAX_FRAME_SIZE`, the
+    /// peer must split larger payloads into multiple frames. Frames sent to the
+    /// peer are limited by the peer's own setting.
     ///
     /// The value **must** be between 16,384 and 16,777,215. The default value is 16,384.
     ///
@@ -152,8 +171,8 @@ impl ServiceConfig {
     /// When a request is received, the parser will reserve a buffer
     /// to store headers for optimal performance.
     ///
-    /// If server receives more headers than the buffer size, it resets
-    /// stream with `REFUSED_STREAM` reason.
+    /// If a header block contains more headers than the buffer size, the
+    /// stream is reset with `REFUSED_STREAM` reason.
     ///
     /// The default is 96.
     pub fn set_max_headers(mut self, val: usize) -> Self {
@@ -200,13 +219,13 @@ impl ServiceConfig {
     /// 0. If `max` is set to 0, then the remote will not be permitted to
     /// initiate streams.
     ///
-    /// Note that streams in the reserved state, i.e., push promises that have
-    /// been reserved but the stream has not started, do not count against this
-    /// setting.
+    /// If the remote exceeds the value set here, the stream is reset with
+    /// `REFUSED_STREAM`. Refused streams count toward the rapid-reset limit,
+    /// once at least 10 streams have been opened and half of them are reset
+    /// the connection is closed with `GOAWAY`
+    /// ([`ConnectionError::StreamResetsLimit`](crate::ConnectionError::StreamResetsLimit)).
     ///
-    /// Also note that if the remote *does* exceed the value set here, it is not
-    /// a protocol level error. Instead, the `ntex-h2` library will immediately reset
-    /// the stream.
+    /// The default value is 256.
     ///
     /// See [Section 5.1.2] in the HTTP/2 spec for more details.
     ///
@@ -232,9 +251,10 @@ impl ServiceConfig {
     /// bound on the amount of state that is maintained. When this max value is
     /// reached, the oldest reset stream is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional frames
-    /// received for that stream will result in a connection level protocol
-    /// error, forcing the connection to terminate.
+    /// Once the stream has been fully purged from memory, any additional `DATA`
+    /// or `WINDOW_UPDATE` frames received for that stream will result in a
+    /// connection level protocol error, forcing the connection to terminate.
+    /// `RST_STREAM` and `PRIORITY` frames are ignored.
     ///
     /// The default value is 32.
     pub fn set_max_concurrent_reset_streams(mut self, val: usize) -> Self {
@@ -257,9 +277,10 @@ impl ServiceConfig {
     /// this state will be maintained in memory. Once the duration elapses, the
     /// stream state is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional frames
-    /// received for that stream will result in a connection level protocol
-    /// error, forcing the connection to terminate.
+    /// Once the stream has been fully purged from memory, any additional `DATA`
+    /// or `WINDOW_UPDATE` frames received for that stream will result in a
+    /// connection level protocol error, forcing the connection to terminate.
+    /// `RST_STREAM` and `PRIORITY` frames are ignored.
     ///
     /// The default value is 30 seconds.
     pub fn set_reset_stream_duration(mut self, dur: Seconds) -> Self {
@@ -280,10 +301,14 @@ impl ServiceConfig {
     #[must_use]
     /// Sets the connection handshake timeout.
     ///
-    /// The handshake includes receiving the client preface and preparing the
-    /// connection.
+    /// For servers the handshake includes receiving the client preface and
+    /// creating the request service. For clients created by
+    /// [`client::Connector`](crate::client::Connector) it includes establishing
+    /// the transport and creating the connection. The connections pool uses
+    /// [`ClientBuilder::connect_timeout`](crate::client::ClientBuilder::connect_timeout)
+    /// instead.
     ///
-    /// The default is 5 seconds.
+    /// A zero duration disables the timeout. The default is 5 seconds.
     pub fn set_handshake_timeout(mut self, timeout: Seconds) -> Self {
         self.handshake_timeout = timeout;
         self
@@ -292,22 +317,67 @@ impl ServiceConfig {
     #[must_use]
     /// Sets the keep-alive ping timeout.
     ///
-    /// The default is 10 seconds.
+    /// A `PING` frame is sent to the peer every `timeout` interval. If the
+    /// previous `PING` is not acknowledged by the next interval, the connection
+    /// is closed and the open streams fail with
+    /// [`ConnectionError::KeepaliveTimeout`](crate::ConnectionError::KeepaliveTimeout).
+    ///
+    /// A zero duration disables keep-alive pings. The default is 10 seconds.
     pub fn set_ping_timeout(mut self, timeout: Seconds) -> Self {
         self.ping_timeout = timeout;
         self
     }
 
     #[must_use]
+    /// Sets the local settings acknowledgment timeout.
+    ///
+    /// If the peer does not acknowledge the local `SETTINGS` frame in time, the
+    /// connection is closed with `SETTINGS_TIMEOUT` (RFC 9113 §6.5.3) and the
+    /// open streams fail with
+    /// [`ConnectionError::SettingsTimeout`](crate::ConnectionError::SettingsTimeout).
+    ///
+    /// A zero duration disables the timeout. The default is 5 seconds.
+    pub fn set_settings_timeout(mut self, timeout: Seconds) -> Self {
+        self.settings_timeout = timeout;
+        self
+    }
+
+    #[must_use]
     /// Sets the send-capacity availability timeout.
     ///
-    /// A zero duration disables the timeout. The default is 3 seconds.
+    /// A stream that waits for send capacity longer than the timeout is reset with
+    /// `CANCEL`, the waiter fails with `StreamError::CapacityTimeout`. The final
+    /// message of a remote stream is published only if the stream has a publish
+    /// call in flight, see [`StreamRef::reset`](crate::StreamRef::reset).
+    ///
+    /// A zero duration disables the timeout. The default is 5 seconds.
     pub fn set_capacity_timeout(mut self, timeout: Seconds) -> Self {
         if timeout.is_zero() {
             self.capacity_timeout = None;
         } else {
             self.capacity_timeout = Some(timeout);
         }
+        self
+    }
+
+    #[must_use]
+    /// Sets the maximum number of in-flight service calls of a connection.
+    ///
+    /// Every received HEADERS, DATA or trailers frame is published to the
+    /// service, control events are counted as well. Once the limit is reached
+    /// the connection stops processing incoming frames until a call completes.
+    ///
+    /// The value must be between 1 and 32,767. The default value is 8,192.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `max` is not within the range specified above.
+    pub fn set_max_inflight_messages(mut self, max: u16) -> Self {
+        assert!(
+            (1..=u16::MAX / 2).contains(&max),
+            "max in-flight messages must be between 1 and 32767"
+        );
+        self.max_inflight = max;
         self
     }
 }
@@ -319,11 +389,19 @@ thread_local! {
 // Current limitation, shutdown is thread global
 impl ServiceConfig {
     /// Returns whether shutdown has been requested on the current thread.
+    ///
+    /// See [`ServiceConfig::shutdown`].
     pub fn is_shutdown(&self) -> bool {
         SHUTDOWN.with(Cell::get)
     }
 
     /// Requests shutdown for services running on the current thread.
+    ///
+    /// The flag is global for the thread and cannot be reset. Server
+    /// connections check it when their dispatcher is polled next and then
+    /// disconnect gracefully, new streams are refused with `REFUSED_STREAM` and
+    /// the connection is closed after the open streams complete. Client
+    /// connections do not check the flag.
     pub fn shutdown() {
         SHUTDOWN.with(|v| v.set(true));
     }

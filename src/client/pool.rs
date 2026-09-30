@@ -53,6 +53,9 @@ impl Client {
     }
 
     /// Sends a request using an available connection.
+    ///
+    /// Waits for a connection that can open a stream, see
+    /// [`SimpleClient::send`] for the arguments.
     pub async fn send(
         &self,
         method: Method,
@@ -67,7 +70,11 @@ impl Client {
             .map_err(|e| e.map(ClientError::from))
     }
 
-    /// Returns a connection that can open stream.
+    /// Returns a connection that can open a stream.
+    ///
+    /// Waits for an existing connection, or opens a new one within the
+    /// connection limit. The pool uses [`SimpleClient::on_capacity`] of its
+    /// connections, replacing the callback stops waking the pool's waiters.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
@@ -174,11 +181,6 @@ impl Client {
         ntex_util::spawn(async move {
             let res = match timeout_checked(inner.config.conn_timeout, (*inner.connector)()).await {
                 Ok(Ok(io)) => {
-                    // callbacks for end of stream
-                    let waiters2 = waiters.clone();
-                    let storage = InflightStorage::new(move |_| {
-                        notify(&mut waiters2.borrow_mut());
-                    });
                     // construct client
                     let client = SimpleClient::with_params(
                         io,
@@ -186,9 +188,14 @@ impl Client {
                         &inner.config.scheme,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
-                        storage,
+                        InflightStorage::default(),
                         inner.config.pool.clone(),
                     );
+                    // a stream is released, the limit is changed or the connection failed
+                    let waiters2 = waiters.clone();
+                    client.on_capacity(move || {
+                        notify(&mut waiters2.borrow_mut());
+                    });
                     inner.config.connections.borrow_mut().push(client);
                     inner
                         .config
@@ -234,7 +241,7 @@ impl Client {
     #[inline]
     /// Waits until the pool can start another request.
     ///
-    /// Client is ready when it is possible to start new stream
+    /// See [`is_ready`](Self::is_ready).
     pub async fn ready(&self) {
         loop {
             if self.is_ready() {
@@ -342,19 +349,6 @@ where
     }
 }
 
-impl<A> ClientBuilder<A, DefaultConnector<A>>
-where
-    A: Address + Clone,
-{
-    /// Creates a builder using the default transport connector.
-    pub fn with_default<U>(addr: U) -> Self
-    where
-        Connect<A>: From<U>,
-    {
-        Self::new(addr)
-    }
-}
-
 impl<A, S> ClientBuilder<A, S>
 where
     A: Address + Clone,
@@ -367,12 +361,15 @@ where
     }
 
     #[must_use]
-    /// Sets the streams limit per connection.
+    /// Sets the assumed stream limit for connections whose peer did not
+    /// send `MAX_CONCURRENT_STREAMS`.
     ///
-    /// If limit is 0, the connector uses `MAX_CONCURRENT_STREAMS` config
-    /// from connection settings.
+    /// The pool prefers connections that use less than half of their
+    /// stream limit, the peer's `MAX_CONCURRENT_STREAMS` setting is used
+    /// when it is known. The limit on concurrent streams is always the
+    /// peer's setting.
     ///
-    /// The default limit size is 100.
+    /// The default is 100.
     pub fn max_streams(mut self, limit: u32) -> Self {
         self.inner.max_streams = limit;
         self
@@ -390,14 +387,38 @@ where
     #[must_use]
     /// Sets the maximum lifetime of a connection.
     ///
-    /// Connection lifetime is max lifetime of any opened connection
-    /// until it is closed regardless of keep-alive period.
+    /// A connection older than the lifetime is not used for new requests and
+    /// is disconnected gracefully, regardless of its activity. The lifetime is
+    /// checked when the pool selects a connection for a request.
     ///
     /// Default lifetime period is not set.
     pub fn lifetime<U: Into<Seconds>>(mut self, dur: U) -> Self {
         let dur = dur.into();
         self.inner.conn_lifetime = dur;
         self.inner.conn_lifetime_dur = dur.into();
+        self
+    }
+
+    #[must_use]
+    /// Sets the timeout for establishing a connection, including the
+    /// transport connect and TLS handshake.
+    ///
+    /// The pool does not use
+    /// [`ServiceConfig::set_handshake_timeout`](crate::ServiceConfig::set_handshake_timeout).
+    ///
+    /// The default is 1 second.
+    pub fn connect_timeout<U: Into<Millis>>(mut self, timeout: U) -> Self {
+        self.inner.conn_timeout = timeout.into();
+        self
+    }
+
+    #[must_use]
+    /// Sets the timeout for gracefully closing a connection that is
+    /// disconnecting, for example after receiving `GOAWAY`.
+    ///
+    /// The default is 15 seconds.
+    pub fn disconnect_timeout<U: Into<Millis>>(mut self, timeout: U) -> Self {
+        self.inner.disconnect_timeout = timeout.into();
         self
     }
 
@@ -411,10 +432,12 @@ where
     }
 
     #[must_use]
-    /// Sets the maximum concurrent connections.
+    /// Sets the maximum number of simultaneous connections.
     ///
-    /// The default is 16 connections.
-    pub fn maxconn(mut self, num: usize) -> Self {
+    /// Beyond [`minconn`](Self::minconn) connections, a new connection is
+    /// opened only when no existing connection can open a stream. The default
+    /// is 16 connections.
+    pub fn connection_limit(mut self, num: usize) -> Self {
         self.inner.maxconn = num;
         self
     }
@@ -474,7 +497,7 @@ impl fmt::Debug for Client {
             .field("conn_lifetime", &self.inner.config.conn_lifetime)
             .field("disconnect_timeout", &self.inner.config.disconnect_timeout)
             .field("minconn", &self.inner.config.minconn)
-            .field("maxconn", &self.inner.config.maxconn)
+            .field("connection_limit", &self.inner.config.maxconn)
             .field("max-streams", &self.inner.config.max_streams)
             .finish()
     }
@@ -489,7 +512,7 @@ impl<A, S> fmt::Debug for ClientBuilder<A, S> {
             .field("conn_lifetime", &self.inner.conn_lifetime)
             .field("disconnect_timeout", &self.inner.disconnect_timeout)
             .field("minconn", &self.inner.minconn)
-            .field("maxconn", &self.inner.maxconn)
+            .field("connection_limit", &self.inner.maxconn)
             .field("max-streams", &self.inner.max_streams)
             .finish()
     }

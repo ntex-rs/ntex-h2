@@ -1,7 +1,7 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
-use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, Uri, header, uri};
+use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, header};
 
 use crate::hpack;
 
@@ -30,14 +30,17 @@ pub struct HeadersFlag(u8);
 /// Decoded HTTP/2 pseudo-header fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PseudoHeaders {
-    // Request
+    /// Request `:method`.
     pub method: Option<Method>,
+    /// Request `:scheme`.
     pub scheme: Option<ByteString>,
+    /// Request `:authority`.
     pub authority: Option<ByteString>,
+    /// Request `:path`.
     pub path: Option<ByteString>,
+    /// Extended CONNECT `:protocol` (RFC 8441).
     pub protocol: Option<Protocol>,
-
-    // Response
+    /// Response `:status`.
     pub status: Option<StatusCode>,
 }
 
@@ -100,7 +103,19 @@ impl Headers {
     ///
     /// HPACK decoding is done in the `load_hpack` step.
     pub fn load(head: Head, src: &mut Bytes) -> Result<Self, FrameError> {
-        let flags = HeadersFlag(head.flag());
+        match Self::load_head(head, src)? {
+            (_, true) => Err(FrameError::InvalidDependencyId),
+            (frame, false) => Ok(frame),
+        }
+    }
+
+    /// Loads the header frame, also returns whether the stream depends on itself.
+    ///
+    /// A self dependency is a stream error, the header block still must be
+    /// decoded to keep the HPACK state in sync.
+    pub(crate) fn load_head(head: Head, src: &mut Bytes) -> Result<(Self, bool), FrameError> {
+        let flags = HeadersFlag::load(head.flag());
+        let mut self_dependency = false;
 
         if head.stream_id().is_zero() {
             return Err(FrameError::InvalidStreamId);
@@ -127,9 +142,7 @@ impl Headers {
             }
             let stream_dep = StreamDependency::load(&src[..5])?;
 
-            if stream_dep.dependency_id() == head.stream_id() {
-                return Err(FrameError::InvalidDependencyId);
-            }
+            self_dependency = stream_dep.dependency_id() == head.stream_id();
 
             // Drop the next 5 bytes
             src.advance_to(5);
@@ -142,23 +155,50 @@ impl Headers {
             src.truncate(src.len() - pad);
         }
 
-        Ok(Headers {
+        let frame = Headers {
             flags,
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 pseudo: PseudoHeaders::default(),
             },
-        })
+        };
+        Ok((frame, self_dependency))
     }
 
+    /// Returns the stream id and flags of a frame whose header block continues
+    /// in CONTINUATION frames.
+    pub(crate) fn into_head(self) -> (StreamId, HeadersFlag) {
+        (self.stream_id, self.flags)
+    }
+
+    /// Creates a frame for a header block received in CONTINUATION frames.
+    pub(crate) fn from_head(stream_id: StreamId, mut flags: HeadersFlag) -> Self {
+        flags.set_end_headers();
+        Headers {
+            flags,
+            stream_id,
+            header_block: HeaderBlock {
+                fields: HeaderMap::new(),
+                pseudo: PseudoHeaders::default(),
+            },
+        }
+    }
+
+    /// Decodes the HPACK header block.
+    ///
+    /// Fails with `FrameError::TooManyHeaders` if the block contains more than
+    /// `max_headers` regular fields, or if the decoded header list size
+    /// (name + value + 32 per field, RFC 9113 §6.5.2) exceeds `max_list_size`.
     pub fn load_hpack(
         &mut self,
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
         max_headers: usize,
+        max_list_size: usize,
     ) -> Result<(), FrameError> {
-        self.header_block.load(self.stream_id, src, decoder, max_headers)
+        self.header_block
+            .load(self.stream_id, src, decoder, max_headers, max_list_size)
     }
 
     /// Returns the associated stream identifier.
@@ -206,6 +246,8 @@ impl Headers {
         self.header_block.fields
     }
 
+    /// Encodes the header block, split into `CONTINUATION` frames if it
+    /// exceeds `max_size`.
     pub fn encode(self, encoder: &mut hpack::Encoder, dst: &mut BytePages, max_size: usize) {
         // At this point, the `is_end_headers` flag should always be set
         debug_assert!(self.flags.is_end_headers());
@@ -229,64 +271,33 @@ impl From<Headers> for Frame {
 
 impl fmt::Debug for Headers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut builder = f.debug_struct("Headers");
-        builder
+        f.debug_struct("Headers")
             .field("stream_id", &self.stream_id)
             .field("flags", &self.flags)
-            .field("pseudo", &self.header_block.pseudo);
-
-        if let Some(ref protocol) = self.header_block.pseudo.protocol {
-            builder.field("protocol", protocol);
-        }
-
-        // `fields` and `pseudo` purposefully not included
-        builder.finish()
+            .field("pseudo", &self.header_block.pseudo)
+            // header `fields` are purposefully not included
+            .finish()
     }
 }
 
 // ===== impl Pseudo =====
 
 impl PseudoHeaders {
-    pub fn request(method: Method, uri: Uri, protocol: Option<Protocol>) -> Self {
-        let parts = uri::Parts::from(uri);
-
-        let mut path = parts
-            .path_and_query
-            .map_or(ByteString::from_static(""), |v| ByteString::from(v.as_str()));
-
-        match method {
-            Method::OPTIONS | Method::CONNECT => {}
-            _ if path.is_empty() => {
-                path = ByteString::from_static("/");
-            }
-            _ => {}
-        }
-
-        let mut pseudo = PseudoHeaders {
-            method: Some(method),
-            scheme: None,
-            authority: None,
-            path: Some(path).filter(|p| !p.is_empty()),
-            protocol,
-            status: None,
-        };
-
-        // If the URI includes a scheme component, add it to the pseudo headers
-        //
-        // TODO: Scheme must be set...
-        if let Some(ref scheme) = parts.scheme {
-            pseudo.set_scheme(scheme);
-        }
-
-        // If the URI includes an authority component, add it to the pseudo
-        // headers
-        if let Some(authority) = parts.authority {
-            pseudo.set_authority(ByteString::from(authority.as_str()));
-        }
-
-        pseudo
+    /// Returns the header list size of the pseudo-headers and `fields`
+    /// (name + value + 32 per field, RFC 9113 §6.5.2).
+    pub(crate) fn header_list_size(&self, fields: &HeaderMap) -> usize {
+        let pseudo = self.method.as_ref().map_or(0, |v| 32 + 7 + v.as_str().len())
+            + self.scheme.as_ref().map_or(0, |v| 32 + 7 + v.len())
+            + self.authority.as_ref().map_or(0, |v| 32 + 10 + v.len())
+            + self.path.as_ref().map_or(0, |v| 32 + 5 + v.len())
+            + self.protocol.as_ref().map_or(0, |v| 32 + 9 + v.as_str().len())
+            + self.status.map_or(0, |_| 32 + 7 + 3);
+        fields.iter().fold(pseudo, |acc, (name, value)| {
+            acc + 32 + name.as_str().len() + value.len()
+        })
     }
 
+    /// Creates response pseudo headers.
     pub fn response(status: StatusCode) -> Self {
         PseudoHeaders {
             method: None,
@@ -296,26 +307,6 @@ impl PseudoHeaders {
             protocol: None,
             status: Some(status),
         }
-    }
-
-    pub fn set_status(&mut self, value: StatusCode) {
-        self.status = Some(value);
-    }
-
-    pub fn set_scheme(&mut self, scheme: &uri::Scheme) {
-        self.scheme = Some(match scheme.as_str() {
-            "http" => ByteString::from_static("http"),
-            "https" => ByteString::from_static("https"),
-            s => ByteString::from(s),
-        });
-    }
-
-    pub fn set_protocol(&mut self, protocol: Protocol) {
-        self.protocol = Some(protocol);
-    }
-
-    pub fn set_authority(&mut self, authority: ByteString) {
-        self.authority = Some(authority);
     }
 }
 
@@ -424,8 +415,14 @@ impl fmt::Debug for HeadersFlag {
 
 // ===== HeaderBlock =====
 
+/// Initial capacity of the header encoding buffer.
+const HDRS_BUF_SIZE: usize = 1024;
+
+/// A larger header encoding buffer is released after use.
+const HDRS_BUF_MAX_RETAINED: usize = 64 * 1024;
+
 thread_local! {
-    static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(1024));
+    static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(HDRS_BUF_SIZE));
 }
 
 impl HeaderBlock {
@@ -435,10 +432,13 @@ impl HeaderBlock {
         src: &mut Bytes,
         decoder: &mut hpack::Decoder,
         max_headers: usize,
+        max_list_size: usize,
     ) -> Result<(), FrameError> {
         let mut reg = !self.fields.is_empty();
         let mut malformed = false;
         let mut too_many_headers = false;
+        let mut num_fields = 0;
+        let mut list_size = 0usize;
 
         macro_rules! set_pseudo {
             ($field:ident, $val:expr) => {{
@@ -463,6 +463,16 @@ impl HeaderBlock {
         let res = decoder.decode(&mut cursor, |header| {
             use crate::hpack::Header;
 
+            // Once the block is rejected, remaining fields are decoded only
+            // to keep the hpack state in sync, they are not stored
+            list_size = list_size.saturating_add(header.len());
+            if list_size > max_list_size {
+                too_many_headers = true;
+            }
+            if too_many_headers {
+                return;
+            }
+
             match header {
                 Header::Field { name, value } => {
                     // Connection level header fields are not supported and must
@@ -476,14 +486,16 @@ impl HeaderBlock {
                     {
                         log::trace!("load_hpack; connection level header");
                         malformed = true;
-                    } else if name == header::TE && value != "trailers" {
+                    } else if name == header::TE && !value.as_bytes().eq_ignore_ascii_case(b"trailers") {
                         log::trace!("load_hpack; TE header not set to trailers; val={value:?}");
                         malformed = true;
                     } else {
                         reg = true;
-                        self.fields.append(name, value);
-                        if self.fields.len() > max_headers {
+                        num_fields += 1;
+                        if num_fields > max_headers {
                             too_many_headers = true;
+                        } else {
+                            self.fields.append(name, value);
                         }
                     }
                 }
@@ -553,6 +565,11 @@ impl HeaderBlock {
                     break;
                 }
             }
+
+            // do not keep the buffer of a rare large header block
+            if hpack.capacity() > HDRS_BUF_MAX_RETAINED {
+                **hpack = BytesMut::with_capacity(HDRS_BUF_SIZE);
+            }
         });
     }
 }
@@ -604,5 +621,88 @@ mod test {
     fn huff_decode(src: &[u8]) -> Bytes {
         let mut buf = BytesMut::new();
         huffman::decode(src, &mut buf).unwrap()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_http::HeaderValue;
+
+    use super::*;
+
+    fn encode(value_len: usize) -> BytePages {
+        let mut fields = HeaderMap::new();
+        fields.insert(
+            HeaderName::from_static("x-large"),
+            HeaderValue::from_str(&"a".repeat(value_len)).unwrap(),
+        );
+        let hdrs = Headers::new(StreamId::from(1), PseudoHeaders::default(), fields, false);
+        let mut dst = BytePages::default();
+        hdrs.encode(&mut hpack::Encoder::default(), &mut dst, 16_384);
+        dst
+    }
+
+    #[test]
+    fn large_header_buffer_is_released() {
+        encode(100);
+        let cap = HDRS_BUF.with(|b| b.borrow().capacity());
+        assert!(cap <= HDRS_BUF_MAX_RETAINED);
+
+        let dst = encode(256 * 1024);
+        assert!(dst.len() > HDRS_BUF_MAX_RETAINED);
+        let cap = HDRS_BUF.with(|b| b.borrow().capacity());
+        assert!(cap <= HDRS_BUF_MAX_RETAINED, "retained {cap} bytes");
+    }
+
+    #[test]
+    fn headers_flag_debug() {
+        assert_eq!(format!("{:?}", HeadersFlag::empty()), "(0x0)");
+        assert_eq!(format!("{:?}", HeadersFlag::default()), "(0x4: END_HEADERS)");
+        assert_eq!(
+            format!("{:?}", HeadersFlag::load(ALL)),
+            "(0x2d: END_HEADERS | END_STREAM | PADDED | PRIORITY)"
+        );
+
+        let mut flags = HeadersFlag::empty();
+        flags.set_end_stream();
+        assert_eq!(format!("{flags:?}"), "(0x1: END_STREAM)");
+        assert_eq!(
+            format!("{:?}", HeadersFlag::load(0xff)),
+            format!("{:?}", HeadersFlag::load(ALL))
+        );
+    }
+
+    #[test]
+    fn headers_debug() {
+        let mut fields = HeaderMap::new();
+        fields.insert(
+            HeaderName::from_static("x-secret"),
+            HeaderValue::from_static("value"),
+        );
+        let hdrs = Headers::new(
+            StreamId::from(1),
+            PseudoHeaders::response(StatusCode::OK),
+            fields,
+            true,
+        );
+        assert_eq!(
+            format!("{hdrs:?}"),
+            "Headers { stream_id: StreamId(1), flags: (0x5: END_HEADERS | END_STREAM), \
+             pseudo: PseudoHeaders { method: None, scheme: None, authority: None, \
+             path: None, protocol: None, status: Some(200) } }"
+        );
+
+        let pseudo = PseudoHeaders {
+            method: Some(Method::CONNECT),
+            protocol: Some(Protocol::from("websocket")),
+            ..Default::default()
+        };
+        let hdrs = Headers::new(StreamId::from(3), pseudo, HeaderMap::new(), false);
+        assert_eq!(
+            format!("{hdrs:?}"),
+            "Headers { stream_id: StreamId(3), flags: (0x4: END_HEADERS), \
+             pseudo: PseudoHeaders { method: Some(CONNECT), scheme: None, authority: None, \
+             path: None, protocol: Some(\"websocket\"), status: None } }"
+        );
     }
 }

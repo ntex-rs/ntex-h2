@@ -1,8 +1,10 @@
-use std::{cell::Cell, cmp, fmt, future::poll_fn, hash, ops, rc::Rc, task::Context, task::Poll};
+use std::task::{Context, Poll};
+use std::{cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin, rc::Rc};
 
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
-use ntex_http::{HeaderMap, StatusCode, header::CONTENT_LENGTH};
+use ntex_http::{HeaderMap, Method, StatusCode, header::CONTENT_LENGTH};
+use ntex_io::Waiter;
 use ntex_util::{future::Either, task::LocalWaker};
 
 use crate::error::{OperationError, StreamError};
@@ -14,7 +16,7 @@ use crate::{connection::Connection, frame, message::Message, timer, window::Wind
 /// Owned HTTP/2 stream handle.
 ///
 /// Dropping this handle resets an unfinished stream with [`Reason::CANCEL`].
-pub struct Stream(StreamRef);
+pub(crate) struct Stream(StreamRef);
 
 /// Receive-window capacity associated with one HTTP/2 stream.
 ///
@@ -124,6 +126,13 @@ pub(super) enum ContentLength {
 }
 
 /// Cloneable reference to an HTTP/2 stream.
+///
+/// Only one task at a time may send payload or wait for send capacity on a
+/// stream, see [`send_pages`](Self::send_pages) and
+/// [`send_capacity`](Self::send_capacity). The stream keeps a single send
+/// waker, so a second concurrent sender or capacity waiter replaces the
+/// first one's waker and ends its capacity wait. Debug builds panic on
+/// concurrent capacity waiters.
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
@@ -134,6 +143,8 @@ bitflags::bitflags! {
         const FAILED = 0b0000_0010;
         const DISCONNECT_ON_DROP = 0b0000_0100;
         const WAIT_FOR_CAPACITY  = 0b0000_1000;
+        const NO_RESET_ON_DROP   = 0b0001_0000;
+        const CAPACITY_TIMER     = 0b0010_0000;
     }
 }
 
@@ -150,11 +161,12 @@ pub(crate) struct StreamState {
     send: Cell<HalfState>,
     send_window: Cell<Window>,
     send_cap: LocalWaker,
-    send_reset: LocalWaker,
     /// Connection config
     pub(crate) con: Connection,
     /// error state
     error: Cell<Option<Error<OperationError>>>,
+    /// final message for a stream reset by the local side
+    local_close: Cell<Option<StreamError>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,7 +273,8 @@ impl StreamState {
     #[allow(clippy::used_underscore_binding)]
     fn review_state(&self) {
         if self.recv.get().is_closed() {
-            self.send_reset.wake();
+            // wakes the publish calls and reset waiters of the stream
+            self.con.io().wake(waiter_tag(self.id));
 
             if let HalfState::Closed(_reason) = self.send.get() {
                 // stream is closed
@@ -304,9 +317,9 @@ impl StreamState {
     }
 
     /// check and update recevice window size
-    fn received_data_consumed(&self, size: u32) {
+    fn received_data_consumed(&self, consumed: u32) {
         let cap = self.recv_size.get();
-        let size = cap - size;
+        let size = cap - consumed;
 
         #[cfg(feature = "trace")]
         log::trace!(
@@ -316,12 +329,16 @@ impl StreamState {
         );
 
         self.recv_size.set(size);
+
+        // the peer does not send data to a closed stream
         let mut window = self.recv_window.get();
-        if let Some(val) = window.update(
-            size,
-            self.con.config().window_sz,
-            self.con.config().window_sz_threshold,
-        ) {
+        if !self.recv.get().is_closed()
+            && let Some(val) = window.update(
+                size,
+                self.con.config().window_sz,
+                self.con.config().window_sz_threshold,
+            )
+        {
             #[cfg(feature = "trace")]
             log::trace!(
                 "{}: {:?} capacity decresed below threshold {} increase by {val} ({})",
@@ -333,6 +350,9 @@ impl StreamState {
             self.recv_window.set(window);
             self.con.encode(WindowUpdate::new(self.id, val));
         }
+
+        // connection level recv window
+        self.con.data_consumed(consumed);
     }
 }
 
@@ -356,8 +376,8 @@ impl StreamRef {
             send: Cell::new(HalfState::Idle),
             send_window: Cell::new(send_window),
             send_cap: LocalWaker::new(),
-            send_reset: LocalWaker::new(),
             error: Cell::new(None),
+            local_close: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
             flags: Cell::new(if remote {
                 StreamFlags::REMOTE
@@ -411,12 +431,53 @@ impl StreamRef {
         self.0.flags.get().contains(StreamFlags::DISCONNECT_ON_DROP)
     }
 
+    /// Controls whether dropping the owning [`Stream`] resets the stream.
+    pub(crate) fn set_reset_on_drop(&self, reset: bool) {
+        if reset {
+            self.0.remove_flag(StreamFlags::NO_RESET_ON_DROP);
+        } else {
+            self.0.insert_flag(StreamFlags::NO_RESET_ON_DROP);
+        }
+    }
+
     /// Resets the stream with the specified HTTP/2 reason.
     ///
     /// Returns `true` if the stream state is updated and a `Reset` frame
-    /// has been sent to the peer.
-    #[inline]
+    /// has been sent to the peer. If the receive side of a remote stream is
+    /// still open, the in-flight publish calls are cancelled and the final
+    /// [`StreamError::LocalReset`] message is published.
+    ///
+    /// The final message is published only if the stream has a publish call
+    /// in flight. A remote stream reset outside of a publish call, for example
+    /// from a spawned task, does not get the final message, the caller must
+    /// release its state for the stream.
     pub fn reset(&self, reason: Reason) -> bool {
+        self.reset_with(reason, StreamError::LocalReset(reason))
+    }
+
+    /// Resets the stream, `err` is the final message if the receive side is open.
+    fn reset_with(&self, reason: Reason, err: StreamError) -> bool {
+        let recv_open = !self.0.recv.get().is_closed();
+        if self.reset_silent(reason) {
+            if recv_open {
+                self.0.local_close.set(Some(err));
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Takes the final message error of a stream reset by the local side.
+    pub(crate) fn take_local_close(&self) -> Option<Error<StreamError>> {
+        self.0
+            .local_close
+            .take()
+            .map(|err| Error::new(err, self.service()))
+    }
+
+    /// Resets the stream without publishing the final message.
+    pub(crate) fn reset_silent(&self, reason: Reason) -> bool {
         if !self.0.recv.get().is_closed() || !self.0.send.get().is_closed() {
             self.0.con.encode(Reset::new(self.0.id, reason));
             self.0.reset_stream(Some(reason));
@@ -454,11 +515,8 @@ impl StreamRef {
             hdrs.is_end_stream()
         );
 
-        if hdrs
-            .pseudo()
-            .status
-            .is_some_and(|status| status.is_informational())
-        {
+        // a response to a HEAD request has no content (RFC 9110 §9.3.2)
+        if hdrs.pseudo().method == Some(Method::HEAD) {
             self.0.content_length.set(ContentLength::Head);
         }
         self.0.con.encode(hdrs);
@@ -470,6 +528,7 @@ impl StreamRef {
 
     pub(crate) fn set_failed_stream(&self, err: Error<OperationError>) {
         self.0.failed(err);
+        self.stop_capacity_timer();
     }
 
     pub(crate) fn recv_headers(&self, hdrs: Headers) -> Result<Option<Message>, Error<StreamError>> {
@@ -484,28 +543,85 @@ impl StreamRef {
 
         match self.0.recv.get() {
             HalfState::Idle => {
-                let eof = hdrs.is_end_stream();
-                if eof {
-                    self.0.state_recv_close(None);
-                } else {
-                    self.0.state_recv_payload();
+                // a response must have only the :status pseudo-header,
+                // a malformed response is a stream error (RFC 9113 §8.3.2)
+                if !self.is_remote() {
+                    let pseudo = hdrs.pseudo();
+                    let err = if pseudo.status.is_none() {
+                        Some(StreamError::MissingPseudo("status"))
+                    } else if pseudo.method.is_some() {
+                        Some(StreamError::UnexpectedPseudo("method"))
+                    } else if pseudo.scheme.is_some() {
+                        Some(StreamError::UnexpectedPseudo("scheme"))
+                    } else if pseudo.authority.is_some() {
+                        Some(StreamError::UnexpectedPseudo("authority"))
+                    } else if pseudo.path.is_some() {
+                        Some(StreamError::UnexpectedPseudo("path"))
+                    } else if pseudo.protocol.is_some() {
+                        Some(StreamError::UnexpectedPseudo("protocol"))
+                    } else if pseudo.status.is_some_and(|s| s.is_informational())
+                        && (hdrs.is_end_stream()
+                            || pseudo.status == Some(StatusCode::SWITCHING_PROTOCOLS))
+                    {
+                        // an interim response does not end the stream, `101` is not
+                        // supported (RFC 9113 §8.1, §8.6)
+                        Some(StreamError::InvalidInformational)
+                    } else {
+                        None
+                    };
+                    if let Some(err) = err {
+                        proto_err!(stream: "malformed response on {:?}: {err}", self.0.id);
+                        return Err(Error::new(err, self.service()));
+                    }
+
+                    // an interim response is followed by the final response,
+                    // the stream stays in idle state (RFC 9113 §8.1)
+                    if pseudo.status.is_some_and(|s| s.is_informational()) {
+                        let (pseudo, headers) = hdrs.into_parts();
+                        return Ok(Some(Message::new(pseudo, headers, false, self)));
+                    }
                 }
+
+                let eof = hdrs.is_end_stream();
                 let (pseudo, headers) = hdrs.into_parts();
 
                 if self.0.content_length.get() != ContentLength::Head
                     && let Some(content_length) = headers.get(CONTENT_LENGTH)
                 {
-                    if let Some(v) = parse_u64(content_length.as_bytes()) {
-                        self.0.content_length.set(ContentLength::Remaining(v));
-                    } else {
+                    let Some(v) = parse_u64(content_length.as_bytes()) else {
                         proto_err!(stream: "could not parse content-length; stream={:?}", self.0.id);
                         return Err(Error::new(StreamError::InvalidContentLength, self.service()));
+                    };
+                    // a `304` response describes the omitted body (RFC 9110 §8.6),
+                    // otherwise a message without DATA frames has no content
+                    // (RFC 9113 §8.1.1)
+                    if eof && v != 0 && pseudo.status != Some(StatusCode::NOT_MODIFIED) {
+                        proto_err!(stream: "content-length with empty body; stream={:?}", self.0.id);
+                        return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
                     }
+                    self.0.content_length.set(ContentLength::Remaining(v));
+                }
+
+                if eof {
+                    self.0.state_recv_close(None);
+                } else {
+                    self.0.state_recv_payload();
                 }
                 Ok(Some(Message::new(pseudo, headers, eof, self)))
             }
             HalfState::Payload => {
                 // trailers
+                if let ContentLength::Remaining(rem) = self.0.content_length.get()
+                    && rem != 0
+                {
+                    proto_err!(stream: "trailers before the end of content; stream={:?}", self.0.id);
+                    return Err(Error::new(StreamError::WrongPayloadLength, self.service()));
+                }
+                // trailers must not include pseudo-headers (RFC 9113 §8.1)
+                if let Some(name) = pseudo_name(hdrs.pseudo()) {
+                    proto_err!(stream: "pseudo-header in trailers; stream={:?}", self.0.id);
+                    return Err(Error::new(StreamError::UnexpectedPseudo(name), self.service()));
+                }
                 if hdrs.is_end_stream() {
                     self.0.state_recv_close(None);
                     Ok(Some(Message::trailers(hdrs.into_fields(), self)))
@@ -518,7 +634,22 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_data(&self, data: Data) -> Result<Option<Message>, Error<StreamError>> {
-        let cap = Capacity::new(data.payload().len() as u32, &self.0);
+        // the window can be negative after a SETTINGS change, the peer must
+        // not send data until it is positive again
+        if data.flow_controlled_len().cast_signed() > self.0.recv_window.get().window_size {
+            // the stream is reset, only the connection level window is released
+            self.0.con.data_received(data.flow_controlled_len());
+            self.0.con.data_consumed(data.flow_controlled_len());
+            return Err(Error::new(StreamError::RecvWindowExceeded, self.service()));
+        }
+
+        // padding counts toward flow control, it is not delivered, so its
+        // capacity is released immediately
+        let len = data.payload().len() as u32;
+        let cap = Capacity::new(data.flow_controlled_len(), &self.0);
+        if data.flow_controlled_len() > len {
+            cap.consume(data.flow_controlled_len() - len);
+        }
 
         #[cfg(feature = "trace")]
         log::trace!(
@@ -555,7 +686,7 @@ impl StreamRef {
 
                 if eof {
                     self.0.state_recv_close(None);
-                    Ok(Some(Message::eof_data(data.into_payload(), self)))
+                    Ok(Some(Message::eof_data(data.into_payload(), cap, self)))
                 } else {
                     Ok(Some(Message::data(data.into_payload(), cap, self)))
                 }
@@ -573,14 +704,18 @@ impl StreamRef {
     }
 
     pub(crate) fn recv_window_update_connection(&self) {
-        let window = self.0.send_window.get();
-        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && window.available() {
-            self.0.send_cap.wake();
+        self.wake_capacity_waiter();
+    }
 
-            // remove capacity timeout
-            if self.0.con.config().capacity_timeout.is_some() {
-                timer::unregister(self);
-            }
+    /// Wakes a waiting sender if both stream and connection capacity are available.
+    ///
+    /// The capacity timer keeps running while either window is exhausted.
+    fn wake_capacity_waiter(&self) {
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            && self.available_send_capacity() > 0
+        {
+            self.0.send_cap.wake();
+            self.stop_capacity_timer();
         }
     }
 
@@ -593,15 +728,7 @@ impl StreamRef {
                 .inc(frm.size_increment())
                 .map_err(|()| Error::new(StreamError::WindowOverflowed, self.service()))?;
             self.0.send_window.set(window);
-
-            if window.available() {
-                self.0.send_cap.wake();
-
-                // remove capacity timeout
-                if !orig.available() && self.0.con.config().capacity_timeout.is_some() {
-                    timer::unregister(self);
-                }
-            }
+            self.wake_capacity_waiter();
             Ok(())
         }
     }
@@ -624,10 +751,15 @@ impl StreamRef {
         );
         self.0.send_window.set(window);
 
+        // SETTINGS_INITIAL_WINDOW_SIZE can grow the window, wake a waiting sender
+        self.wake_capacity_waiter();
         Ok(())
     }
 
     pub(crate) fn update_recv_window(&self, upd: i32) -> Result<Option<WindowSize>, Error<StreamError>> {
+        if self.0.recv.get().is_closed() {
+            return Ok(None);
+        }
         let mut window = match upd.cmp(&0) {
             cmp::Ordering::Less => self.0.recv_window.get().dec(upd.unsigned_abs()), // We must decrease the (local) window
             cmp::Ordering::Greater => self
@@ -651,7 +783,55 @@ impl StreamRef {
         }
     }
 
-    /// Sends response headers.
+    /// Sends an informational (`1xx`) response for a peer-initiated stream.
+    ///
+    /// The stream stays idle, informational responses may be sent any number
+    /// of times before the final response is sent with
+    /// [`send_response`](Self::send_response).
+    ///
+    /// Fails with [`OperationError::Payload`] if the final response is already
+    /// sent, with [`OperationError::Closed`] if the send side is closed, and
+    /// with [`OperationError::HeaderListTooLarge`] if the headers exceed the
+    /// peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `status` is not informational or is `101 Switching Protocols`,
+    /// which is not allowed in HTTP/2.
+    pub fn send_informational(
+        &self,
+        status: StatusCode,
+        headers: HeaderMap,
+    ) -> Result<(), Error<OperationError>> {
+        assert!(
+            status.is_informational() && status != StatusCode::SWITCHING_PROTOCOLS,
+            "Status {status} is not a valid HTTP/2 informational status"
+        );
+        self.0.check_error()?;
+
+        match self.0.send.get() {
+            HalfState::Idle => {
+                let pseudo = PseudoHeaders::response(status);
+                self.0.con.check_header_list_size(&pseudo, &headers)?;
+                self.0.con.encode(Headers::new(self.0.id, pseudo, headers, false));
+                Ok(())
+            }
+            HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),
+            HalfState::Closed(r) => Err(Error::new(OperationError::Closed(r), self.0.con.service())),
+        }
+    }
+
+    /// Sends response headers for a peer-initiated stream.
+    ///
+    /// If `eof` is `true` the headers end the stream, otherwise the stream
+    /// moves to the payload state and the body is sent with
+    /// [`send_payload`](Self::send_payload) or
+    /// [`send_trailers`](Self::send_trailers).
+    ///
+    /// Fails with [`OperationError::Payload`] if headers are already sent,
+    /// with [`OperationError::Closed`] if the send side is closed, and with
+    /// [`OperationError::HeaderListTooLarge`] if the headers exceed the
+    /// peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
     pub fn send_response(
         &self,
         status: StatusCode,
@@ -663,6 +843,7 @@ impl StreamRef {
         match self.0.send.get() {
             HalfState::Idle => {
                 let pseudo = PseudoHeaders::response(status);
+                self.0.con.check_header_list_size(&pseudo, &headers)?;
                 let mut hdrs = Headers::new(self.0.id, pseudo, headers, eof);
 
                 if eof {
@@ -680,6 +861,8 @@ impl StreamRef {
     }
 
     /// Sends payload bytes, waiting for flow-control capacity as needed.
+    ///
+    /// See [`send_pages`](Self::send_pages).
     pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         Bytes: From<D>,
@@ -688,6 +871,24 @@ impl StreamRef {
     }
 
     /// Sends paged payload data, waiting for flow-control capacity as needed.
+    ///
+    /// The data is split into `DATA` frames by the available send window and
+    /// the peer's maximum frame size. If `eof` is `true` the last frame ends
+    /// the stream, empty data with `eof` sends an empty `DATA` frame with
+    /// `END_STREAM`, empty data without `eof` sends nothing. While the io
+    /// write buffer is above its high watermark, sending pauses until the
+    /// peer reads enough of it.
+    ///
+    /// Fails with [`OperationError::Idle`] if headers are not sent yet, with
+    /// [`OperationError::Closed`] if the send side is closed, and with
+    /// [`StreamError::CapacityTimeout`] if send capacity is not available in
+    /// time, see [`send_capacity`](Self::send_capacity).
+    ///
+    /// Dropping the future before it completes may leave part of the data
+    /// sent, the stream stays in the payload state.
+    ///
+    /// Only one task at a time may send payload or wait for capacity on the
+    /// stream, see [`StreamRef`].
     pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
     where
         StreamData: From<D>,
@@ -709,17 +910,24 @@ impl StreamRef {
                 );
 
                 // eof and empty data
-                if eof && data.is_empty() {
-                    let mut data = Data::new(self.0.id, Bytes::new());
-                    data.set_end_stream();
-                    self.0.state_send_close(None);
+                if data.is_empty() {
+                    if eof {
+                        let mut data = Data::new(self.0.id, Bytes::new());
+                        data.set_end_stream();
+                        self.0.state_send_close(None);
 
-                    // write to io buffer
-                    self.0.con.encode(data);
+                        // write to io buffer
+                        self.0.con.encode(data);
+                    }
                     return Ok(());
                 }
 
                 loop {
+                    // the io write buffer is full, wait until the peer reads it
+                    if self.0.con.io().is_wr_backpressure() {
+                        self.write_ready().await?;
+                    }
+
                     // calaculate available send window size
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
@@ -755,11 +963,6 @@ impl StreamRef {
                             data.len()
                         );
 
-                        // start capacity timeout
-                        if let Some(to) = self.0.con.config().capacity_timeout {
-                            timer::register(to, self);
-                        }
-
                         // wait for available send window
                         self.send_capacity().await?;
                     }
@@ -773,14 +976,22 @@ impl StreamRef {
     }
 
     /// Sends trailers and closes the local side of the stream.
-    pub fn send_trailers(&self, map: HeaderMap) {
+    ///
+    /// Does nothing if the stream is not in the payload state. Fails if
+    /// the trailers exceed the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`,
+    /// the stream stays in the payload state.
+    pub fn send_trailers(&self, map: HeaderMap) -> Result<(), Error<OperationError>> {
         if self.0.send.get() == HalfState::Payload {
+            self.0
+                .con
+                .check_header_list_size(&PseudoHeaders::default(), &map)?;
             let mut hdrs = Headers::trailers(self.0.id, map);
             hdrs.set_end_headers();
             hdrs.set_end_stream();
             self.0.con.encode(hdrs);
             self.0.state_send_close(None);
         }
+        Ok(())
     }
 
     /// Returns the currently available stream and connection send capacity.
@@ -791,13 +1002,39 @@ impl StreamRef {
         )
     }
 
+    fn start_capacity_timer(&self) {
+        if !self.0.flags.get().contains(StreamFlags::CAPACITY_TIMER)
+            && let Some(to) = self.0.con.config().capacity_timeout
+        {
+            self.0.insert_flag(StreamFlags::CAPACITY_TIMER);
+            timer::register(to, self);
+        }
+    }
+
+    pub(crate) fn stop_capacity_timer(&self) {
+        if self.0.flags.get().contains(StreamFlags::CAPACITY_TIMER) {
+            self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
+            timer::unregister(self);
+        }
+    }
+
     pub(crate) fn capacity_timeout(&self) {
+        self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
+
+        // nobody waits, send side is already closed or capacity is available
+        if !self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            || self.0.send.get().is_closed()
+            || self.available_send_capacity() > 0
+        {
+            return;
+        }
+
         log::warn!(
             "{}: Capacity availability timed-out for {:?}",
             self.0.tag(),
             self.0.id,
         );
-        self.reset(Reason::FLOW_CONTROL_ERROR);
+        self.reset_with(Reason::CANCEL, StreamError::CapacityTimeout);
         self.0.failed(Error::new(
             OperationError::Stream(StreamError::CapacityTimeout),
             self.service(),
@@ -806,39 +1043,144 @@ impl StreamRef {
     }
 
     /// Waits until send capacity is available.
+    ///
+    /// Fails with [`OperationError::Closed`] if the send side is closed, and
+    /// with [`StreamError::CapacityTimeout`] and resets the stream if
+    /// capacity is not available within the configured capacity timeout.
+    ///
+    /// Only one task at a time may wait for capacity or send payload on the
+    /// stream, see [`StreamRef`].
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if another task is already waiting for
+    /// capacity on this stream.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
+        let _guard = CapacityWaiter(self);
         poll_fn(|cx| self.poll_send_capacity(cx)).await
     }
 
+    /// Stops waiting for send capacity.
+    fn cancel_capacity_wait(&self) {
+        self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
+        self.stop_capacity_timer();
+    }
+
     /// Polls for available send capacity.
+    ///
+    /// Starts the capacity timeout while capacity is unavailable, see
+    /// [`StreamRef::send_capacity`]. The timeout stays armed if the caller
+    /// stops polling before capacity becomes available.
+    ///
+    /// Only one task at a time may wait for capacity or send payload on the
+    /// stream, see [`StreamRef`].
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if another task is already waiting for
+    /// capacity on this stream.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
     ) -> Poll<Result<WindowSize, Error<OperationError>>> {
-        self.0.check_error()?;
-        self.0.con.check_error()?;
+        if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
+            self.cancel_capacity_wait();
+            return Poll::Ready(Err(err));
+        }
+
+        // nothing can be sent after the send side is closed
+        if let HalfState::Closed(reason) = self.0.send.get() {
+            self.cancel_capacity_wait();
+            return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
+        }
 
         let win = self.available_send_capacity();
         if win > 0 {
-            self.0.remove_flag(StreamFlags::WAIT_FOR_CAPACITY);
+            self.cancel_capacity_wait();
             Poll::Ready(Ok(win))
         } else {
+            self.register_send_waker(cx);
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
-            self.0.send_cap.register(cx.waker());
+            self.start_capacity_timer();
             Poll::Pending
         }
     }
 
-    /// Polls until the local send side closes or the stream fails.
-    pub fn poll_send_reset(&self, cx: &Context<'_>) -> Poll<Result<(), Error<OperationError>>> {
-        if self.0.send.get().is_closed() {
-            Poll::Ready(Ok(()))
-        } else {
-            self.0.check_error()?;
-            self.0.con.check_error()?;
-            self.0.send_reset.register(cx.waker());
-            Poll::Pending
+    /// Registers the waker of the task sending on the stream.
+    ///
+    /// Only one task may wait for capacity at a time, debug builds check that
+    /// a pending capacity wait belongs to the current task.
+    fn register_send_waker(&self, cx: &Context<'_>) {
+        #[cfg(debug_assertions)]
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
+            && let Some(prev) = self.0.send_cap.take()
+        {
+            assert!(
+                prev.will_wake(cx.waker()),
+                "{:?}: concurrent send capacity waiters, only one task may send on a stream",
+                self.0.id
+            );
         }
+        self.0.send_cap.register(cx.waker());
+    }
+
+    /// Waits until the io write back-pressure is released.
+    ///
+    /// Fails if the stream is reset or failed, or its send side is closed.
+    async fn write_ready(&self) -> Result<(), Error<OperationError>> {
+        let mut ready = pin::pin!(self.0.con.io().write_ready());
+        poll_fn(|cx| {
+            if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
+                return Poll::Ready(Err(err));
+            }
+            if let HalfState::Closed(reason) = self.0.send.get() {
+                return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
+            }
+            // stream state changes wake the send task
+            self.register_send_waker(cx);
+            ready
+                .as_mut()
+                .poll(cx)
+                .map_err(|_| Error::new(OperationError::Disconnected, self.service()))
+        })
+        .await
+    }
+
+    /// Checks if the stream is reset or failed.
+    pub(crate) fn has_error(&self) -> bool {
+        self.0.check_error().is_err() || self.0.con.check_error().is_err()
+    }
+
+    /// Returns `true` if the stream is reset by either side, has failed, or
+    /// the connection is closed.
+    pub fn is_reset(&self) -> bool {
+        self.has_error() || self.0.con.is_closed()
+    }
+
+    /// Returns a waiter that completes when the stream state changes.
+    ///
+    /// The waiter completes once the receive side of the stream closes,
+    /// which includes a reset by either side and a stream failure, and while
+    /// the connection is closed. A wake does not always mean a reset, check
+    /// [`is_reset`](Self::is_reset) after it completes and poll again to
+    /// keep waiting. The waiter registers on its first poll and misses
+    /// earlier changes, check [`is_reset`](Self::is_reset) before waiting.
+    pub fn on_reset(&self) -> Waiter<'_> {
+        self.0.con.io().waiter(waiter_tag(self.0.id))
+    }
+}
+
+/// Returns the io waiter tag of the stream.
+pub(crate) fn waiter_tag(id: StreamId) -> usize {
+    u32::from(id) as usize
+}
+
+/// Stops the capacity wait if the `send_capacity()` future is dropped.
+struct CapacityWaiter<'a>(&'a StreamRef);
+
+impl Drop for CapacityWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.cancel_capacity_wait();
     }
 }
 
@@ -867,7 +1209,9 @@ impl ops::Deref for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.0.reset(Reason::CANCEL);
+        if !self.0.0.flags.get().contains(StreamFlags::NO_RESET_ON_DROP) {
+            self.0.reset(Reason::CANCEL);
+        }
     }
 }
 
@@ -916,6 +1260,8 @@ pub(super) fn parse_u64(src: &[u8]) -> Option<u64> {
     }
 }
 
+/// Payload for [`StreamRef::send_pages`], created from `Bytes` or
+/// `BytePages`.
 #[derive(Debug)]
 pub struct StreamData(Either<Bytes, BytePages>);
 
@@ -946,6 +1292,7 @@ impl StreamData {
         }
     }
 
+    #[allow(clippy::used_underscore_binding)]
     fn encode(
         &mut self,
         _tag: &'static str,
@@ -988,5 +1335,24 @@ impl StreamData {
             }
             false
         }
+    }
+}
+
+/// Returns the name of the first pseudo-header present.
+fn pseudo_name(pseudo: &PseudoHeaders) -> Option<&'static str> {
+    if pseudo.method.is_some() {
+        Some("method")
+    } else if pseudo.scheme.is_some() {
+        Some("scheme")
+    } else if pseudo.authority.is_some() {
+        Some("authority")
+    } else if pseudo.path.is_some() {
+        Some("path")
+    } else if pseudo.protocol.is_some() {
+        Some("protocol")
+    } else if pseudo.status.is_some() {
+        Some("status")
+    } else {
+        None
     }
 }

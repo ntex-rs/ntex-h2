@@ -1,5 +1,265 @@
 # Changes
 
+## [4.1.0] - Unreleased
+
+* Reset active stream counters when a connection error or disconnect fails all streams,
+  `active_streams()` kept counting the failed streams
+
+* Do not answer a received RST_STREAM with RST_STREAM (RFC 9113 §5.4.2)
+
+* GOAWAY frames report the last stream opened by the peer, `last_stream_id` was always 0
+
+* Client treats HEADERS on a server-initiated stream as a connection error, push is not enabled
+
+* Check `content-length` when a message ends with the headers or with trailers,
+  a `304` response can describe the omitted body
+
+* `Client` pool wakes waiting requests when a stream is released, including
+  cancelled streams, waiters were woken only on the end of a response
+
+* Server graceful shutdown sends GOAWAY(NO_ERROR) with the last processed stream (RFC 9113 §6.8)
+
+* Accept `te: trailers` case-insensitively, drop unknown HEADERS flags instead of keeping them
+
+* DATA frames with the `PADDED` flag are encoded with a pad length field, the frame was malformed
+
+* The rapid-reset ratio is measured over recent streams, a long-lived connection allowed
+  an unbounded burst of resets
+
+* Exceeding the rapid-reset limit closes the connection with ENHANCE_YOUR_CALM instead of FLOW_CONTROL_ERROR
+
+* Trailers with pseudo-headers are a stream error (RFC 9113 §8.1), the pseudo-headers were dropped
+
+* Resetting a stream twice refreshes its pending reset entry, a duplicate entry forgot the stream early
+
+* Keep-alive accepts only the PING ACK carrying the payload of the last keep-alive ping,
+  any PING ACK was treated as a pong
+
+* Client `RecvStream` is woken when the stream is reset locally, including capacity timeout and resets through `StreamRef`
+
+* GOAWAY with a non-zero stream identifier is a connection error (RFC 9113 §6.8)
+
+* Ignore invalid PRIORITY frames for idle and closed streams, an idle stream must not be reset
+
+* Add `StreamRef::is_reset()`, `StreamRef::on_reset()` and the same methods on `SendStream`,
+  `on_reset()` returns an io waiter that completes when the stream is reset or the connection closes
+
+* Document that only one task at a time may send payload or wait for send capacity on a stream,
+  debug builds panic on concurrent capacity waiters
+
+* Add `StreamRef::send_informational()`, sends `1xx` interim responses before the final response
+
+* Add `Control::Expect` for requests with `Expect: 100-continue`, created by the application layer,
+  `ControlAck::into_expect()` returns the request back with the result
+
+* `StreamEof::Data` carries the receive-window `Capacity` of the final DATA frame, the connection
+  window was released before the application consumed the data, `StreamEof` is not `Clone`
+
+* Remove `StreamRef::poll_send_reset()` and `SendStream::poll_send_reset()`
+
+* `SimpleClient::on_disconnect()` returns `ntex_io::Waiter<'static>`, `OnDisconnect` is removed from ntex-io
+
+* Stream reset cancels all in-flight publish calls of the stream (HEADERS, DATA, trailers),
+  only the HEADERS publish call was cancelled on reset
+
+* Add `ServiceConfig::set_max_inflight_messages()`, limits in-flight service calls
+  of a connection, default is 16,384
+
+* Capacity timer task cancellation, e.g. on runtime shutdown, releases registered stream references
+
+* DATA frame exceeding the stream receive window does not trigger a stream WINDOW_UPDATE
+  before the stream reset
+
+* A received GOAWAY honors `last_stream_id` (RFC 9113 §6.8): only locally initiated streams
+  above it are failed, remaining streams complete, new streams are refused with
+  `ConnectionError::GoAway`, the connection closes once the remaining streams are done
+
+* Sending payload waits for the io write back-pressure release, a peer with large flow-control
+  windows that does not read could make the sender buffer unbounded data
+
+* Stream window updates do not restart the capacity timeout while the connection
+  window is exhausted
+
+* Waiting for send capacity fails with `OperationError::Closed` once the send side
+  is closed, instead of waiting forever or reporting capacity
+
+* Sending empty payload without eof does not wait for send capacity and does not
+  send an empty `DATA` frame
+
+* Remove unused `PseudoHeaders::request()`, `set_status()`, `set_scheme()`, `set_protocol()`
+  and `set_authority()`, pseudo header fields are public
+
+* Remove unreachable `Stream` re-export, unused `client::Observer` and `unstable` feature,
+  `ClientBuilder::with_default()` and `SimpleClient::connection()`
+
+* Fix build with the `trace` feature, API docs updates
+
+* Close the connection with `SETTINGS_TIMEOUT` if the peer does not acknowledge local settings
+  in time, new `ServiceConfig::set_settings_timeout()` (default 5 seconds) and
+  `ConnectionError::SettingsTimeout`
+
+* Server resets a request with the `:protocol` pseudo header with `PROTOCOL_ERROR`, extended
+  CONNECT is not enabled
+
+* Client validates a response to a `HEAD` request as a response without content, its
+  `content-length` header was checked against the response `DATA`
+
+* Client delivers interim `1xx` responses and waits for the final response, a following `HEADERS`
+  was rejected as trailers without end of stream, an interim response with `END_STREAM` or `101`
+  status is malformed (new `StreamError::InvalidInformational`)
+
+* Client ignores late `HEADERS` for its closed streams without updating the last peer stream id,
+  `HEADERS` for an idle client stream is a connection error
+
+* Late frames for closed streams are not connection errors, `WINDOW_UPDATE` is ignored, `DATA`
+  is reset with `STREAM_CLOSED`, trailers for a reset stream are ignored, frames for idle
+  streams are still connection errors
+
+* A publish call of a remote stream is cancelled only if the stream is reset during the call,
+  request data after a complete response and the final message of a reset stream are published
+
+* Document that a remote stream reset outside of a publish call does not get the final message
+
+* Stream `WINDOW_UPDATE` is not sent for streams with a closed receive side, consumed data
+  still releases the connection window
+
+* Client does not fail a complete response on `RST_STREAM(NO_ERROR)`, the reset only stops
+  the request body and is not counted as a reset
+
+* Released stream slots wake a waiting request per free slot, a dropped woken request passes
+  the wake up to the next waiting request
+
+* Requests waiting for a stream slot fail on disconnect, keep-alive and read timeouts and
+  graceful disconnect instead of waiting forever
+
+* Capacity timeout resets the stream with `CANCEL` and does not count toward the stream resets
+  limit. Default capacity timeout is 5 seconds
+
+* Connection receive window is released when received data is consumed, the window bounds
+  unconsumed data of all streams. Default connection window size is 4 MiB
+
+* Ignore RST_STREAM for unknown or forgotten streams instead of a connection error
+
+* Stop the capacity timer when a stream closes or fails, the timer does not keep closed streams
+  alive
+
+* Dropping a pending `send_capacity()` future stops the capacity timer, the stream is not reset
+  with `FLOW_CONTROL_ERROR` without a waiter
+
+* Control service failure fails open streams and publishes `Disconnect` for them, pending
+  handlers do not block the connection shutdown
+
+* PRIORITY frame with an invalid length is a stream error `FRAME_SIZE_ERROR`
+
+* Accept `CONNECT` requests without `:scheme` and `:path`, reject them if present. Client omits
+  `:scheme` and `:path` for `CONNECT` requests
+
+* HPACK encoder compacts dynamic table entries, entries do not pin application buffers
+
+* HPACK decoder compacts dynamic table entries with `trimdown()`, entries do not pin read buffers
+
+* Client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection error `PROTOCOL_ERROR`,
+  add `ConnectionError::UnexpectedEnablePush`
+
+* Requests, responses and trailers over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail with
+  `OperationError::HeaderListTooLarge`. `send_trailers()` returns `Result`
+
+* Cap the HPACK encoder table at 4096 bytes, the peer's larger `SETTINGS_HEADER_TABLE_SIZE`
+  is not used
+
+* Use RFC 9113 error codes for frame decoding errors (`FRAME_SIZE_ERROR`, `FLOW_CONTROL_ERROR`,
+  `COMPRESSION_ERROR`), GOAWAY debug data contains the decoding error. Add `FrameError::reason()`
+  and `FrameError::InvalidInitialWindowSize`, fix swapped SETTINGS payload length errors
+
+* A response without `:status` or with request pseudo-headers is a stream error with
+  `PROTOCOL_ERROR`. Remove unused `ConnectionError::MissingPseudo` and
+  `ConnectionError::UnexpectedPseudo`
+
+* Publish stream reset message for locally closed streams
+
+* `SETTINGS_INITIAL_WINDOW_SIZE` that overflows a stream send window is a connection
+  `FLOW_CONTROL_ERROR`, instead of a stream reset
+
+* Send the SETTINGS ACK after the peer's settings are applied
+
+* The first frame from the peer must be SETTINGS, otherwise the connection is closed
+  with `PROTOCOL_ERROR`. Add `ConnectionError::MissingSettings`
+
+* Streams over the concurrency limit are always refused with `REFUSED_STREAM` and count
+  toward the rapid reset limit, instead of closing the connection on the second overflow.
+  Remove `ConnectionError::ConcurrencyOverflow`
+
+* During shutdown all new streams are refused, DATA for refused streams is ignored
+
+* Client assumes a limit of 100 concurrent streams until the peer's SETTINGS arrive,
+  instead of no limit
+
+* Wake streams waiting for send capacity when `SETTINGS_INITIAL_WINDOW_SIZE` grows the
+  stream windows, senders stalled until the capacity timeout
+
+* Add `ClientBuilder::connect_timeout()` and `ClientBuilder::disconnect_timeout()`
+
+* Remove unused `control::Terminated`
+
+* Document all public items and fix inaccurate API docs
+
+* Reset only the stream on requests with missing or unexpected pseudo headers, instead of
+  closing the connection, add `StreamError::MissingPseudo` and `StreamError::UnexpectedPseudo`
+
+* Remove unused `FrameContinuationError::Malformed`
+
+* Reset only the stream, instead of closing the connection, on malformed, too large or
+  self-dependent header blocks and self-dependent PRIORITY frames, add `Frame::Invalid`,
+  `frame::InvalidFrame` and `StreamError::InvalidFrame`
+
+* Ignore DATA frames received on streams that were reset locally, instead of replying
+  with `STREAM_CLOSED` resets
+
+* Enforce the header list size limit on decoded headers, `Headers::load_hpack()` accepts `max_list_size`
+
+* Count every header field toward `max_headers`, not only distinct names
+
+* Fix quadratic copying when joining CONTINUATION frames
+
+* Replace the generic length delimited codec with a dedicated HTTP/2 frame decoder
+
+* Do not copy GO_AWAY debug data on decode, `GoAway::load()` accepts `Bytes`
+
+* Reject DATA frames that exceed the receive window, with a `FLOW_CONTROL_ERROR` stream
+  reset or connection error, add `StreamError::RecvWindowExceeded` and
+  `ConnectionError::RecvWindowExceeded`
+
+* `Codec::set_send_frame_size()` panics unless the size is between 16,384 and 16,777,215,
+  a zero size made the encoder loop forever
+
+* Count DATA frame padding toward flow control, add `frame::Data::flow_controlled_len()`
+
+* Update to ntex-codec 2.0
+
+* Export `client::ClientDisconnect`, the future returned by `SimpleClient::disconnect()`
+
+* Wake a pending `RecvStream::recv()` when `SendStream` resets the stream, is dropped
+  unfinished, or fails to send
+
+* Apply the capacity timeout to `send_capacity()` and `poll_send_capacity()`, not only to
+  payload sending, a stale capacity timer of a closed stream is ignored
+
+* Client `SendStream` is not cancelled when `RecvStream` is dropped, the request body
+  can be sent after the response is received
+
+* Graceful disconnect waits for outstanding stream reservations, a reserved stream
+  can be opened during graceful disconnect
+
+* Add `SimpleClient::reserve()` and `StreamReservation`, a stream counted as active until
+  the reservation is dropped or its request's stream is closed
+
+* Add `SimpleClient::on_capacity()`, a callback called when a client stream is released,
+  the peer changes its concurrent stream limit, or the connection is closed
+
+* Fix `SimpleClient::active_streams()` returning `0` until the peer sends `MAX_CONCURRENT_STREAMS`
+
+* Rename `ClientBuilder::maxconn()` to `ClientBuilder::connection_limit()`, to match the ntex http client pool configuration
+
 ## [4.0.1] - 2026-09-18
 
 * Update api docs

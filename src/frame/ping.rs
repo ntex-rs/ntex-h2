@@ -6,6 +6,7 @@ const ACK_FLAG: u8 = 0x1;
 
 pub(super) type Payload = [u8; 8];
 
+/// A `PING` frame (RFC 9113 §6.7).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ping {
     ack: bool,
@@ -13,22 +14,27 @@ pub struct Ping {
 }
 
 impl Ping {
+    /// Creates a `PING` request.
     pub fn new(payload: Payload) -> Ping {
         Ping { ack: false, payload }
     }
 
+    /// Creates a `PING` response, the payload must match the request.
     pub fn pong(payload: Payload) -> Ping {
         Ping { ack: true, payload }
     }
 
+    /// Returns `true` if this is a `PING` response.
     pub fn is_ack(&self) -> bool {
         self.ack
     }
 
+    /// Returns the opaque 8-byte payload.
     pub fn payload(&self) -> &Payload {
         &self.payload
     }
 
+    /// Consumes the frame and returns its payload.
     pub fn into_payload(self) -> Payload {
         self.payload
     }
@@ -64,6 +70,7 @@ impl Ping {
         Ok(Ping { ack, payload })
     }
 
+    /// Encodes the frame, including the frame header.
     pub fn encode<B: BufMut>(&self, dst: &mut B) {
         let sz = self.payload.len();
         log::trace!("encoding PING; ack={} len={}", self.ack, sz);

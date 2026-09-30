@@ -5,12 +5,18 @@ use ntex_util::time::Seconds;
 pub(crate) const MAX_WINDOW_SIZE: i32 = i32::MAX;
 pub(crate) const DEFAULT_MAX_HEADERS: usize = 96;
 pub(crate) const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 256;
+// assumed peer limit until its SETTINGS arrive, RFC 9113 §6.5.2 recommends
+// no smaller than 100
+pub(crate) const DEFAULT_REMOTE_MAX_CONCURRENT_STREAMS: u32 = 100;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
+// number of recent peer streams the rapid-reset ratio is measured over
+pub(crate) const RESET_RATIO_WINDOW: u32 = 1024;
 pub(crate) const DEFAULT_RESET_STREAM_SECS: Seconds = Seconds(30);
-pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 1_048_576;
+pub(crate) const DEFAULT_CONNECTION_WINDOW_SIZE: i32 = 4_194_304;
 pub(crate) const DEFAULT_SETTINGS_MAX_HEADER_LIST_SIZE: u32 = 48 * 1024;
 pub(crate) const DEFAULT_MAX_COUNTINUATIONS: usize = 5;
-pub(crate) const DEFAULT_CAPACITY_TIMEOUT: Seconds = Seconds(3);
+pub(crate) const DEFAULT_CAPACITY_TIMEOUT: Seconds = Seconds(5);
+pub(crate) const DEFAULT_MAX_INFLIGHT: u16 = 8 * 1024;
 
 pub(crate) const PREFACE_LEN: usize = 24;
 pub(crate) const PREFACE: Bytes = Bytes::from_static(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");

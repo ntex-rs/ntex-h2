@@ -1,11 +1,15 @@
 use crate::frame::{Frame, FrameError, Head, StreamId};
 
+/// A `PRIORITY` frame (RFC 9113 §6.3).
+///
+/// Stream priorities are parsed and validated, but not used.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Priority {
     stream_id: StreamId,
     dependency: StreamDependency,
 }
 
+/// Stream dependency, carried by `PRIORITY` and `HEADERS` frames.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct StreamDependency {
     /// The ID of the stream dependency target
@@ -21,6 +25,10 @@ pub struct StreamDependency {
 }
 
 impl Priority {
+    /// Parses a `PRIORITY` frame payload.
+    ///
+    /// Fails with [`FrameError::InvalidDependencyId`] if the stream depends
+    /// on itself.
     pub fn load(head: Head, payload: &[u8]) -> Result<Self, FrameError> {
         let dependency = StreamDependency::load(payload)?;
 
@@ -44,6 +52,7 @@ impl From<Priority> for Frame {
 // ===== impl StreamDependency =====
 
 impl StreamDependency {
+    /// Creates a stream dependency, `weight` is the priority weight minus one.
     pub fn new(dependency_id: StreamId, weight: u8, is_exclusive: bool) -> Self {
         StreamDependency {
             dependency_id,
@@ -52,6 +61,7 @@ impl StreamDependency {
         }
     }
 
+    /// Parses the 5-byte stream dependency.
     pub fn load(src: &[u8]) -> Result<Self, FrameError> {
         if src.len() != 5 {
             return Err(FrameError::InvalidPayloadLength);
@@ -66,6 +76,7 @@ impl StreamDependency {
         Ok(StreamDependency::new(dependency_id, weight, is_exclusive))
     }
 
+    /// Returns the id of the stream this stream depends on.
     pub fn dependency_id(&self) -> StreamId {
         self.dependency_id
     }

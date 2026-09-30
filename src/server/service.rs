@@ -14,7 +14,11 @@ use crate::{config::ServiceConfig, consts, dispatcher::Dispatcher, frame, messag
 use super::ServerError;
 
 #[derive(Debug)]
-/// HTTP/2 server service factory.
+/// HTTP/2 server service.
+///
+/// Serves one transport per call, the transport must be ready for the
+/// HTTP/2 connection preface, see the [crate docs](crate#server) for the
+/// message flow.
 pub struct Server<Req, Pub, Err>
 where
     Req: RequestState<IoBoxed>,
@@ -34,6 +38,9 @@ where
     Pub::InitError: Into<Box<dyn Error>>,
 {
     /// Creates a server with the specified request service factory.
+    ///
+    /// The publish service is created once per connection and is called with
+    /// a [`Message`] for every event of peer-initiated streams.
     pub fn new(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self {
         Self {
             publish: publish.into_factory(),
@@ -53,6 +60,8 @@ where
     Err: 'static,
 {
     /// Sets the service used to handle connection control events.
+    ///
+    /// The default control service acknowledges every event.
     #[must_use]
     pub fn control<S>(
         self,
@@ -79,6 +88,11 @@ where
     Err: 'static,
 {
     /// Runs one HTTP/2 server connection.
+    ///
+    /// Reads the connection preface, creates the publish service and serves
+    /// the connection until it is closed. The preface and the publish service
+    /// creation are limited by
+    /// [`ServiceConfig::set_handshake_timeout`](crate::ServiceConfig::set_handshake_timeout).
     pub async fn run(&self, req: Req) -> Result<(), ServerError<Err>> {
         let (st, io) = req.unpack();
 
@@ -113,6 +127,7 @@ where
         let con2 = con.clone();
 
         // start protocol dispatcher
+        let max_inflight = u32::from(con.config().max_inflight);
         let mut fut = IoDispatcher::new(
             io,
             codec,
@@ -124,7 +139,8 @@ where
                     self.control.bind_state(st),
                 ),
             ),
-        );
+        )
+        .max_inflight(max_inflight);
 
         poll_fn(|cx| {
             if con2.config().is_shutdown() {
@@ -157,7 +173,7 @@ where
 
 async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
     let mut buf = [0; consts::PREFACE_LEN];
-    io.read(&mut buf).await?;
+    io.read_exact(&mut buf).await?;
 
     if buf == consts::PREFACE {
         log::debug!("Preface has been received");
@@ -169,6 +185,11 @@ async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
 }
 
 /// Serves one established HTTP/2 transport with existing service pipelines.
+///
+/// Reads the connection preface within the handshake timeout, then serves
+/// the connection like [`Server::run`] with already created publish and
+/// control services. The configuration is taken from the transport's
+/// shared configuration.
 pub async fn handle_one<Err: 'static, PErr: 'static>(
     io: IoBoxed,
     pub_svc: Pipeline<Message, (), PErr>,
@@ -196,11 +217,13 @@ pub async fn handle_one<Err: 'static, PErr: 'static>(
     let con2 = con.clone();
 
     // start protocol dispatcher
+    let max_inflight = u32::from(con.config().max_inflight);
     let mut fut = IoDispatcher::new(
         io,
         codec,
         Pipeline::new((), Dispatcher::new(con, pub_svc, ctl_svc)),
-    );
+    )
+    .max_inflight(max_inflight);
 
     poll_fn(|cx| {
         if con2.config().is_shutdown() {

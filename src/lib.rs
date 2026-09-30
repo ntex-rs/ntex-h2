@@ -1,7 +1,7 @@
 //! An asynchronous, HTTP/2 server and client implementation.
 //!
 //! This library implements the [HTTP/2] specification. The implementation is
-//! asynchronous, using [futures] as the basis for the API. The implementation
+//! asynchronous and built on [ntex] services and I/O. The implementation
 //! is also decoupled from TCP or TLS details. The user must handle ALPN and
 //! HTTP/1.1 upgrades themselves.
 //!
@@ -22,6 +22,29 @@
 //! Use [`server::Server`] to accept HTTP/2 connections, [`client::Client`] for
 //! pooled client connections, or [`client::SimpleClient`] for one established
 //! transport.
+//!
+//! Connections read their [`ServiceConfig`] from the shared configuration
+//! (`SharedCfg`) of the transport or of the service.
+//!
+//! # Server
+//!
+//! The server calls the publish service with a [`Message`] for every event of
+//! a peer-initiated stream:
+//!
+//! * [`MessageKind::Headers`] opens the stream with the request headers.
+//! * [`MessageKind::Data`] delivers payload bytes with their receive-window
+//!   [`Capacity`].
+//! * [`MessageKind::Eof`] is the final event, with the final payload and its
+//!   [`Capacity`], trailers, or a stream error.
+//! * [`MessageKind::Disconnect`] is the final event if the connection fails.
+//!
+//! The response is sent through [`Message::stream`], with
+//! [`StreamRef::send_response`] followed by [`StreamRef::send_payload`] or
+//! [`StreamRef::send_trailers`] unless the headers end the stream. An error
+//! returned by the publish service is passed to the control service as
+//! [`Control::Disconnect`] and closes the connection, stream-level failures
+//! should reset the stream with [`StreamRef::reset`] instead. See the
+//! `examples` directory for complete servers and clients.
 //!
 //! # Handshake
 //!
@@ -67,12 +90,17 @@
 //! Outbound flow control is handled by [`StreamRef::send_capacity`] and
 //! [`client::SendStream::send_capacity`].
 //!
+//! # Features
+//!
+//! * `trace` - logs every frame and stream state change at trace level.
+//!
 //! [HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113
-//! [futures]: https://docs.rs/futures/
+//! [ntex]: https://docs.rs/ntex/
 //! [Starting HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113#section-3
 //! [Flow control]: https://www.rfc-editor.org/rfc/rfc9113#section-5.2
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Protocol_upgrade_mechanism
 #![deny(clippy::pedantic)]
+#![warn(missing_docs)]
 #![allow(
     clippy::cast_sign_loss,
     clippy::cast_possible_truncation,
@@ -114,5 +142,5 @@ pub use self::codec::Codec;
 pub use self::config::ServiceConfig;
 pub use self::control::{Control, ControlAck};
 pub use self::message::{Message, MessageKind, StreamEof};
-pub use self::stream::{Capacity, Stream, StreamData, StreamRef};
+pub use self::stream::{Capacity, StreamData, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};

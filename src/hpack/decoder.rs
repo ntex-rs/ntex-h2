@@ -535,8 +535,8 @@ impl Table {
         if self.size + len <= self.max_size {
             self.size += len;
 
-            // Track the entry
-            self.entries.push_front(entry);
+            // Track the entry, the copy does not pin the read buffer
+            self.entries.push_front(entry.detach());
         }
     }
 
@@ -852,6 +852,40 @@ mod test {
         let mut buf = Bytes::new();
         let empty = de.decode(&mut Cursor::new(&mut buf), |_| {}).unwrap();
         assert_eq!(empty, ());
+    }
+
+    #[test]
+    fn test_table_entries_do_not_reference_source() {
+        let mut de = Decoder::default();
+
+        // the header block is at the end of a larger allocation
+        let mut data = vec![0; 16 * 1024];
+        // literal with indexing, new name, not huffman encoded
+        data.extend(&[0b0100_0000, 3]);
+        data.extend(b"foo");
+        data.extend(&[40]);
+        data.extend(&[b'b'; 40]);
+        // `:path` literal with indexing, indexed name
+        data.extend(&[0b0100_0000 | 4, 40]);
+        data.extend(&[b'/'; 40]);
+        let src = Bytes::from(data);
+        let range = src.as_ref().as_ptr_range();
+        let mut buf = src.slice(16 * 1024..);
+        drop(src);
+
+        let mut res = vec![];
+        de.decode(&mut Cursor::new(&mut buf), |h| res.push(h)).unwrap();
+        assert_eq!(res.len(), 2);
+        assert_eq!(de.table.entries.len(), 2);
+
+        for entry in &de.table.entries {
+            let ptr = match entry {
+                Header::Field { value, .. } => value.as_bytes().as_ptr(),
+                Header::Path(v) => v.as_bytes().as_ptr(),
+                h => panic!("unexpected entry {h:?}"),
+            };
+            assert!(!range.contains(&ptr), "{entry:?}");
+        }
     }
 
     #[test]

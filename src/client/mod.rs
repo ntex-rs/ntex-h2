@@ -18,16 +18,16 @@ use crate::{error::ConnectionError, error::OperationError, frame};
 
 pub use self::connector::Connector;
 pub use self::pool::{Client, ClientBuilder};
-pub use self::simple::SimpleClient;
+pub use self::simple::{ClientDisconnect, SimpleClient, StreamReservation};
 pub use self::stream::{RecvStream, SendStream};
 
 /// Errors that can occur while establishing or operating an HTTP/2 client.
 #[derive(thiserror::Error, Debug)]
 pub enum ClientError {
-    /// Protocol error
+    /// Connection-level protocol error.
     #[error("Protocol error")]
     Protocol(#[source] ConnectionError),
-    /// Operation error
+    /// Stream or connection operation failed, see [`OperationError`].
     #[error("Operation error")]
     Operation(
         #[from]
@@ -37,17 +37,17 @@ pub enum ClientError {
     /// HTTP/2 frame codec error.
     #[error("Http/2 codec error: {0}")]
     Frame(#[from] frame::FrameError),
-    /// Handshake timeout
+    /// The connection was not established within the handshake timeout.
     #[error("Handshake timeout")]
     HandshakeTimeout,
-    /// Connect error
+    /// The transport connection failed.
     #[error("Connect error")]
     Connect(
         #[from]
         #[source]
         ConnectError,
     ),
-    /// Peer disconnected
+    /// The peer disconnected, or the connection was dropped.
     #[error("Peer disconnected")]
     Disconnected(
         #[from]
@@ -92,22 +92,4 @@ impl ErrorDiagnostic for ClientError {
             ClientError::HandshakeTimeout => "h2-client-HandshakeTimeout",
         }
     }
-}
-
-#[cfg(feature = "unstable")]
-pub trait Observer {
-    /// New request is prepared
-    fn on_request(&mut self, id: frame::StreamId, headers: &mut frame::Headers);
-
-    /// Bytes has been written to memory
-    fn on_request_sent(&mut self, id: frame::StreamId);
-
-    /// Payload data has been written to memory
-    fn on_request_payload(&mut self, id: frame::StreamId, data: &frame::Data);
-
-    /// Response is received
-    fn on_response(&mut self, id: frame::StreamId, headers: &mut frame::Headers);
-
-    /// Payload data has been received
-    fn on_response_payload(&mut self, id: frame::StreamId, data: &frame::Data);
 }

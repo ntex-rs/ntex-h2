@@ -50,6 +50,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
+pub(crate) use self::headers::HeadersFlag;
 pub use self::headers::{Headers, PseudoHeaders};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
@@ -89,12 +90,17 @@ pub enum Frame {
     Settings(Settings),
     /// PING frame.
     Ping(Ping),
-    /// GOAWAY frame.
+    /// `GOAWAY` frame.
     GoAway(GoAway),
-    /// WINDOW_UPDATE frame.
+    /// `WINDOW_UPDATE` frame.
     WindowUpdate(WindowUpdate),
-    /// RST_STREAM frame.
+    /// `RST_STREAM` frame.
     Reset(Reset),
+    /// A received frame that is invalid for its stream only.
+    ///
+    /// The codec reports stream-level errors as this frame instead of a
+    /// decode error, the connection remains usable.
+    Invalid(InvalidFrame),
 }
 
 impl fmt::Debug for Frame {
@@ -108,15 +114,58 @@ impl fmt::Debug for Frame {
             Frame::GoAway(frame) => fmt::Debug::fmt(frame, fmt),
             Frame::WindowUpdate(frame) => fmt::Debug::fmt(frame, fmt),
             Frame::Reset(frame) => fmt::Debug::fmt(frame, fmt),
+            Frame::Invalid(frame) => fmt::Debug::fmt(frame, fmt),
         }
+    }
+}
+
+/// A received frame that is invalid for its stream only (RFC 9113 §5.4.2).
+///
+/// The HPACK state is updated before the frame is reported, so the
+/// connection can continue.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct InvalidFrame {
+    kind: Kind,
+    stream_id: StreamId,
+    error: FrameError,
+}
+
+impl InvalidFrame {
+    pub(crate) fn new(kind: Kind, stream_id: StreamId, error: FrameError) -> Self {
+        InvalidFrame {
+            kind,
+            stream_id,
+            error,
+        }
+    }
+
+    /// Returns the kind of the invalid frame.
+    pub fn kind(&self) -> Kind {
+        self.kind
+    }
+
+    /// Returns the stream identifier of the invalid frame.
+    pub fn stream_id(&self) -> StreamId {
+        self.stream_id
+    }
+
+    /// Returns the reason why the frame is invalid.
+    pub fn error(&self) -> FrameError {
+        self.error
+    }
+}
+
+impl From<InvalidFrame> for Frame {
+    fn from(src: InvalidFrame) -> Self {
+        Frame::Invalid(src)
     }
 }
 
 /// Errors that can occur during parsing an HTTP/2 frame.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FrameError {
-    /// A length value other than 8 was set on a PING message.
-    #[error("A length value other than 8 was set on a PING message")]
+    /// A PING, GOAWAY or `WINDOW_UPDATE` frame has an invalid length.
+    #[error("Invalid frame length")]
     BadFrameSize,
 
     /// Frame size exceeded
@@ -128,13 +177,17 @@ pub enum FrameError {
     #[error("The padding length was larger than the frame-header-specified length of the payload")]
     TooMuchPadding,
 
-    /// Headers frame contains too many headers
+    /// Headers frame contains too many headers, or the header list is too large
     #[error("Headers frame contains too many headers")]
     TooManyHeaders(StreamId),
 
     /// An invalid setting value was provided
     #[error("An invalid setting value was provided")]
     InvalidSettingValue,
+
+    /// `SETTINGS_INITIAL_WINDOW_SIZE` value is above the maximum window size
+    #[error("Initial window size is above the maximum window size")]
+    InvalidInitialWindowSize,
 
     /// The payload length specified by the frame header was not the
     /// value necessary for the specific frame type.
@@ -182,6 +235,27 @@ pub enum FrameError {
     Hpack(#[from] hpack::DecoderError),
 }
 
+impl FrameError {
+    /// Returns the error code for the frame error.
+    pub fn reason(&self) -> Reason {
+        match self {
+            FrameError::BadFrameSize
+            | FrameError::MaxFrameSize
+            | FrameError::InvalidPayloadLength
+            | FrameError::InvalidPayloadAckSettings => Reason::FRAME_SIZE_ERROR,
+            FrameError::InvalidInitialWindowSize => Reason::FLOW_CONTROL_ERROR,
+            FrameError::TooManyHeaders(_) => Reason::REFUSED_STREAM,
+            FrameError::Hpack(
+                hpack::DecoderError::InvalidUtf8
+                | hpack::DecoderError::InvalidStatusCode
+                | hpack::DecoderError::InvalidPseudoheader,
+            ) => Reason::PROTOCOL_ERROR,
+            FrameError::Hpack(_) => Reason::COMPRESSION_ERROR,
+            _ => Reason::PROTOCOL_ERROR,
+        }
+    }
+}
+
 /// Errors involving a HEADERS/CONTINUATION frame sequence.
 #[derive(thiserror::Error, Debug, Copy, Clone, PartialEq, Eq)]
 pub enum FrameContinuationError {
@@ -204,8 +278,4 @@ pub enum FrameContinuationError {
     /// Max count of Continuations
     #[error("Max count of Continuations")]
     MaxContinuations,
-
-    /// Malformed frame
-    #[error("Malformed frame")]
-    Malformed,
 }

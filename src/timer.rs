@@ -1,6 +1,6 @@
 #![allow(clippy::mutable_key_type)]
 use std::collections::{BTreeMap, VecDeque};
-use std::{cell::Cell, cell::RefCell, time::Duration, time::Instant};
+use std::{cell::Cell, cell::RefCell, mem, time::Duration, time::Instant};
 
 use ntex_util::time::{Seconds, now, sleep};
 use ntex_util::{HashMap, HashSet, spawn};
@@ -90,11 +90,12 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                 let guard = TimerGuard;
                 loop {
                     sleep(SEC).await;
+                    let mut expired = Vec::new();
                     let stop = TIMER.with(|timer| {
                         let current = timer.current.get();
                         timer.current.set(current + 1);
 
-                        // notify io dispatcher
+                        // collect expired streams
                         let mut inner = timer.storage.borrow_mut();
                         while let Some(key) = inner.notifications.keys().next() {
                             let key = *key;
@@ -103,7 +104,7 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                                 for io in items.drain() {
                                     if let Some(hnd) = inner.streams.remove(&io) {
                                         if hnd == key {
-                                            io.capacity_timeout();
+                                            expired.push(io);
                                         } else {
                                             inner.streams.insert(io, hnd);
                                         }
@@ -126,6 +127,12 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                         }
                     });
 
+                    // notify streams outside of the storage borrow, a timeout
+                    // can fail other streams and unregister their timers
+                    for io in expired {
+                        io.capacity_timeout();
+                    }
+
                     if stop {
                         break;
                     }
@@ -140,9 +147,28 @@ struct TimerGuard;
 
 impl Drop for TimerGuard {
     fn drop(&mut self) {
-        TIMER.with(|timer| {
-            timer.running.set(false);
-            timer.storage.borrow_mut().notifications.clear();
-        });
+        // thread local storage can be destroyed already on thread shutdown
+        let (streams, _notifications) = TIMER
+            .try_with(|timer| {
+                timer.running.set(false);
+                let mut inner = timer.storage.borrow_mut();
+                (mem::take(&mut inner.streams), mem::take(&mut inner.notifications))
+            })
+            .unwrap_or_default();
+
+        // release stream references outside of the storage borrow
+        for io in streams.into_keys() {
+            io.stop_capacity_timer();
+        }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn cancel() {
+    drop(TimerGuard);
+}
+
+#[cfg(test)]
+pub(crate) fn is_registered(io: &StreamRef) -> bool {
+    TIMER.with(|timer| timer.storage.borrow().streams.contains_key(io))
 }

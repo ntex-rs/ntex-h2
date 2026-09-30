@@ -1,14 +1,7 @@
-use super::length_delimited::LengthDelimitedCodecError;
-use crate::frame;
-
+/// Frame encoding error.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum EncoderError {
+    /// A `DATA` frame payload is larger than the peer's maximum frame size.
     #[error("Max size exceeded")]
     MaxSizeExceeded,
-}
-
-impl From<LengthDelimitedCodecError> for frame::FrameError {
-    fn from(_: LengthDelimitedCodecError) -> Self {
-        frame::FrameError::MaxFrameSize
-    }
 }

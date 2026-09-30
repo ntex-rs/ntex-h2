@@ -321,9 +321,10 @@ impl Table {
     fn insert(&mut self, header: Header, hash: HashValue) {
         self.inserted = self.inserted.wrapping_add(1);
 
+        // compact the entry, it does not retain a larger source buffer
         self.slots.push_front(Slot {
             hash,
-            header,
+            header: header.detach(),
             next: None,
         });
     }
@@ -734,5 +735,46 @@ fn index_static(header: &Header) -> Option<(usize, bool)> {
             500 => Some((14, true)),
             _ => Some((8, false)),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_bytes::{ByteString, Bytes};
+    use ntex_http::{HeaderName, HeaderValue};
+
+    use super::*;
+
+    #[test]
+    fn test_entries_do_not_reference_source() {
+        let mut data = vec![0; 16 * 1024];
+        data.extend(&[b'v'; 40]);
+        data.extend(&[b'a'; 40]);
+        let src = Bytes::from(data);
+        let range = src.as_ref().as_ptr_range();
+
+        let mut table = Table::new(4096, 0);
+        let value = HeaderValue::from_shared(src.slice(16 * 1024..16 * 1024 + 40)).unwrap();
+        let name = HeaderName::from_static("x-custom");
+        assert!(matches!(
+            table.index(Header::Field { name, value }),
+            Index::Inserted(_)
+        ));
+        let authority = ByteString::try_from(src.slice(16 * 1024 + 40..)).unwrap();
+        assert!(matches!(
+            table.index(Header::Authority(authority)),
+            Index::InsertedValue(..)
+        ));
+        drop(src);
+
+        assert_eq!(table.slots.len(), 2);
+        for slot in &table.slots {
+            let ptr = match &slot.header {
+                Header::Field { value, .. } => value.as_bytes().as_ptr(),
+                Header::Authority(v) => v.as_bytes().as_ptr(),
+                h => panic!("unexpected entry {h:?}"),
+            };
+            assert!(!range.contains(&ptr), "{:?}", slot.header);
+        }
     }
 }

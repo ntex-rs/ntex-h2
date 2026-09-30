@@ -1,7 +1,7 @@
 mod support;
 
 use ntex_bytes::BytesMut;
-use ntex_codec::Decoder;
+use ntex_codec::{Decoder, Encoder};
 use ntex_h2::{Codec, frame, frame::FrameError};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode};
 use ntex_io::testing::IoTest;
@@ -327,3 +327,292 @@ fn read_goaway_with_debug_data() {
 
 //     assert!(srv.accept().await.is_none());
 // }
+
+// ===== SETTINGS =====
+
+#[test]
+#[should_panic(expected = "frame size must be between 16384 and 16777215")]
+fn send_frame_size_zero_is_rejected() {
+    Codec::default().set_send_frame_size(0);
+}
+
+#[test]
+#[should_panic(expected = "frame size must be between 16384 and 16777215")]
+fn send_frame_size_below_minimum_is_rejected() {
+    Codec::default().set_send_frame_size(frame::DEFAULT_MAX_FRAME_SIZE as usize - 1);
+}
+
+#[test]
+fn send_frame_size_bounds_are_accepted() {
+    let codec = Codec::default();
+    codec.set_send_frame_size(frame::DEFAULT_MAX_FRAME_SIZE as usize);
+    assert_eq!(codec.send_frame_size(), frame::DEFAULT_MAX_FRAME_SIZE);
+    codec.set_send_frame_size(frame::MAX_MAX_FRAME_SIZE as usize);
+    assert_eq!(codec.send_frame_size(), frame::MAX_MAX_FRAME_SIZE);
+}
+
+// ===== HEADERS limits =====
+
+const END_HEADERS: u8 = 0x4;
+
+fn raw_frame(kind: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+    let len = payload.len();
+    let mut buf = vec![(len >> 16) as u8, (len >> 8) as u8, len as u8, kind, flags];
+    buf.extend_from_slice(&stream_id.to_be_bytes());
+    buf.extend_from_slice(payload);
+    buf
+}
+
+/// `:method: GET`, `:scheme: http`, `:path: /`
+const REQUEST_PSEUDO: [u8; 3] = [0x82, 0x86, 0x84];
+
+/// Literal header field without indexing, new name.
+fn literal_field(name: &[u8], value: &[u8]) -> Vec<u8> {
+    assert!(name.len() < 127 && value.len() < 127);
+    let mut buf = vec![0x00, name.len() as u8];
+    buf.extend_from_slice(name);
+    buf.push(value.len() as u8);
+    buf.extend_from_slice(value);
+    buf
+}
+
+#[track_caller]
+fn assert_invalid(
+    res: Result<Option<frame::Frame>, FrameError>,
+    kind: frame::Kind,
+    id: u32,
+    error: FrameError,
+) {
+    match res {
+        Ok(Some(frame::Frame::Invalid(frm))) => {
+            assert_eq!(frm.kind(), kind);
+            assert_eq!(frm.stream_id(), id);
+            assert_eq!(frm.error(), error);
+        }
+        res => panic!("expected invalid frame; actual={res:?}"),
+    }
+}
+
+#[test]
+fn repeated_header_names_count_toward_max_headers() {
+    let block = |n| {
+        let mut block = REQUEST_PSEUDO.to_vec();
+        for _ in 0..n {
+            block.extend(literal_field(b"x", b"a"));
+        }
+        BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..])
+    };
+
+    let codec = Codec::default();
+    codec.set_max_headers(3);
+    match codec.decode(&mut block(3)) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.fields().get_all("x").count(), 3);
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+    assert_invalid(
+        codec.decode(&mut block(4)),
+        frame::Kind::Headers,
+        1,
+        FrameError::TooManyHeaders(1.into()),
+    );
+}
+
+#[test]
+fn decoded_header_list_size_is_limited() {
+    // add a 4000 byte value to the dynamic table, then reference it repeatedly;
+    // the block is ~4KB compressed but ~84KB decoded
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.extend_from_slice(&[0x40, 1, b'x', 0x7f, 0xa1, 0x1e]);
+    block.extend_from_slice(&[b'a'; 4000]);
+    block.extend_from_slice(&[0xbe; 20]);
+
+    let codec = Codec::default();
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        1,
+        FrameError::TooManyHeaders(1.into()),
+    );
+
+    // the rejected block still updated the hpack state
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.push(0xbe);
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 3, &block)[..]);
+    match codec.decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.fields().get("x").unwrap().as_bytes(), &[b'a'; 4000][..]);
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn many_small_continuation_frames() {
+    let mut block = REQUEST_PSEUDO.to_vec();
+    for i in 0..90 {
+        block.extend(literal_field(format!("x{i}").as_bytes(), b"a"));
+    }
+
+    // HEADERS with the first byte, then a CONTINUATION per byte
+    let mut buf = BytesMut::from(&raw_frame(1, 0, 1, &block[..1])[..]);
+    for (idx, b) in block[1..].iter().enumerate() {
+        let flags = if idx == block.len() - 2 { END_HEADERS } else { 0 };
+        buf.extend_from_slice(&raw_frame(9, flags, 1, &[*b]));
+    }
+
+    let codec = Codec::default();
+    codec.set_max_header_continuations(0);
+    match codec.decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.pseudo().method, Some(Method::GET));
+            assert_eq!(hdrs.fields().len(), 90);
+            assert_eq!(hdrs.fields().get("x89").unwrap(), "a");
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+    assert!(buf.is_empty());
+}
+
+#[test]
+fn headers_unknown_flags_are_ignored() {
+    let mut buf = BytesMut::from(&raw_frame(1, 0xc0 | END_HEADERS, 1, &REQUEST_PSEUDO)[..]);
+    match Codec::default().decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert!(format!("{hdrs:?}").contains("flags: (0x4: END_HEADERS)"));
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn te_trailers_is_case_insensitive() {
+    let block = |value: &[u8]| {
+        let mut block = REQUEST_PSEUDO.to_vec();
+        block.extend(literal_field(b"te", value));
+        BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..])
+    };
+
+    for value in [&b"trailers"[..], b"Trailers", b"TRAILERS"] {
+        match Codec::default().decode(&mut block(value)) {
+            Ok(Some(frame::Frame::Headers(hdrs))) => {
+                assert_eq!(hdrs.fields().get("te").unwrap().as_bytes(), value);
+            }
+            res => panic!("unexpected result: {res:?}"),
+        }
+    }
+    assert_invalid(
+        Codec::default().decode(&mut block(b"gzip")),
+        frame::Kind::Headers,
+        1,
+        FrameError::MalformedMessage,
+    );
+}
+
+#[test]
+fn continuation_frames_keep_headers_flags() {
+    let block = REQUEST_PSEUDO;
+    // HEADERS with END_STREAM, the block ends in a CONTINUATION
+    let mut buf = BytesMut::from(&raw_frame(1, 0x1, 1, &block[..1])[..]);
+    buf.extend_from_slice(&raw_frame(9, END_HEADERS, 1, &block[1..]));
+
+    match Codec::default().decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.stream_id(), 1);
+            assert!(hdrs.is_end_stream());
+            assert!(hdrs.is_end_headers());
+            assert_eq!(hdrs.pseudo().path, Some("/".into()));
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn stream_level_header_errors_keep_hpack_state() {
+    // `connection` header is not allowed, the block also adds `x: a` to the
+    // dynamic table
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.extend_from_slice(&[0x40, 1, b'x', 1, b'a']);
+    block.extend(literal_field(b"connection", b"close"));
+
+    let codec = Codec::default();
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 1, &block)[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        1,
+        FrameError::MalformedMessage,
+    );
+
+    // same block split into CONTINUATION frames, referencing the dynamic table
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.push(0xbe);
+    block.extend(literal_field(b"connection", b"close"));
+    let mut buf = BytesMut::from(&raw_frame(1, 0, 3, &block[..2])[..]);
+    buf.extend_from_slice(&raw_frame(9, END_HEADERS, 3, &block[2..]));
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        3,
+        FrameError::MalformedMessage,
+    );
+
+    // HEADERS depending on itself, with a valid block
+    let mut payload = vec![0, 0, 0, 5, 0];
+    payload.extend_from_slice(&REQUEST_PSEUDO);
+    payload.push(0xbe);
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS | 0x20, 5, &payload)[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Headers,
+        5,
+        FrameError::InvalidDependencyId,
+    );
+
+    // PRIORITY depending on itself
+    let mut buf = BytesMut::from(&raw_frame(2, 0, 7, &[0, 0, 0, 7, 0])[..]);
+    assert_invalid(
+        codec.decode(&mut buf),
+        frame::Kind::Priority,
+        7,
+        FrameError::InvalidDependencyId,
+    );
+
+    // the hpack state is still in sync
+    let mut block = REQUEST_PSEUDO.to_vec();
+    block.push(0xbe);
+    let mut buf = BytesMut::from(&raw_frame(1, END_HEADERS, 9, &block)[..]);
+    match codec.decode(&mut buf) {
+        Ok(Some(frame::Frame::Headers(hdrs))) => {
+            assert_eq!(hdrs.fields().get("x").unwrap(), "a");
+        }
+        res => panic!("unexpected result: {res:?}"),
+    }
+}
+
+#[test]
+fn send_header_table_size_is_capped() {
+    fn encode(codec: &Codec) -> ntex_bytes::Bytes {
+        let hdrs = frame::Headers::new(
+            1.into(),
+            frame::PseudoHeaders::response(StatusCode::OK),
+            HeaderMap::new(),
+            true,
+        );
+        let mut buf = ntex_bytes::BytePages::default();
+        codec.encode(hdrs.into(), &mut buf).unwrap();
+        buf.freeze().slice(9..)
+    }
+
+    // larger than default, the table stays at 4096 without a size update
+    let codec = Codec::default();
+    codec.set_send_header_table_size(1 << 30);
+    assert_eq!(&encode(&codec)[..], &[0x88]);
+
+    // shrink, then grow back up to 4096 only
+    codec.set_send_header_table_size(100);
+    codec.set_send_header_table_size(1 << 30);
+    assert_eq!(&encode(&codec)[..], &[0x3f, 0x45, 0x3f, 0xe1, 0x1f, 0x88]);
+}

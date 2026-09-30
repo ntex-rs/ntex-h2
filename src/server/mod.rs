@@ -10,8 +10,13 @@ use crate::frame;
 /// Errors that can occur while establishing or serving an HTTP/2 connection.
 #[derive(thiserror::Error, Debug)]
 pub enum ServerError<Err> {
-    /// Request handler error
-    #[error("Message handler service error")]
+    /// Control service error.
+    ///
+    /// Request handler errors are passed to the control service as
+    /// [`Control::Disconnect`](crate::Control::Disconnect) and close the
+    /// connection. This error is returned only if the control service
+    /// itself fails.
+    #[error("Control service error")]
     Service(Err),
     /// HTTP/2 frame codec error.
     #[error("Http/2 codec error: {0}")]

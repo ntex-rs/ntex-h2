@@ -29,30 +29,36 @@ pub enum ConnectionError {
     /// A SETTINGS acknowledgment was not expected.
     #[error("Unexpected setting ack received")]
     UnexpectedSettingsAck,
-    /// A required pseudo-header is missing.
-    #[error("Missing pseudo header {0:?}")]
-    MissingPseudo(&'static str),
-    /// A pseudo-header is not valid in this message.
-    #[error("Unexpected pseudo header {0:?}")]
-    UnexpectedPseudo(&'static str),
-    /// A WINDOW_UPDATE increment was zero.
+    /// The first frame from the peer is not SETTINGS.
+    #[error("First frame is not SETTINGS")]
+    MissingSettings,
+    /// A server sent `SETTINGS_ENABLE_PUSH` set to 1.
+    #[error("Server sent SETTINGS_ENABLE_PUSH set to 1")]
+    UnexpectedEnablePush,
+    /// A `WINDOW_UPDATE` increment was zero.
     #[error("Window update value is zero")]
     ZeroWindowUpdateValue,
     /// A flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowValueOverflow,
-    /// The peer exceeded the concurrent stream limit.
-    #[error("Max concurrent streams count achieved")]
-    ConcurrencyOverflow,
+    /// The peer sent more data than the connection receive window allows.
+    #[error("Connection receive window is exceeded")]
+    RecvWindowExceeded,
     /// The peer exceeded the rapid-reset limit.
     #[error("Stream rapid reset count achieved")]
     StreamResetsLimit,
     /// Keep-alive ping timed out.
     #[error("Keep-alive timeout")]
     KeepaliveTimeout,
+    /// The peer did not acknowledge the local settings in time.
+    #[error("Settings acknowledgment timeout")]
+    SettingsTimeout,
     /// Frame reading timed out.
     #[error("Read timeout")]
     ReadTimeout,
+    /// Frame write timed out.
+    #[error("Write timeout")]
+    WriteTimeout,
 }
 
 impl ConnectionError {
@@ -63,14 +69,12 @@ impl ConnectionError {
             ConnectionError::Encoder(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame encoding")
             }
-            ConnectionError::Decoder(_) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Error during frame decoding")
+            ConnectionError::Decoder(err) => GoAway::new(err.reason()).set_data(err.to_string()),
+            ConnectionError::MissingSettings => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("First frame is not SETTINGS")
             }
-            ConnectionError::MissingPseudo(s) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Missing pseudo header {s:?}"))
-            }
-            ConnectionError::UnexpectedPseudo(s) => {
-                GoAway::new(Reason::PROTOCOL_ERROR).set_data(format!("Unexpected pseudo header {s:?}"))
+            ConnectionError::UnexpectedEnablePush => {
+                GoAway::new(Reason::PROTOCOL_ERROR).set_data("Server enabled push")
             }
             ConnectionError::UnknownStream(_) => {
                 GoAway::new(Reason::PROTOCOL_ERROR).set_data("Unknown stream")
@@ -89,16 +93,22 @@ impl ConnectionError {
             ConnectionError::WindowValueOverflow => {
                 GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Updated value for window is overflowed")
             }
-            ConnectionError::ConcurrencyOverflow => {
-                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Max concurrent streams count achieved")
+            ConnectionError::RecvWindowExceeded => {
+                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Connection receive window is exceeded")
             }
             ConnectionError::StreamResetsLimit => {
-                GoAway::new(Reason::FLOW_CONTROL_ERROR).set_data("Stream rapid reset count achieved")
+                GoAway::new(Reason::ENHANCE_YOUR_CALM).set_data("Stream rapid reset count achieved")
             }
             ConnectionError::KeepaliveTimeout => {
                 GoAway::new(Reason::NO_ERROR).set_data("Keep-alive timeout")
             }
+            ConnectionError::SettingsTimeout => {
+                GoAway::new(Reason::SETTINGS_TIMEOUT).set_data("Settings acknowledgment timeout")
+            }
             ConnectionError::ReadTimeout => GoAway::new(Reason::NO_ERROR).set_data("Frame read timeout"),
+            ConnectionError::WriteTimeout => {
+                GoAway::new(Reason::NO_ERROR).set_data("Frame write timeout")
+            }
         }
     }
 }
@@ -113,14 +123,16 @@ impl ErrorDiagnostic for ConnectionError {
             ConnectionError::StreamClosed(..) => "h2-conn-StreamClosed",
             ConnectionError::InvalidStreamId(_) => "h2-conn-InvalidStreamId",
             ConnectionError::UnexpectedSettingsAck => "h2-conn-UnexpectedSettingsAck",
-            ConnectionError::MissingPseudo(_) => "h2-conn-MissingPseudo",
-            ConnectionError::UnexpectedPseudo(_) => "h2-conn-UnexpectedPseudo",
+            ConnectionError::MissingSettings => "h2-conn-MissingSettings",
+            ConnectionError::UnexpectedEnablePush => "h2-conn-UnexpectedEnablePush",
             ConnectionError::ZeroWindowUpdateValue => "h2-conn-ZeroWindowUpdateValue",
             ConnectionError::WindowValueOverflow => "h2-conn-WindowValueOverflow",
-            ConnectionError::ConcurrencyOverflow => "h2-conn-ConcurrencyOverflow",
+            ConnectionError::RecvWindowExceeded => "h2-conn-RecvWindowExceeded",
             ConnectionError::StreamResetsLimit => "h2-conn-StreamResetsLimit",
             ConnectionError::KeepaliveTimeout => "h2-conn-KeepaliveTimeout",
+            ConnectionError::SettingsTimeout => "h2-conn-SettingsTimeout",
             ConnectionError::ReadTimeout => "h2-conn-ReadTimeout",
+            ConnectionError::WriteTimeout => "h2-conn-WriteTimeout",
         }
     }
 }
@@ -154,10 +166,13 @@ pub enum StreamError {
     /// The stream flow-control window overflowed.
     #[error("Window value is overflowed")]
     WindowOverflowed,
-    /// A stream WINDOW_UPDATE increment was zero.
+    /// The peer sent more data than the stream receive window allows.
+    #[error("Stream receive window is exceeded")]
+    RecvWindowExceeded,
+    /// A stream `WINDOW_UPDATE` increment was zero.
     #[error("Zero value for window")]
     WindowZeroUpdateValue,
-    /// Trailers were received without END_STREAM.
+    /// Trailers were received without `END_STREAM`.
     #[error("Trailers headers without end of stream flags")]
     TrailersWithoutEos,
     /// The content-length header is invalid.
@@ -172,9 +187,25 @@ pub enum StreamError {
     /// Waiting for send capacity timed out.
     #[error("Capacity availability timeout")]
     CapacityTimeout,
-    /// The stream was reset with the specified reason.
+    /// The stream was reset by the peer with the specified reason.
     #[error("Stream has been reset with {0}")]
     Reset(Reason),
+    /// The stream was reset by the local side with the specified reason.
+    #[error("Stream has been reset from local side with {0}")]
+    LocalReset(Reason),
+    /// The peer sent an invalid frame for the stream, such as a malformed
+    /// or too large header block.
+    #[error("Invalid frame: {0}")]
+    InvalidFrame(frame::FrameError),
+    /// A required request pseudo-header is missing.
+    #[error("Missing pseudo header {0:?}")]
+    MissingPseudo(&'static str),
+    /// A pseudo-header is not valid in a request, a response or trailers.
+    #[error("Unexpected pseudo header {0:?}")]
+    UnexpectedPseudo(&'static str),
+    /// An informational response ended the stream or used `101` status.
+    #[error("Invalid informational response")]
+    InvalidInformational,
 }
 
 impl StreamError {
@@ -182,14 +213,19 @@ impl StreamError {
     pub(crate) fn reason(&self) -> Reason {
         match self {
             StreamError::Closed => Reason::STREAM_CLOSED,
-            StreamError::WindowOverflowed | StreamError::CapacityTimeout => Reason::FLOW_CONTROL_ERROR,
+            StreamError::WindowOverflowed | StreamError::RecvWindowExceeded => Reason::FLOW_CONTROL_ERROR,
+            StreamError::CapacityTimeout => Reason::CANCEL,
+            StreamError::InvalidFrame(err) => err.reason(),
             StreamError::Idle(_)
+            | StreamError::MissingPseudo(_)
+            | StreamError::UnexpectedPseudo(_)
+            | StreamError::InvalidInformational
             | StreamError::WindowZeroUpdateValue
             | StreamError::TrailersWithoutEos
             | StreamError::InvalidContentLength
             | StreamError::WrongPayloadLength
             | StreamError::NonEmptyPayload => Reason::PROTOCOL_ERROR,
-            StreamError::Reset(r) => *r,
+            StreamError::Reset(r) | StreamError::LocalReset(r) => *r,
         }
     }
 }
@@ -200,6 +236,7 @@ impl ErrorDiagnostic for StreamError {
             StreamError::Idle(_) => "h2-stream-Idle",
             StreamError::Closed => "h2-stream-Closed",
             StreamError::WindowOverflowed => "h2-stream-WindowOverflowed",
+            StreamError::RecvWindowExceeded => "h2-stream-RecvWindowExceeded",
             StreamError::WindowZeroUpdateValue => "h2-stream-WindowZeroUpdateValue",
             StreamError::TrailersWithoutEos => "h2-stream-TrailersWithoutEos",
             StreamError::InvalidContentLength => "h2-stream-InvalidContentLength",
@@ -207,6 +244,11 @@ impl ErrorDiagnostic for StreamError {
             StreamError::NonEmptyPayload => "h2-stream-NonEmptyPayload",
             StreamError::CapacityTimeout => "h2-stream-CapacityTimeout",
             StreamError::Reset(_) => "h2-stream-Reset",
+            StreamError::LocalReset(_) => "h2-stream-LocalReset",
+            StreamError::InvalidFrame(_) => "h2-stream-InvalidFrame",
+            StreamError::MissingPseudo(_) => "h2-stream-MissingPseudo",
+            StreamError::UnexpectedPseudo(_) => "h2-stream-UnexpectedPseudo",
+            StreamError::InvalidInformational => "h2-stream-InvalidInformational",
         }
     }
 }
@@ -222,15 +264,17 @@ pub enum OperationError {
     #[error("{0}")]
     Connection(#[from] ConnectionError),
 
-    /// Cannot process operation for idle stream
+    /// The operation requires sent headers, the stream is idle.
     #[error("Cannot process operation for idle stream")]
     Idle,
 
-    /// Cannot process operation for stream in payload state
+    /// Headers are already sent, the stream is in the payload state.
     #[error("Cannot process operation for stream in payload state")]
     Payload,
 
-    /// Stream is closed
+    /// The local send side is closed.
+    ///
+    /// Contains the reset reason if the stream was closed by a reset.
     #[error("Stream is closed {0:?}")]
     Closed(Option<Reason>),
 
@@ -248,11 +292,21 @@ pub enum OperationError {
     #[error("The stream ID space is overflowed")]
     OverflowedStreamId,
 
-    /// Disconnecting
+    /// Header list exceeds the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`
+    #[error("Header list size {size} exceeds the peer's limit {max}")]
+    HeaderListTooLarge {
+        /// Header list size
+        size: usize,
+        /// Peer's limit
+        max: usize,
+    },
+
+    /// The connection is disconnecting gracefully and does not accept new
+    /// streams.
     #[error("Connection is disconnecting")]
     Disconnecting,
 
-    /// Disconnected
+    /// The connection is closed.
     #[error("Connection is closed")]
     Disconnected,
 }
@@ -268,6 +322,7 @@ impl ErrorDiagnostic for OperationError {
             OperationError::RemoteReset(_) => "h2-oper-RemoteReset",
             OperationError::LocalReset(_) => "h2-oper-LocalReset",
             OperationError::OverflowedStreamId => "h2-oper-OverflowedStreamId",
+            OperationError::HeaderListTooLarge { .. } => "h2-oper-HeaderListTooLarge",
             OperationError::Disconnecting => "h2-oper-Disconnecting",
             OperationError::Disconnected => "h2-oper-Disconnected",
         }
