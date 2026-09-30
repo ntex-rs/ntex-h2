@@ -112,18 +112,15 @@ where
             if let Err(e) = res2 {
                 Err(e)
             } else {
-                match self
-                    .inner
-                    .control
-                    .call(Control::error(e, self.inner.connection.last_stream_id()))
-                    .await
-                {
-                    Ok(_) => {
-                        self.connection.disconnect();
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+                // publish service is failed, streams cannot be processed.
+                // control service decides on GOAWAY frame, connection is closed
+                self.connection.disconnect();
+                control(
+                    Control::error(e, self.inner.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+                .map(|_| ())
             }
         } else {
             Ok(())
@@ -285,7 +282,7 @@ where
                     "{}: did not send write buffer in time, closing connection",
                     self.connection.tag(),
                 );
-                let streams = self.connection.read_timeout();
+                let streams = self.connection.write_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::WriteTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));

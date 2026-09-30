@@ -1224,6 +1224,10 @@ impl RecvHalfConnection {
         self.timeout(ConnectionError::ReadTimeout, frame::Reason::NO_ERROR)
     }
 
+    pub(crate) fn write_timeout(&self) -> HashMap<StreamId, StreamRef> {
+        self.timeout(ConnectionError::WriteTimeout, frame::Reason::NO_ERROR)
+    }
+
     pub(crate) fn settings_timeout(&self) -> HashMap<StreamId, StreamRef> {
         self.timeout(ConnectionError::SettingsTimeout, frame::Reason::SETTINGS_TIMEOUT)
     }
