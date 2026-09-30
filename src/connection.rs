@@ -1232,12 +1232,22 @@ impl RecvHalfConnection {
         self.flags().contains(ConnectionFlags::SETTINGS_TIMEOUT)
     }
 
+    /// Removes all streams, taken streams are not released by `drop_stream`
+    /// so the active stream counters are reset here. Reservations stay
+    /// counted until they are released.
+    fn take_streams(&self) -> HashMap<StreamId, StreamRef> {
+        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        self.0.active_remote_streams.set(0);
+        self.0.active_local_streams.set(self.0.reserved_streams.get());
+        streams
+    }
+
     fn timeout(&self, err: ConnectionError, reason: frame::Reason) -> HashMap<StreamId, StreamRef> {
         let err: Error<OperationError> = Error::new(err, self.service());
         self.0.error.set(Some(err.clone()));
         self.0.readiness.borrow_mut().clear();
 
-        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        let streams = self.take_streams();
         for stream in streams.values() {
             stream.set_failed_stream(err.clone());
         }
@@ -1253,7 +1263,7 @@ impl RecvHalfConnection {
         self.0.error.set(Some(err.clone()));
         self.0.readiness.borrow_mut().clear();
 
-        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        let streams = self.take_streams();
         for stream in &mut streams.values() {
             stream.set_failed_stream(err.clone());
         }
@@ -1271,7 +1281,7 @@ impl RecvHalfConnection {
         }
         self.0.readiness.borrow_mut().clear();
 
-        let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        let streams = self.take_streams();
         for stream in streams.values() {
             stream.set_failed_stream(Error::new(OperationError::Disconnected, self.service()));
         }

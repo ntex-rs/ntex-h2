@@ -2,6 +2,9 @@
 
 ## [4.1.0] - Unreleased
 
+* Reset active stream counters when a connection error or disconnect fails all streams,
+  `active_streams()` kept counting the failed streams
+
 * Do not answer a received RST_STREAM with RST_STREAM (RFC 9113 §5.4.2)
 
 * GOAWAY frames report the last stream opened by the peer, `last_stream_id` was always 0

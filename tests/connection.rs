@@ -359,6 +359,29 @@ async fn test_stream_reservation() {
 }
 
 #[ntex::test]
+async fn test_disconnect_resets_active_streams() {
+    let srv = start_server().await;
+    let io = connect(srv.addr()).await;
+    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    sleep(Millis(150)).await;
+    assert_eq!(client.max_streams(), Some(1));
+
+    let (stream, recv_stream) = client
+        .send(Method::GET, "/".into(), HeaderMap::default(), false)
+        .await
+        .unwrap();
+    assert_eq!(client.active_streams(), 1);
+
+    // streams failed by the disconnect are no longer active
+    client.force_close();
+    sleep(Millis(50)).await;
+    assert!(client.is_closed());
+    assert_eq!(client.active_streams(), 0);
+    drop((stream, recv_stream));
+    assert_eq!(client.active_streams(), 0);
+}
+
+#[ntex::test]
 async fn test_stream_reservation_graceful_disconnect() {
     let srv = start_server().await;
     let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
