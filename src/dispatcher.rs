@@ -75,13 +75,24 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                         "{}: Failed to handle frame, err: {kind:?} stream: {stream:?}",
                         stream.tag(),
                     );
-                    if !stream.reset_silent(kind.reason()) {
-                        self.connection.encode(Reset::new(stream.id(), kind.reason()));
-                    }
+                    // streams are removed once both sides are closed,
+                    // a queried stream is always reset
+                    stream.reset_silent(kind.reason());
                 }
                 publish(Message::error(kind, &stream), stream, &self.inner).await
             }
         }
+    }
+
+    async fn codec_error(&self, err: ConnectionError) -> Result<Option<Frame>, Err> {
+        let err = Error::new(err, self.connection.service());
+        let streams = self.connection.proto_error(&err);
+        self.handle_connection_error(streams, err.clone().map(OperationError::from));
+        control(
+            Control::proto_error(err, self.connection.last_stream_id()),
+            &self.inner,
+        )
+        .await
     }
 
     fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: Error<OperationError>) {
@@ -112,18 +123,15 @@ where
             if let Err(e) = res2 {
                 Err(e)
             } else {
-                match self
-                    .inner
-                    .control
-                    .call(Control::error(e, self.inner.connection.last_stream_id()))
-                    .await
-                {
-                    Ok(_) => {
-                        self.connection.disconnect();
-                        Ok(())
-                    }
-                    Err(e) => Err(e),
-                }
+                // publish service is failed, streams cannot be processed.
+                // control service decides on GOAWAY frame, connection is closed
+                self.connection.disconnect();
+                control(
+                    Control::error(e, self.inner.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+                .map(|_| ())
             }
         } else {
             Ok(())
@@ -215,26 +223,8 @@ where
                     Ok(None)
                 }
             },
-            DispatchItem::Stop(DispReason::Encoder(err)) => {
-                let err = Error::new(ConnectionError::from(err), self.connection.service());
-                let streams = self.connection.proto_error(&err);
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
-            }
-            DispatchItem::Stop(DispReason::Decoder(err)) => {
-                let err = Error::new(ConnectionError::from(err), self.connection.service());
-                let streams = self.connection.proto_error(&err);
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
-            }
+            DispatchItem::Stop(DispReason::Encoder(err)) => self.codec_error(err.into()).await,
+            DispatchItem::Stop(DispReason::Decoder(err)) => self.codec_error(err.into()).await,
             DispatchItem::Stop(DispReason::KeepAlive) if self.connection.is_settings_timeout() => {
                 log::warn!(
                     "{}: did not receive settings ack in time, closing connection",
@@ -285,7 +275,7 @@ where
                     "{}: did not send write buffer in time, closing connection",
                     self.connection.tag(),
                 );
-                let streams = self.connection.read_timeout();
+                let streams = self.connection.write_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::WriteTimeout, self.connection.service());
                 self.handle_connection_error(streams, err.clone().map(OperationError::from));

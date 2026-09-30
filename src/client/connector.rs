@@ -107,7 +107,7 @@ where
 
         timeout_checked(timeout, fut)
             .await
-            .map_err(|()| Error::from(ClientError::HandshakeTimeout).set_service(cfg.service()))
+            .map_err(|()| Error::from(ClientError::HandshakeTimeout).with_service(cfg.service()))
             .and_then(|item| item)
     }
 

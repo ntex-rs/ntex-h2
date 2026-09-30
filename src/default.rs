@@ -29,3 +29,31 @@ impl<St, E: fmt::Debug> Service<St, Control<E>> for DefaultControlService {
         Ok(msg.ack())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use ntex_service::{Pipeline, ServiceFactory};
+
+    use super::*;
+    use crate::frame::{Frame, Reason, StreamId};
+
+    #[ntex::test]
+    async fn default_control_service() {
+        let srv = Pipeline::new(
+            (),
+            ServiceFactory::<(), Control<&str>>::create(&DefaultControlService, &())
+                .await
+                .unwrap(),
+        );
+
+        let ack = srv.call(Control::error("err", StreamId::from(3))).await.unwrap();
+        let Some(Frame::GoAway(frm)) = ack.frame else {
+            panic!("expected GOAWAY: {:?}", ack.frame)
+        };
+        assert_eq!(frm.reason(), Reason::INTERNAL_ERROR);
+        assert_eq!(frm.last_stream_id(), StreamId::from(3));
+
+        let ack = srv.call(Control::peer_gone(None)).await.unwrap();
+        assert!(ack.frame.is_none());
+    }
+}

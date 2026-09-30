@@ -2,6 +2,11 @@
 
 ## [4.1.0] - Unreleased
 
+* Send the control service GOAWAY and close the connection when the publish service
+  fails readiness, the connection was left open
+
+* Fail streams with `WriteTimeout` on write timeout, `ReadTimeout` was reported
+
 * Reset active stream counters when a connection error or disconnect fails all streams,
   `active_streams()` kept counting the failed streams
 
