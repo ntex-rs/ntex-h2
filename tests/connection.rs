@@ -1,12 +1,13 @@
 #![recursion_limit = "256"]
-use std::{cell::Cell, io, net, rc::Rc};
+use std::{cell::Cell, io, net, rc::Rc, time::SystemTime};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
 use ntex::http::{self, HeaderMap, HttpService, Method, Response, openssl, test, uri::Scheme};
 use ntex::service::{Pipeline, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::{Service, channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
-use ntex_h2::client::{self, Client, SimpleClient};
+use ntex_error::ErrorDiagnostic;
+use ntex_h2::client::{self, Client, ClientError, SimpleClient};
 use ntex_h2::{Codec, MessageKind, ServiceConfig, frame, frame::Reason};
 
 fn ssl_acceptor() -> SslAcceptor {
@@ -83,6 +84,162 @@ fn goaway(frm: frame::Frame) -> frame::GoAway {
         frame::Frame::GoAway(f) => f,
         _ => panic!("Expect Reset frame: {:?}", frm),
     }
+}
+
+#[test]
+fn test_client_error_clone_and_diagnostic() {
+    let errors = [
+        (
+            ClientError::Protocol(ntex_h2::ConnectionError::MissingSettings),
+            "h2-conn-MissingSettings",
+        ),
+        (
+            ClientError::Operation(ntex_h2::OperationError::Disconnected),
+            "h2-oper-Disconnected",
+        ),
+        (
+            ClientError::Frame(frame::FrameError::BadFrameSize),
+            "h2-client-Frame",
+        ),
+        (ClientError::HandshakeTimeout, "h2-client-HandshakeTimeout"),
+        (
+            ClientError::Connect(ntex_net::connect::ConnectError::InvalidInput),
+            "ntex-connect-InvalidInput",
+        ),
+        (
+            ClientError::Disconnected(io::Error::new(io::ErrorKind::ConnectionReset, "gone")),
+            "std-io-ConnectionReset",
+        ),
+    ];
+
+    for (err, signature) in errors {
+        let cloned = err.clone();
+        assert_eq!(cloned.signature(), signature);
+        assert_eq!(cloned.to_string(), err.to_string());
+    }
+}
+
+#[ntex::test]
+async fn test_simple_client_metadata_and_disconnect() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = SimpleClient::new(
+        ntex::io::Io::new(io, SharedCfg::new("CLI").build()),
+        Scheme::HTTPS,
+        "example.com".into(),
+    );
+
+    assert_eq!(client.id().len(), 16);
+    assert!(
+        client
+            .id()
+            .bytes()
+            .all(|ch| ch.is_ascii_lowercase() || (b'2'..=b'7').contains(&ch))
+    );
+    assert_eq!(client.tag(), "CLI");
+    assert!(!client.service().is_empty());
+    assert_eq!(client.authority(), "example.com");
+    assert!(client.created() <= SystemTime::now());
+    assert_eq!(client.pings_count(), 0);
+    assert!(!client.io_ref().is_closed());
+
+    let disconnected = client.on_disconnect();
+    client.force_close();
+    disconnected.await;
+    assert!(client.is_closed());
+}
+
+#[ntex::test]
+async fn test_client_disconnect_future() {
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = SimpleClient::new(
+        ntex::io::Io::new(io, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let reservation = client.reserve().unwrap();
+    let disconnected = client.on_disconnect();
+
+    let err = client
+        .disconnect()
+        .disconnect_timeout(Millis(10))
+        .await
+        .unwrap_err();
+    assert!(matches!(&*err, ntex_h2::OperationError::Disconnected));
+    disconnected.await;
+    assert!(client.is_closed());
+    drop(reservation);
+
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = SimpleClient::new(
+        ntex::io::Io::new(io, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let reservation = client.reserve().unwrap();
+    let disconnected = client.on_disconnect();
+    let disconnect = client.disconnect();
+    assert!(client.is_disconnecting());
+    assert!(!client.is_closed());
+    drop(disconnect);
+    disconnected.await;
+    assert!(client.is_closed());
+    drop(reservation);
+
+    let (io, srv) = ntex::testing::IoTest::create();
+    srv.remote_buffer_cap(1024 * 1024);
+    let client = SimpleClient::new(
+        ntex::io::Io::new(io, SharedCfg::default()),
+        Scheme::HTTP,
+        "localhost".into(),
+    );
+    let err = ntex::time::timeout(Millis(1_000), client.disconnect())
+        .await
+        .expect("client did not disconnect")
+        .unwrap_err();
+    assert!(matches!(&*err, ntex_h2::OperationError::Disconnected));
+    assert!(client.is_closed());
+}
+
+#[ntex::test]
+async fn test_client_pool_connect_failures() {
+    let client = Client::builder("localhost")
+        .minconn(0)
+        .connect_timeout(Millis(10))
+        .connector(async |_| {
+            sleep(Seconds(1)).await;
+            Err::<IoBoxed, _>(ntex_error::Error::from(
+                ntex_net::connect::ConnectError::InvalidInput,
+            ))
+        })
+        .build(SharedCfg::default());
+
+    let err = client.client().await.unwrap_err();
+    assert!(matches!(&*err, ClientError::HandshakeTimeout));
+    assert_eq!(client.stat_active_connections(), 0);
+    assert_eq!(client.stat_total_connections(), 0);
+    assert_eq!(client.stat_connect_errors(), 1);
+    assert!(client.is_ready());
+
+    let client = Client::builder("localhost")
+        .minconn(0)
+        .connector(async |_| {
+            Err::<IoBoxed, _>(ntex_error::Error::from(
+                ntex_net::connect::ConnectError::InvalidInput,
+            ))
+        })
+        .build(SharedCfg::default());
+
+    let err = client.client().await.unwrap_err();
+    assert!(matches!(
+        &*err,
+        ClientError::Connect(ntex_net::connect::ConnectError::InvalidInput)
+    ));
+    assert_eq!(client.stat_active_connections(), 0);
+    assert_eq!(client.stat_total_connections(), 0);
+    assert_eq!(client.stat_connect_errors(), 1);
 }
 
 #[ntex::test]
