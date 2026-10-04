@@ -535,43 +535,73 @@ impl HeaderBlock {
     }
 
     fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytePages, max_size: usize) {
-        HDRS_BUF.with(|buf| {
-            let mut b = buf.borrow_mut();
-            let hpack = &mut b;
-            hpack.clear();
-
-            // encode hpack
-            let headers = Iter {
-                pseudo: Some(self.pseudo),
-                fields: self.fields.into_iter(),
-            };
-            encoder.encode(headers, hpack);
-
-            let mut head = head;
-            let mut start = 0;
-            loop {
-                let end = cmp::min(start + max_size, hpack.len());
-
-                // encode the header payload
-                if hpack.len() > end {
-                    Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id())
-                        .encode(max_size, dst);
-                    dst.extend_from_slice(&hpack[start..end]);
-                    head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
-                    start = end;
-                } else {
-                    head.encode(end - start, dst);
-                    dst.extend_from_slice(&hpack[start..end]);
-                    break;
-                }
-            }
-
-            // do not keep the buffer of a rare large header block
-            if hpack.capacity() > HDRS_BUF_MAX_RETAINED {
-                **hpack = BytesMut::with_capacity(HDRS_BUF_SIZE);
-            }
-        });
+        encode_block(self.pseudo, &self.fields, encoder, head, dst, max_size);
     }
+}
+
+/// Encodes a HEADERS frame with `END_HEADERS` set from borrowed header fields.
+pub(crate) fn encode_headers_ref(
+    stream_id: StreamId,
+    pseudo: PseudoHeaders,
+    fields: &HeaderMap,
+    eof: bool,
+    encoder: &mut hpack::Encoder,
+    dst: &mut BytePages,
+    max_size: usize,
+) {
+    let mut flags = HeadersFlag::default();
+    if eof {
+        flags.set_end_stream();
+    }
+    let head = Head::new(Kind::Headers, flags.into(), stream_id);
+    encode_block(pseudo, fields, encoder, head, dst, max_size);
+}
+
+/// Encodes the header block, split into `CONTINUATION` frames if it
+/// exceeds `max_size`.
+fn encode_block(
+    pseudo: PseudoHeaders,
+    fields: &HeaderMap,
+    encoder: &mut hpack::Encoder,
+    head: Head,
+    dst: &mut BytePages,
+    max_size: usize,
+) {
+    HDRS_BUF.with(|buf| {
+        let mut b = buf.borrow_mut();
+        let hpack = &mut b;
+        hpack.clear();
+
+        // encode hpack
+        let headers = Iter {
+            pseudo: Some(pseudo),
+            fields: fields.into_iter(),
+        };
+        encoder.encode(headers, hpack);
+
+        let mut head = head;
+        let mut start = 0;
+        loop {
+            let end = cmp::min(start + max_size, hpack.len());
+
+            // encode the header payload
+            if hpack.len() > end {
+                Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id()).encode(max_size, dst);
+                dst.extend_from_slice(&hpack[start..end]);
+                head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
+                start = end;
+            } else {
+                head.encode(end - start, dst);
+                dst.extend_from_slice(&hpack[start..end]);
+                break;
+            }
+        }
+
+        // do not keep the buffer of a rare large header block
+        if hpack.capacity() > HDRS_BUF_MAX_RETAINED {
+            **hpack = BytesMut::with_capacity(HDRS_BUF_SIZE);
+        }
+    });
 }
 
 #[cfg(test)]
@@ -652,6 +682,60 @@ mod tests {
         assert!(dst.len() > HDRS_BUF_MAX_RETAINED);
         let cap = HDRS_BUF.with(|b| b.borrow().capacity());
         assert!(cap <= HDRS_BUF_MAX_RETAINED, "retained {cap} bytes");
+    }
+
+    #[test]
+    fn encode_headers_ref_matches_owned() {
+        for (value_len, eof) in [(5, false), (5, true), (40_000, false), (40_000, true)] {
+            let mut fields = HeaderMap::new();
+            fields.insert(
+                HeaderName::from_static("x-large"),
+                HeaderValue::from_str(&"a".repeat(value_len)).unwrap(),
+            );
+            fields.append(header::DATE, HeaderValue::from_static("now"));
+            let pseudo = PseudoHeaders::response(StatusCode::OK);
+
+            // hpack encoders keep state, encode twice to check dynamic table use
+            let mut enc1 = hpack::Encoder::default();
+            let mut owned = BytePages::default();
+            for _ in 0..2 {
+                Headers::new(StreamId::from(3), pseudo.clone(), fields.clone(), eof)
+                    .encode(&mut enc1, &mut owned, 16_384);
+            }
+
+            let mut enc2 = hpack::Encoder::default();
+            let mut borrowed = BytePages::default();
+            for _ in 0..2 {
+                encode_headers_ref(
+                    StreamId::from(3),
+                    pseudo.clone(),
+                    &fields,
+                    eof,
+                    &mut enc2,
+                    &mut borrowed,
+                    16_384,
+                );
+            }
+
+            let collect = |mut pages: BytePages| {
+                let mut v = Vec::new();
+                while let Some(page) = pages.take() {
+                    v.extend_from_slice(&page.freeze());
+                }
+                v
+            };
+            let owned = collect(owned);
+            let borrowed = collect(borrowed);
+            assert_eq!(owned, borrowed, "value_len={value_len} eof={eof}");
+            assert!(
+                value_len < 16_384
+                    || borrowed[3] == Kind::Headers as u8
+                        && borrowed[16_384 + 9 + 3] == Kind::Continuation as u8
+            );
+            // HEADERS frame flags
+            assert_eq!(borrowed[4] & END_STREAM == END_STREAM, eof);
+            assert_eq!(fields.len(), 2);
+        }
     }
 
     #[test]

@@ -459,7 +459,47 @@ async fn server_response_state_errors() {
     ));
 }
 
-/// Streams opened before the local SETTINGS are acknowledged get the
+/// Response headers can be sent from a borrowed map, which is left intact.
+#[ntex::test]
+async fn server_response_borrowed_headers() {
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1024 * 1024);
+    srv.remote_buffer_cap(1024 * 1024);
+
+    ntex::rt::spawn(async move {
+        let _ = server::Server::new(async |msg: Message| {
+            if !matches!(msg.kind, MessageKind::Headers { .. }) {
+                return Ok(());
+            }
+            let mut hdrs = HeaderMap::new();
+            hdrs.insert(
+                header::HeaderName::from_static("x-test"),
+                HeaderValue::from_static("borrowed"),
+            );
+            msg.stream()
+                .send_response(StatusCode::ACCEPTED, &hdrs, true)
+                .unwrap();
+            assert_eq!(hdrs.get("x-test").unwrap(), "borrowed");
+            Ok::<_, ()>(())
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
+    let (_snd, rcv) = request(&client, Method::GET, true).await;
+    match next(&rcv).await {
+        MessageKind::Headers {
+            pseudo,
+            headers,
+            eof: true,
+        } => {
+            assert_eq!(pseudo.status, Some(StatusCode::ACCEPTED));
+            assert_eq!(headers.get("x-test").unwrap(), "borrowed");
+        }
+        kind => panic!("unexpected message: {kind:?}"),
+    }
+}
 /// configured window once the ack is received. The peer applies the new
 /// initial window itself, so no WINDOW_UPDATE frames are sent.
 #[ntex::test]
