@@ -2,7 +2,7 @@
 use std::{cell::RefCell, future::poll_fn, panic, pin::Pin};
 
 use ntex::http::header::{self, HeaderValue};
-use ntex::http::{HeaderMap, Method, StatusCode, uri::Scheme};
+use ntex::http::{HeaderMap, Method, StatusCode};
 use ntex::io::{Io, testing::IoTest};
 use ntex::service::cfg::SharedCfg;
 use ntex::time::{Millis, sleep, timeout};
@@ -74,7 +74,7 @@ async fn client() -> (SimpleClient, RawServer) {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         Io::new(cli, SharedCfg::new("CLI").build()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     let srv = RawServer {
@@ -447,11 +447,7 @@ async fn server_response_state_errors() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
     let (_snd, rcv) = request(&client, Method::GET, true).await;
     assert!(matches!(
         next(&rcv).await,
@@ -478,7 +474,7 @@ async fn settings_ack_updates_stream_windows() {
         let cfg = SharedCfg::new("CLI")
             .add(ntex_h2::ServiceConfig::new().set_initial_window_size(window))
             .build();
-        let client = SimpleClient::new(Io::new(cli, cfg), Scheme::HTTP, "localhost".into());
+        let client = SimpleClient::new(Io::new(cli, cfg), false, "localhost".into());
         let srv = RawServer {
             io: srv,
             codec: Codec::default(),
@@ -536,7 +532,7 @@ async fn settings_ack_overflows_stream_window() {
     let cfg = SharedCfg::new("CLI")
         .add(ntex_h2::ServiceConfig::new().set_initial_window_size(i32::MAX))
         .build();
-    let client = SimpleClient::new(Io::new(cli, cfg), Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(Io::new(cli, cfg), false, "localhost".into());
     let srv = RawServer {
         io: srv,
         codec: Codec::default(),

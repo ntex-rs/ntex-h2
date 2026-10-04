@@ -2,7 +2,7 @@ use std::error::Error;
 
 use ntex::{SharedCfg, time::Seconds, time::sleep, util::Bytes};
 use ntex_h2::{MessageKind, client};
-use ntex_http::{HeaderMap, Method, header, uri::Scheme};
+use ntex_http::{HeaderMap, Method, header};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
 #[ntex::main]
@@ -17,7 +17,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
 
     let pool = client::Client::builder("127.0.0.1:5928")
         .connector(ntex_tls::openssl::SslConnector::new(builder.build()))
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .build(SharedCfg::default());
 
     let mut hdrs = HeaderMap::default();

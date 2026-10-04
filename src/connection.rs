@@ -1468,7 +1468,7 @@ impl Pending {
 mod tests {
     use std::time::Duration;
 
-    use ntex::http::{HeaderMap, Method, test, uri::Scheme};
+    use ntex::http::{HeaderMap, Method, test};
     use ntex::service::{Service, fn_service};
     use ntex::time::{Millis, Seconds, sleep};
     use ntex::{Pipeline, SharedCfg, io::Io, util::Bytes};
@@ -1554,7 +1554,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
         sleep(Millis(150)).await;
 
         let (stream, recv_stream) = client
@@ -1611,7 +1611,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
 
         // wait for the server settings
         sleep(Millis(150)).await;
@@ -1660,7 +1660,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
         assert_eq!(client.max_streams(), Some(100));
 
         let mut streams = Vec::new();
@@ -1721,7 +1721,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
         sleep(Millis(150)).await;
 
         assert_eq!(
@@ -1762,7 +1762,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
         sleep(Millis(150)).await;
 
         let mut large = HeaderMap::new();
@@ -1916,7 +1916,7 @@ mod tests {
 
         let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
         let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
         sleep(Millis(150)).await;
 
         for (path, expected) in [
@@ -2369,7 +2369,7 @@ mod tests {
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
             .build();
-        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), false, "localhost".into());
 
         // peer sets zero stream window and never updates it
         srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
@@ -2598,7 +2598,7 @@ mod tests {
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
             .build();
-        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), false, "localhost".into());
         srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
         sleep(Millis(50)).await;
 
@@ -2642,7 +2642,7 @@ mod tests {
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
             .build();
-        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), false, "localhost".into());
         srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
         sleep(Millis(50)).await;
 
@@ -2692,11 +2692,8 @@ mod tests {
 
         let (io, srv) = ntex::io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
-        let client = h2::client::SimpleClient::new(
-            Io::new(io, SharedCfg::default()),
-            Scheme::HTTP,
-            "localhost".into(),
-        );
+        let client =
+            h2::client::SimpleClient::new(Io::new(io, SharedCfg::default()), false, "localhost".into());
         srv.write([0, 0, 0, 4, 0, 0, 0, 0, 0]);
         sleep(Millis(50)).await;
 
@@ -2806,7 +2803,7 @@ mod tests {
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_capacity_timeout(capacity_timeout))
             .build();
-        let client = h2::client::SimpleClient::new(Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+        let client = h2::client::SimpleClient::new(Io::new(io, cfg), false, "localhost".into());
         srv.write(initial_window_frame(window));
         sleep(Millis(50)).await;
         (client, srv)

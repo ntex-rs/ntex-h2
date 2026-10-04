@@ -1,6 +1,6 @@
 use std::io;
 
-use ntex::http::{HeaderMap, Method, uri::Scheme};
+use ntex::http::{HeaderMap, Method};
 use ntex::io::{Io, IoBoxed, testing::IoTest};
 use ntex::service::{Ctx, Pipeline, Service, ServiceFactory, cfg::SharedCfg};
 use ntex::time::{Millis, Seconds};
@@ -124,7 +124,7 @@ async fn server_control_error_is_returned() {
 
     let client = SimpleClient::new(
         Io::new(client_io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     let _ = client.send(Method::GET, "/".into(), HeaderMap::new(), true).await;

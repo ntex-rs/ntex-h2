@@ -13,7 +13,6 @@ pub enum Header<T = HeaderName> {
         /// Header value.
         value: HeaderValue,
     },
-    // TODO: Change these types to `http::uri` types.
     /// `:authority` pseudo-header.
     Authority(ByteString),
     /// `:method` pseudo-header.

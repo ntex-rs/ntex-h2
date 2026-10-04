@@ -4,7 +4,7 @@ use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Dur
 use nanorand::{Rng, WyRand};
 use ntex_bytes::ByteString;
 use ntex_error::Error;
-use ntex_http::{HeaderMap, Method, uri::Scheme};
+use ntex_http::{HeaderMap, Method};
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::{IntoService, Pipeline, Service, cfg::SharedCfg};
@@ -185,7 +185,7 @@ impl Client {
                     let client = SimpleClient::with_params(
                         io,
                         cfg,
-                        &inner.config.scheme,
+                        inner.config.secure,
                         inner.config.authority.clone(),
                         inner.config.skip_unknown_streams,
                         InflightStorage::default(),
@@ -303,7 +303,7 @@ struct InnerConfig {
     disconnect_timeout: Millis,
     max_streams: u32,
     skip_unknown_streams: bool,
-    scheme: Scheme,
+    secure: bool,
     authority: ByteString,
     connecting: Cell<bool>,
     connections: RefCell<Vec<SimpleClient>>,
@@ -337,7 +337,7 @@ where
                 skip_unknown_streams: false,
                 minconn: 1,
                 maxconn: 16,
-                scheme: Scheme::HTTP,
+                secure: false,
                 connecting: Cell::new(false),
                 connections: RefCell::default(),
                 total_connections: Cell::new(0),
@@ -354,9 +354,11 @@ where
     A: Address + Clone,
 {
     #[must_use]
-    /// Sets the request scheme.
-    pub fn scheme(mut self, scheme: Scheme) -> Self {
-        self.inner.scheme = scheme;
+    /// Sets whether requests use the `https` `:scheme`.
+    ///
+    /// Default is `false`, requests use the `http` `:scheme`.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.inner.secure = secure;
         self
     }
 
@@ -491,7 +493,7 @@ where
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
-            .field("scheme", &self.inner.config.scheme)
+            .field("secure", &self.inner.config.secure)
             .field("authority", &self.inner.config.authority)
             .field("conn_timeout", &self.inner.config.conn_timeout)
             .field("conn_lifetime", &self.inner.config.conn_lifetime)
@@ -506,7 +508,7 @@ impl fmt::Debug for Client {
 impl<A, S> fmt::Debug for ClientBuilder<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ClientBuilder")
-            .field("scheme", &self.inner.scheme)
+            .field("secure", &self.inner.secure)
             .field("authority", &self.inner.authority)
             .field("conn_timeout", &self.inner.conn_timeout)
             .field("conn_lifetime", &self.inner.conn_lifetime)

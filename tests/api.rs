@@ -6,7 +6,7 @@ use ntex_h2::{
     client::SimpleClient, server::Server,
 };
 use ntex_http::header::{HeaderName, HeaderValue};
-use ntex_http::{HeaderMap, Method, StatusCode, uri::Scheme};
+use ntex_http::{HeaderMap, Method, StatusCode};
 use ntex_io::{Io, testing::IoTest};
 use ntex_service::cfg::SharedCfg;
 use ntex_util::{channel::mpsc, spawn};
@@ -201,7 +201,7 @@ async fn expect_control_and_message_accessors() {
     });
     let client = SimpleClient::new(
         Io::new(client_io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
 

@@ -2,7 +2,6 @@ use std::marker::PhantomData;
 
 use ntex_bytes::ByteString;
 use ntex_error::Error;
-use ntex_http::uri::Scheme;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::{Ctx, IntoService, Service, cfg::SharedCfg};
@@ -15,7 +14,7 @@ use crate::config::ServiceConfig;
 /// Service that establishes an HTTP/2 client connection.
 pub struct Connector<A: Address, S> {
     svc: S,
-    scheme: Scheme,
+    secure: bool,
     pool: pool::Pool<()>,
     _t: PhantomData<A>,
 }
@@ -38,7 +37,7 @@ where
     pub fn new() -> Self {
         Connector {
             svc: DefaultConnector::new(),
-            scheme: Scheme::HTTP,
+            secure: false,
             pool: pool::new(),
             _t: PhantomData,
         }
@@ -50,9 +49,11 @@ where
     A: Address,
 {
     #[must_use]
-    /// Sets the request scheme used by the resulting client.
-    pub fn scheme(mut self, scheme: Scheme) -> Self {
-        self.scheme = scheme;
+    /// Sets whether requests of the resulting client use the `https` `:scheme`.
+    ///
+    /// Default is `false`, requests use the `http` `:scheme`.
+    pub fn secure(mut self, secure: bool) -> Self {
+        self.secure = secure;
         self
     }
 
@@ -65,7 +66,7 @@ where
     {
         Connector {
             svc: svc.into_service(),
-            scheme: self.scheme,
+            secure: self.secure,
             pool: self.pool,
             _t: PhantomData,
         }
@@ -97,7 +98,7 @@ where
             Ok::<_, Error<ClientError>>(SimpleClient::with_params(
                 io.into(),
                 cfg.clone(),
-                &self.scheme,
+                self.secure,
                 authority,
                 false,
                 InflightStorage::default(),
