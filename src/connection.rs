@@ -250,6 +250,20 @@ impl Connection {
         let _ = self.0.io.encode(item.into(), &self.0.codec);
     }
 
+    /// Encodes a HEADERS frame without taking ownership of the header fields.
+    pub(crate) fn encode_headers_ref(
+        &self,
+        id: frame::StreamId,
+        pseudo: frame::PseudoHeaders,
+        fields: &HeaderMap,
+        eof: bool,
+    ) {
+        let _ = self
+            .0
+            .io
+            .with_write_src(|buf| self.0.codec.encode_headers_ref(id, pseudo, fields, eof, buf));
+    }
+
     pub(crate) fn encode_data_frame<F, R>(&self, f: F) -> io::Result<R>
     where
         F: FnOnce(&mut BytePages) -> R,

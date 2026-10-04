@@ -7,6 +7,9 @@
 
 * Update to ntex-http 2.0
 
+* `StreamRef::send_response()` accepts `&HeaderMap`, the header block is encoded without
+  taking the map
+
 ## [4.1.0] - 2026-10-02
 
 * Send the control service GOAWAY and close the connection when the publish service

@@ -1,5 +1,7 @@
 use std::task::{Context, Poll};
-use std::{cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin, rc::Rc};
+use std::{
+    borrow::Borrow, cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin, rc::Rc,
+};
 
 use ntex_bytes::{BytePages, Bytes};
 use ntex_error::{Error, ErrorMapping};
@@ -832,27 +834,32 @@ impl StreamRef {
     /// with [`OperationError::Closed`] if the send side is closed, and with
     /// [`OperationError::HeaderListTooLarge`] if the headers exceed the
     /// peer's `SETTINGS_MAX_HEADER_LIST_SIZE`.
-    pub fn send_response(
+    ///
+    /// The header map can be passed by value or by reference, it is encoded
+    /// without being consumed, so a borrowed map keeps its allocation.
+    pub fn send_response<H>(
         &self,
         status: StatusCode,
-        headers: HeaderMap,
+        headers: H,
         eof: bool,
-    ) -> Result<(), Error<OperationError>> {
+    ) -> Result<(), Error<OperationError>>
+    where
+        H: Borrow<HeaderMap>,
+    {
         self.0.check_error()?;
 
         match self.0.send.get() {
             HalfState::Idle => {
+                let headers = headers.borrow();
                 let pseudo = PseudoHeaders::response(status);
-                self.0.con.check_header_list_size(&pseudo, &headers)?;
-                let mut hdrs = Headers::new(self.0.id, pseudo, headers, eof);
+                self.0.con.check_header_list_size(&pseudo, headers)?;
 
                 if eof {
-                    hdrs.set_end_stream();
                     self.0.state_send_close(None);
                 } else {
                     self.0.state_send_payload();
                 }
-                self.0.con.encode(hdrs);
+                self.0.con.encode_headers_ref(self.0.id, pseudo, headers, eof);
                 Ok(())
             }
             HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),

@@ -169,6 +169,26 @@ impl Codec {
     pub fn send_frame_size(&self) -> u32 {
         self.0.encoder_max_frame_size.get()
     }
+
+    /// Encodes a HEADERS frame from borrowed header fields.
+    pub(crate) fn encode_headers_ref(
+        &self,
+        id: frame::StreamId,
+        pseudo: frame::PseudoHeaders,
+        fields: &ntex_http::HeaderMap,
+        eof: bool,
+        buf: &mut BytePages,
+    ) {
+        frame::encode_headers_ref(
+            id,
+            pseudo,
+            fields,
+            eof,
+            &mut self.0.encoder_hpack.borrow_mut(),
+            buf,
+            self.0.encoder_max_frame_size.get() as usize,
+        );
+    }
 }
 
 impl Decoder for Codec {
