@@ -1,6 +1,6 @@
 //! Connection level protocol handling over an in-memory transport.
 use ntex::channel::{mpsc, oneshot};
-use ntex::http::{HeaderMap, Method, StatusCode, uri::Scheme};
+use ntex::http::{HeaderMap, Method, StatusCode};
 use ntex::io::{Io, IoConfig, testing::IoTest};
 use ntex::service::cfg::SharedCfg;
 use ntex::time::{Millis, Seconds, sleep, timeout};
@@ -440,11 +440,8 @@ fn simple_client() -> (ntex_h2::client::SimpleClient, IoTest) {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
-    let client = ntex_h2::client::SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client =
+        ntex_h2::client::SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
     srv.write(raw_frame(4, 0, 0, &[]));
     (client, srv)
 }

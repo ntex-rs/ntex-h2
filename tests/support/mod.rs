@@ -1,7 +1,6 @@
 use std::{error::Error, rc::Rc};
 
 use ntex_h2::{Control, Message, client, server};
-use ntex_http::uri::Scheme;
 use ntex_io::{Io, testing::IoTest};
 use ntex_service::cfg::SharedCfg;
 use ntex_util::channel::mpsc;
@@ -13,11 +12,7 @@ pub use self::utils::*;
 
 pub fn start_client(io: IoTest) -> client::SimpleClient {
     io.remote_buffer_cap(1000000);
-    client::SimpleClient::new(
-        Io::new(io, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    )
+    client::SimpleClient::new(Io::new(io, SharedCfg::default()), false, "localhost".into())
 }
 
 pub fn start_server(io: IoTest) -> mpsc::Receiver<Message> {

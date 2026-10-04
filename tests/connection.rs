@@ -2,7 +2,7 @@
 use std::{cell::Cell, io, net, rc::Rc, time::SystemTime};
 
 use ::openssl::ssl::{AlpnError, SslAcceptor, SslConnector, SslFiletype, SslMethod, SslVerifyMode};
-use ntex::http::{self, HeaderMap, HttpService, Method, Response, openssl, test, uri::Scheme};
+use ntex::http::{self, HeaderMap, HttpService, Method, Response, openssl, test};
 use ntex::service::{Pipeline, cfg::SharedCfg, fn_service};
 use ntex::time::{Millis, Seconds, sleep};
 use ntex::{Service, channel::oneshot, connect::openssl, io::IoBoxed, util::Bytes};
@@ -125,7 +125,7 @@ async fn test_simple_client_metadata_and_disconnect() {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         ntex::io::Io::new(io, SharedCfg::new("CLI").build()),
-        Scheme::HTTPS,
+        true,
         "example.com".into(),
     );
 
@@ -155,7 +155,7 @@ async fn test_client_disconnect_future() {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         ntex::io::Io::new(io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     let reservation = client.reserve().unwrap();
@@ -175,7 +175,7 @@ async fn test_client_disconnect_future() {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         ntex::io::Io::new(io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     let reservation = client.reserve().unwrap();
@@ -192,7 +192,7 @@ async fn test_client_disconnect_future() {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         ntex::io::Io::new(io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     let err = ntex::time::timeout(Millis(1_000), client.disconnect())
@@ -249,7 +249,7 @@ async fn test_max_concurrent_streams() {
     let client = Pipeline::new(
         SharedCfg::default(),
         client::Connector::new()
-            .scheme(Scheme::HTTP)
+            .secure(false)
             .connector(fn_service(move |_| async move { Ok(connect(addr).await) })),
     )
     .call("localhost")
@@ -302,7 +302,7 @@ async fn test_max_concurrent_streams_pool() {
 
     let client = client
         .connection_limit(1)
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .connector(fn_service(move |_| async move { Ok(connect(addr).await) }))
         .build(SharedCfg::default());
     assert!(format!("{:?}", client).contains("Client"));
@@ -378,7 +378,7 @@ async fn test_max_concurrent_streams_pool2() {
 async fn test_max_concurrent_streams_reset() {
     let srv = start_server().await;
     let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(io, false, "localhost".into());
     sleep(Millis(150)).await;
 
     let (stream, _recv_stream) = client
@@ -434,7 +434,7 @@ async fn test_max_concurrent_streams_reset() {
 async fn test_on_capacity() {
     let srv = start_server().await;
     let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(io, false, "localhost".into());
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
     client.on_capacity(move || cnt2.set(cnt2.get() + 1));
@@ -468,7 +468,7 @@ async fn test_on_capacity() {
 async fn test_stream_reservation() {
     let srv = start_server().await;
     let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(io, false, "localhost".into());
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
     client.on_capacity(move || cnt2.set(cnt2.get() + 1));
@@ -519,7 +519,7 @@ async fn test_stream_reservation() {
 async fn test_disconnect_resets_active_streams() {
     let srv = start_server().await;
     let io = connect(srv.addr()).await;
-    let client = SimpleClient::new(io, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(io, false, "localhost".into());
     sleep(Millis(150)).await;
     assert_eq!(client.max_streams(), Some(1));
 
@@ -541,7 +541,7 @@ async fn test_disconnect_resets_active_streams() {
 #[ntex::test]
 async fn test_stream_reservation_graceful_disconnect() {
     let srv = start_server().await;
-    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(connect(srv.addr()).await, false, "localhost".into());
     sleep(Millis(150)).await;
 
     // reserved stream can be used during graceful disconnect
@@ -562,7 +562,7 @@ async fn test_stream_reservation_graceful_disconnect() {
     assert!(client.is_closed());
 
     // dropped reservation completes graceful disconnect
-    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(connect(srv.addr()).await, false, "localhost".into());
     sleep(Millis(150)).await;
     let reservation = client.reserve().unwrap();
     client.close();
@@ -587,7 +587,7 @@ async fn test_stream_reservation_graceful_disconnect() {
         },
         SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(2)),
     );
-    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(connect(srv.addr()).await, false, "localhost".into());
     sleep(Millis(150)).await;
     let (stream, recv_stream) = client
         .send(Method::GET, "/".into(), HeaderMap::default(), false)
@@ -615,7 +615,7 @@ async fn test_client_send_capacity_timeout() {
     let cfg = SharedCfg::new("CLI")
         .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
         .build();
-    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), false, "localhost".into());
 
     // peer allows 1 byte per stream and never updates the window
     srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 1]);
@@ -641,7 +641,7 @@ async fn test_client_send_capacity_wait_timeout() {
     let cfg = SharedCfg::new("CLI")
         .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
         .build();
-    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), false, "localhost".into());
 
     // peer sets zero stream window and never updates it
     srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
@@ -663,7 +663,7 @@ async fn test_client_send_capacity_wait_timeout() {
 #[ntex::test]
 async fn test_recv_woken_by_local_reset() {
     let srv = start_server().await;
-    let client = SimpleClient::new(connect(srv.addr()).await, Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(connect(srv.addr()).await, false, "localhost".into());
     sleep(Millis(150)).await;
 
     let (stream, recv_stream) = client
@@ -686,7 +686,7 @@ async fn test_recv_woken_by_capacity_timeout() {
     let cfg = SharedCfg::new("CLI")
         .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
         .build();
-    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), false, "localhost".into());
 
     // peer sets zero stream window and never updates it
     srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
@@ -710,7 +710,7 @@ async fn test_stale_capacity_timeout_ignored() {
     let cfg = SharedCfg::new("CLI")
         .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
         .build();
-    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), Scheme::HTTP, "localhost".into());
+    let client = SimpleClient::new(ntex::io::Io::new(io, cfg), false, "localhost".into());
 
     // peer sets zero stream window and never updates it
     srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0]);
@@ -1397,7 +1397,7 @@ async fn test_max_headers() {
 
     let addr = srv.addr();
     let client = Client::builder("localhost")
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::default());
     assert!(client.is_ready());
@@ -1547,7 +1547,7 @@ async fn test_client_max_headers() {
 
     let addr = srv.addr();
     let client = Client::builder("localhost")
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::new("CLI").add(ServiceConfig::new().set_max_headers(5)));
 
@@ -1656,7 +1656,7 @@ async fn test_con_lifetime() {
 
     let addr = srv.addr();
     let pool = Client::builder("localhost")
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .lifetime(1)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::default());
@@ -1776,7 +1776,7 @@ async fn test_connect_request() {
                 }
                 frame::Frame::Data(data) if data.stream_id() == id => {
                     assert_eq!(expected, None, "{pseudo:?}");
-                    assert_eq!(data.payload().as_ref(), b"CONNECT example.com:443");
+                    assert_eq!(data.payload().as_ref(), b"CONNECT //example.com:443");
                     break;
                 }
                 _ => {}
@@ -1793,7 +1793,7 @@ async fn test_client_connect_request() {
     let client = Pipeline::new(
         SharedCfg::default(),
         client::Connector::new()
-            .scheme(Scheme::HTTP)
+            .secure(false)
             .connector(fn_service(move |_| async move { Ok(connect(addr).await) })),
     )
     .call("localhost:8080")
@@ -1808,7 +1808,7 @@ async fn test_client_connect_request() {
     assert!(matches!(msg.kind(), MessageKind::Headers { .. }), "{msg:?}");
     let msg = rcv.recv().await.unwrap();
     match msg.kind() {
-        MessageKind::Data(data, _) => assert_eq!(data.as_ref(), b"CONNECT localhost:8080"),
+        MessageKind::Data(data, _) => assert_eq!(data.as_ref(), b"CONNECT //localhost:8080"),
         kind => panic!("unexpected message: {kind:?}"),
     }
 }
@@ -1840,11 +1840,7 @@ async fn test_control_error_releases_streams() {
         let _ = done_tx.send(());
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
 
     // stream 1 stays open, the server keeps it
     let (_snd1, _rcv1) = client
@@ -1886,7 +1882,7 @@ fn limited_client(max: u8) -> (Rc<SimpleClient>, ntex::io::testing::IoTest) {
     srv.remote_buffer_cap(1024 * 1024);
     let client = SimpleClient::new(
         ntex::io::Io::new(io, SharedCfg::default()),
-        Scheme::HTTP,
+        false,
         "localhost".into(),
     );
     srv.write([0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 3, 0, 0, 0, max]);
@@ -2088,11 +2084,7 @@ async fn test_request_body_after_response_is_published() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
     let (snd, rcv) = client
         .send(Method::POST, "/".into(), HeaderMap::new(), false)
         .await
@@ -2153,11 +2145,7 @@ async fn test_server_informational_responses() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
     let (_snd, rcv) = client
         .send(Method::GET, "/".into(), HeaderMap::new(), true)
         .await
@@ -2198,11 +2186,7 @@ async fn test_remote_reset_is_published() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
     let (snd, _rcv) = client
         .send(Method::POST, "/".into(), HeaderMap::new(), false)
         .await
@@ -2256,11 +2240,7 @@ async fn test_remote_reset_cancels_handler_after_data() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
 
     // the first pending call is polled by the dispatcher task itself,
     // the handler of the second stream runs in a spawned task
@@ -2321,11 +2301,7 @@ async fn test_remote_reset_cancels_data_publish() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
 
     let (snd, _rcv) = client
         .send(Method::POST, "/".into(), HeaderMap::new(), false)
@@ -2374,11 +2350,7 @@ async fn test_max_inflight_messages() {
         .await;
     });
 
-    let client = SimpleClient::new(
-        Io::new(cli, SharedCfg::default()),
-        Scheme::HTTP,
-        "localhost".into(),
-    );
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
 
     let (snd, _rcv) = client
         .send(Method::POST, "/".into(), HeaderMap::new(), false)
@@ -2602,7 +2574,7 @@ async fn test_pool_waiter_woken_on_stream_cancel() {
     let srv = start_server().await;
     let addr = srv.addr();
     let client = Client::builder("localhost")
-        .scheme(Scheme::HTTPS)
+        .secure(true)
         .connection_limit(1)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::default());

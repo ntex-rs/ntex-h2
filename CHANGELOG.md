@@ -1,6 +1,13 @@
 # Changes
 
-## [4.1.0] - Unreleased
+## [4.2.0] - Unreleased
+
+* Client APIs take a `secure` flag instead of `ntex_http::uri::Scheme`,
+  `Connector::scheme()` and `ClientBuilder::scheme()` are renamed to `secure()`
+
+* Update to ntex-http 2.0
+
+## [4.1.0] - 2026-10-02
 
 * Send the control service GOAWAY and close the connection when the publish service
   fails readiness, the connection was left open

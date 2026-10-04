@@ -4,7 +4,7 @@ use nanorand::Rng;
 use ntex_bytes::{BufMut, ByteString, BytesMut};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
-use ntex_http::{HeaderMap, Method, uri::Scheme};
+use ntex_http::{HeaderMap, Method};
 use ntex_io::{IoBoxed, IoRef, Waiter};
 use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
@@ -35,9 +35,9 @@ impl SimpleClient {
     ///
     /// The transport must be ready for the HTTP/2 connection preface. The
     /// [`ServiceConfig`] is taken from the transport's shared configuration,
-    /// `authority` is sent as the `:authority` pseudo-header of requests.
-    #[allow(clippy::needless_pass_by_value)]
-    pub fn new<T>(io: T, scheme: Scheme, authority: ByteString) -> Self
+    /// `authority` is sent as the `:authority` pseudo-header of requests, if
+    /// `secure` is `true` requests use the `https` `:scheme`, `http` otherwise.
+    pub fn new<T>(io: T, secure: bool, authority: ByteString) -> Self
     where
         IoBoxed: From<T>,
     {
@@ -46,7 +46,7 @@ impl SimpleClient {
         SimpleClient::with_params(
             io,
             cfg,
-            &scheme,
+            secure,
             authority,
             false,
             InflightStorage::default(),
@@ -57,7 +57,7 @@ impl SimpleClient {
     pub(super) fn with_params(
         io: IoBoxed,
         cfg: Cfg<ServiceConfig>,
-        scheme: &Scheme,
+        secure: bool,
         authority: ByteString,
         skip_unknown_streams: bool,
         storage: InflightStorage,
@@ -67,7 +67,7 @@ impl SimpleClient {
         codec.set_max_headers(cfg.max_headers);
 
         let con = Connection::new(false, io.get_ref(), codec, cfg, false, skip_unknown_streams, pool);
-        con.set_secure(*scheme == Scheme::HTTPS);
+        con.set_secure(secure);
 
         let disp = Pipeline::new(
             (),
