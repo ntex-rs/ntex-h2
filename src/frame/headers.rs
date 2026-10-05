@@ -68,6 +68,41 @@ const PADDED: u8 = 0x8;
 const PRIORITY: u8 = 0x20;
 const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
+/// Max number of spare header maps kept per thread.
+const HDRS_MAP_POOL_SIZE: usize = 8;
+
+/// A header map with a larger capacity is not reused.
+const HDRS_MAP_MAX_CAPACITY: usize = 64;
+
+thread_local! {
+    static HDRS_MAP_POOL: RefCell<Vec<HeaderMap>> = const { RefCell::new(Vec::new()) };
+}
+
+fn take_header_map() -> HeaderMap {
+    HDRS_MAP_POOL
+        .try_with(|pool| pool.borrow_mut().pop())
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// Returns an unused header map, decoding of the next header block reuses its allocation.
+///
+/// The map is cleared. Maps without allocation or with a large capacity are dropped.
+pub fn recycle_header_map(mut map: HeaderMap) {
+    let cap = map.capacity();
+    if cap == 0 || cap > HDRS_MAP_MAX_CAPACITY {
+        return;
+    }
+    map.clear();
+    let _ = HDRS_MAP_POOL.try_with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < HDRS_MAP_POOL_SIZE {
+            pool.push(map);
+        }
+    });
+}
+
 // ===== impl Headers =====
 
 impl Headers {
@@ -159,7 +194,7 @@ impl Headers {
             flags,
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: take_header_map(),
                 pseudo: PseudoHeaders::default(),
             },
         };
@@ -169,6 +204,7 @@ impl Headers {
     /// Returns the stream id and flags of a frame whose header block continues
     /// in CONTINUATION frames.
     pub(crate) fn into_head(self) -> (StreamId, HeadersFlag) {
+        recycle_header_map(self.header_block.fields);
         (self.stream_id, self.flags)
     }
 
@@ -179,7 +215,7 @@ impl Headers {
             flags,
             stream_id,
             header_block: HeaderBlock {
-                fields: HeaderMap::new(),
+                fields: take_header_map(),
                 pseudo: PseudoHeaders::default(),
             },
         }
@@ -736,6 +772,69 @@ mod tests {
             assert_eq!(borrowed[4] & END_STREAM == END_STREAM, eof);
             assert_eq!(fields.len(), 2);
         }
+    }
+
+    fn pool_len() -> usize {
+        HDRS_MAP_POOL.with(|pool| pool.borrow().len())
+    }
+
+    fn decode(fields: HeaderMap) -> Headers {
+        let pseudo = PseudoHeaders {
+            method: Some(Method::GET),
+            scheme: Some("https".into()),
+            path: Some("/".into()),
+            ..Default::default()
+        };
+        let mut dst = BytePages::default();
+        Headers::new(StreamId::from(1), pseudo, fields, true).encode(
+            &mut hpack::Encoder::default(),
+            &mut dst,
+            16_384,
+        );
+        let mut buf = BytesMut::new();
+        while let Some(page) = dst.take() {
+            buf.extend_from_slice(&page.freeze());
+        }
+        let mut src = buf.freeze();
+        let head = Head::parse(&src[..9]);
+        src.advance_to(9);
+        let mut hdrs = Headers::load(head, &mut src).unwrap();
+        hdrs.load_hpack(&mut src, &mut hpack::Decoder::new(4096), 100, 16_384)
+            .unwrap();
+        hdrs
+    }
+
+    #[test]
+    fn recycled_header_map_is_reused() {
+        let mut stale = HeaderMap::with_capacity(32);
+        stale.insert(HeaderName::from_static("x-stale"), HeaderValue::from_static("1"));
+        let cap = stale.capacity();
+        recycle_header_map(stale);
+        assert_eq!(pool_len(), 1);
+
+        let mut fields = HeaderMap::new();
+        fields.insert(HeaderName::from_static("x-new"), HeaderValue::from_static("2"));
+        let hdrs = decode(fields);
+        assert_eq!(pool_len(), 0);
+        let fields = hdrs.into_fields();
+        assert_eq!(fields.capacity(), cap);
+        // the recycled map is cleared
+        assert_eq!(fields.len(), 1);
+        assert!(fields.get("x-stale").is_none());
+        assert_eq!(fields.get("x-new").unwrap(), "2");
+    }
+
+    #[test]
+    fn recycle_header_map_limits() {
+        // maps without allocation or with a large capacity are dropped
+        recycle_header_map(HeaderMap::new());
+        recycle_header_map(HeaderMap::with_capacity(HDRS_MAP_MAX_CAPACITY * 2));
+        assert_eq!(pool_len(), 0);
+
+        for _ in 0..HDRS_MAP_POOL_SIZE * 2 {
+            recycle_header_map(HeaderMap::with_capacity(4));
+        }
+        assert_eq!(pool_len(), HDRS_MAP_POOL_SIZE);
     }
 
     #[test]

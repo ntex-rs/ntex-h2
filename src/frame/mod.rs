@@ -50,7 +50,7 @@ mod window_update;
 pub use self::data::Data;
 pub use self::go_away::GoAway;
 pub use self::head::{Head, Kind};
-pub use self::headers::{Headers, PseudoHeaders};
+pub use self::headers::{Headers, PseudoHeaders, recycle_header_map};
 pub(crate) use self::headers::{HeadersFlag, encode_headers_ref};
 pub use self::ping::Ping;
 pub use self::priority::{Priority, StreamDependency};
