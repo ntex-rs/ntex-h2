@@ -2,7 +2,7 @@ use std::{cell::Cell, future, rc::Rc, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
-use ntex_service::pipeline::{Pipeline, PipelineBinding};
+use ntex_service::pipeline::Pipeline;
 use ntex_service::{Ctx, Service};
 use ntex_util::{HashMap, future::Either, future::join, spawn};
 
@@ -21,7 +21,7 @@ pub(crate) struct Dispatcher<Err, PErr> {
 
 struct Inner<Err, PErr> {
     publish: Pipeline<Message, (), PErr>,
-    control: PipelineBinding<Control<PErr>, ControlAck, Err>,
+    control: Pipeline<Control<PErr>, ControlAck, Err>,
     connection: Connection,
     disconnected: Cell<bool>,
 }
@@ -30,7 +30,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
     pub(crate) fn new(
         connection: Connection,
         publish: Pipeline<Message, (), PErr>,
-        control: PipelineBinding<Control<PErr>, ControlAck, Err>,
+        control: Pipeline<Control<PErr>, ControlAck, Err>,
     ) -> Self {
         Dispatcher {
             connection: connection.recv_half(),
@@ -140,6 +140,7 @@ where
 
     async fn shutdown(&self, _: Ctx<'_, Self, ()>) {
         self.inner.publish.shutdown().await;
+        self.inner.control.shutdown().await;
         self.connection.disconnect();
     }
 

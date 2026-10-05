@@ -24,6 +24,9 @@ pub enum ServerError<Err> {
     /// Request service initialization error.
     #[error("Publish service init error")]
     PublishService(Box<dyn Error>),
+    /// Control service initialization error.
+    #[error("Control service init error")]
+    ControlService(Box<dyn Error>),
     /// Handshake timeout
     #[error("Handshake timeout")]
     HandshakeTimeout,

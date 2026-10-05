@@ -1555,8 +1555,7 @@ mod tests {
                                 Ok::<_, ()>(msg.ack())
                             })
                             .map_err(|()| unreachable!()),
-                        )
-                        .bind(),
+                        ),
                     )
                     .await;
 
@@ -1845,8 +1844,7 @@ mod tests {
                                 Ok::<_, ()>(msg.ack())
                             })
                             .map_err(|()| unreachable!()),
-                        )
-                        .bind(),
+                        ),
                     )
                     .await;
                     Ok::<_, ()>(())
@@ -2000,8 +1998,7 @@ mod tests {
                                     Ok::<_, ()>(msg.ack())
                                 })
                                 .map_err(|()| unreachable!()),
-                            )
-                            .bind(),
+                            ),
                         )
                         .await;
 
@@ -2085,8 +2082,7 @@ mod tests {
                                 Ok::<_, ()>(msg.ack())
                             })
                             .map_err(|()| unreachable!()),
-                        )
-                        .bind(),
+                        ),
                     )
                     .await;
 
@@ -2161,8 +2157,7 @@ mod tests {
                                 Ok::<_, ()>(msg.ack())
                             })
                             .map_err(|()| unreachable!()),
-                        )
-                        .bind(),
+                        ),
                     )
                     .await;
 
@@ -2307,8 +2302,7 @@ mod tests {
                                 Ok::<_, ()>(msg.ack())
                             })
                             .map_err(|()| unreachable!()),
-                        )
-                        .bind(),
+                        ),
                     )
                     .await;
                     Ok::<_, ()>(())

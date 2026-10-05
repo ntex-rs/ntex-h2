@@ -3,8 +3,8 @@ use std::{convert::Infallible, error::Error, fmt, future::Future, future::poll_f
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_io::IoBoxed;
 use ntex_service::cfg::Cfg;
-use ntex_service::pipeline::{Pipeline, PipelineBinding, PipelineState};
-use ntex_service::{Ctx, IntoService, IntoServiceFactory, RequestState, Service, ServiceFactory};
+use ntex_service::pipeline::{Pipeline, PipelineFactory};
+use ntex_service::{Ctx, IntoServiceFactory, RequestState, Service, ServiceFactory};
 use ntex_util::{channel::pool, time::timeout_checked};
 
 use crate::control::{Control, ControlAck};
@@ -19,79 +19,78 @@ use super::ServerError;
 /// Serves one transport per call, the transport must be ready for the
 /// HTTP/2 connection preface, see the [crate docs](crate#server) for the
 /// message flow.
-pub struct Server<Req, Pub, Err>
+pub struct Server<Req, PErr, Err>
 where
     Req: RequestState<IoBoxed>,
-    Pub: ServiceFactory<Req::State, Message, Res = ()>,
 {
-    publish: Pub,
-    control: PipelineState<Req::State, Control<Pub::Error>, ControlAck, Err>,
+    publish: PipelineFactory<Req::State, Message, (), PErr, Box<dyn Error>>,
+    control: PipelineFactory<Req::State, Control<PErr>, ControlAck, Err, Box<dyn Error>>,
     pool: pool::Pool<()>,
 }
 
-impl<Req, Pub> Server<Req, Pub, Infallible>
+impl<Req, PErr> Server<Req, PErr, Infallible>
 where
     Req: RequestState<IoBoxed>,
     Req::State: Clone,
-    Pub: ServiceFactory<Req::State, Message, Res = ()> + 'static,
-    Pub::Error: fmt::Debug,
-    Pub::InitError: Into<Box<dyn Error>>,
+    PErr: fmt::Debug + 'static,
 {
     /// Creates a server with the specified request service factory.
     ///
     /// The publish service is created once per connection and is called with
     /// a [`Message`] for every event of peer-initiated streams.
-    pub fn new(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self {
+    pub fn new<Pub>(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self
+    where
+        Pub: ServiceFactory<Req::State, Message, Res = (), Error = PErr> + 'static,
+        Pub::InitError: Into<Box<dyn Error>>,
+    {
         Self {
-            publish: publish.into_factory(),
-            control: PipelineState::new(DefaultControlService),
+            publish: PipelineFactory::new(publish.into_factory().map_init_err(Into::into)),
+            control: PipelineFactory::new(DefaultControlService.map_init_err(Into::into)),
             pool: pool::new(),
         }
     }
 }
 
-impl<Req, Pub, Err> Server<Req, Pub, Err>
+impl<Req, PErr, Err> Server<Req, PErr, Err>
 where
     Req: RequestState<IoBoxed>,
     Req::State: Clone,
-    Pub: ServiceFactory<Req::State, Message, Res = ()> + 'static,
-    Pub::Error: fmt::Debug,
-    Pub::InitError: Into<Box<dyn Error>>,
+    PErr: fmt::Debug + 'static,
     Err: 'static,
 {
-    /// Sets the service used to handle connection control events.
+    /// Sets the service factory used to handle connection control events.
     ///
-    /// The default control service acknowledges every event.
+    /// The control service is created once per connection, after the publish
+    /// service. The default control service acknowledges every event.
     #[must_use]
     pub fn control<S>(
         self,
-        f: impl IntoService<S, Req::State, Control<Pub::Error>>,
-    ) -> Server<Req, Pub, S::Error>
+        f: impl IntoServiceFactory<S, Req::State, Control<PErr>>,
+    ) -> Server<Req, PErr, S::Error>
     where
-        S: Service<Req::State, Control<Pub::Error>, Res = ControlAck> + 'static,
+        S: ServiceFactory<Req::State, Control<PErr>, Res = ControlAck> + 'static,
+        S::InitError: Into<Box<dyn Error>>,
     {
         Server {
             publish: self.publish,
-            control: PipelineState::new(f.into_service()),
+            control: PipelineFactory::new(f.into_factory().map_init_err(Into::into)),
             pool: self.pool,
         }
     }
 }
 
-impl<Req, Pub, Err> Server<Req, Pub, Err>
+impl<Req, PErr, Err> Server<Req, PErr, Err>
 where
     Req: RequestState<IoBoxed>,
     Req::State: Clone,
-    Pub: ServiceFactory<Req::State, Message, Res = ()> + 'static,
-    Pub::Error: fmt::Debug,
-    Pub::InitError: Into<Box<dyn Error>>,
+    PErr: fmt::Debug + 'static,
     Err: 'static,
 {
     /// Runs one HTTP/2 server connection.
     ///
-    /// Reads the connection preface, creates the publish service and serves
-    /// the connection until it is closed. The preface and the publish service
-    /// creation are limited by
+    /// Reads the connection preface, creates the publish and control services
+    /// and serves the connection until it is closed. The preface and the
+    /// services creation are limited by
     /// [`ServiceConfig::set_handshake_timeout`](crate::ServiceConfig::set_handshake_timeout).
     pub async fn run(&self, req: Req) -> Result<(), ServerError<Err>> {
         let (st, io) = req.unpack();
@@ -99,14 +98,21 @@ where
         let shared = io.shared();
         let cfg = shared.get::<ServiceConfig>();
 
-        let pub_svc = timeout_checked(cfg.handshake_timeout, async {
+        let (pub_svc, ctl_svc) = timeout_checked(cfg.handshake_timeout, async {
             read_preface(&io).await?;
 
-            // create publish service
-            self.publish
-                .create(&st)
+            // create publish and control services
+            let pub_svc = self
+                .publish
+                .create(st.clone())
                 .await
-                .map_err(|e| ServerError::PublishService(e.into()))
+                .map_err(ServerError::PublishService)?;
+            let ctl_svc = self
+                .control
+                .create(st)
+                .await
+                .map_err(ServerError::ControlService)?;
+            Ok::<_, ServerError<Err>>((pub_svc, ctl_svc))
         })
         .await
         .map_err(|()| ServerError::HandshakeTimeout)??;
@@ -131,14 +137,7 @@ where
         let mut fut = IoDispatcher::new(
             io,
             codec,
-            Pipeline::new(
-                (),
-                Dispatcher::new(
-                    con,
-                    Pipeline::new(st.clone(), pub_svc),
-                    self.control.bind_state(st),
-                ),
-            ),
+            Pipeline::new((), Dispatcher::new(con, pub_svc, ctl_svc)),
         )
         .max_inflight(max_inflight);
 
@@ -153,14 +152,12 @@ where
     }
 }
 
-impl<St, Req, Pub, Err> Service<St, Req> for Server<Req, Pub, Err>
+impl<St, Req, PErr, Err> Service<St, Req> for Server<Req, PErr, Err>
 where
     St: 'static,
     Req: RequestState<IoBoxed>,
     Req::State: Clone,
-    Pub: ServiceFactory<Req::State, Message, Res = ()> + 'static,
-    Pub::Error: fmt::Debug,
-    Pub::InitError: Into<Box<dyn Error>>,
+    PErr: fmt::Debug + 'static,
     Err: 'static,
 {
     type Res = ();
@@ -193,7 +190,7 @@ async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
 pub async fn handle_one<Err: 'static, PErr: 'static>(
     io: IoBoxed,
     pub_svc: Pipeline<Message, (), PErr>,
-    ctl_svc: PipelineBinding<Control<PErr>, ControlAck, Err>,
+    ctl_svc: Pipeline<Control<PErr>, ControlAck, Err>,
 ) -> Result<(), ServerError<Err>> {
     let config: Cfg<ServiceConfig> = io.shared().get();
 
