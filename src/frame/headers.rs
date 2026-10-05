@@ -69,7 +69,7 @@ const PRIORITY: u8 = 0x20;
 const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
 /// Max number of spare header maps kept per thread.
-const HDRS_MAP_POOL_SIZE: usize = 8;
+const HDRS_MAP_POOL_SIZE: usize = 64;
 
 /// A header map with a larger capacity is not reused.
 const HDRS_MAP_MAX_CAPACITY: usize = 64;
