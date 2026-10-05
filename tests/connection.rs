@@ -72,6 +72,19 @@ async fn connect(addr: net::SocketAddr) -> IoBoxed {
         .into()
 }
 
+/// Receives response body, the last chunk of a sized body may end the stream,
+/// otherwise an empty frame follows
+async fn recv_body(io: &IoBoxed, codec: &Codec) {
+    match io.recv(codec).await.unwrap().unwrap() {
+        frame::Frame::Data(data) if data.is_end_stream() => (),
+        frame::Frame::Data(_) => match io.recv(codec).await.unwrap().unwrap() {
+            frame::Frame::Data(data) if data.is_end_stream() && data.payload().is_empty() => (),
+            frm => panic!("Expect empty Data frame with END_STREAM: {:?}", frm),
+        },
+        frm => panic!("Expect Data frame: {:?}", frm),
+    }
+}
+
 fn get_reset(frm: frame::Frame) -> frame::Reset {
     match frm {
         frame::Frame::Reset(rst) => rst,
@@ -1217,8 +1230,7 @@ async fn test_goaway_on_reset() {
         id = id.next_id().unwrap();
         io.send(hdrs.into(), &codec).await.unwrap();
         io.recv(&codec).await.unwrap().unwrap(); // headers
-        io.recv(&codec).await.unwrap().unwrap(); // data
-        io.recv(&codec).await.unwrap().unwrap(); // data eof
+        recv_body(&io, &codec).await;
     }
     for _ in 0..4 {
         let rst = frame::Reset::new(id, Reason::NO_ERROR);
@@ -1269,8 +1281,7 @@ async fn test_goaway_on_reset2() {
         id = id.next_id().unwrap();
         io.send(hdrs.into(), &codec).await.unwrap();
         io.recv(&codec).await.unwrap().unwrap(); // headers
-        io.recv(&codec).await.unwrap().unwrap(); // data
-        io.recv(&codec).await.unwrap().unwrap(); // data eof
+        recv_body(&io, &codec).await;
     }
 
     for _ in 0..4 {
@@ -1280,16 +1291,14 @@ async fn test_goaway_on_reset2() {
         io.encode(hdrs.into(), &codec).unwrap();
         io.send(rst.into(), &codec).await.unwrap();
         io.recv(&codec).await.unwrap().unwrap(); // headers
-        io.recv(&codec).await.unwrap().unwrap(); // data
-        io.recv(&codec).await.unwrap().unwrap(); // data eof
+        recv_body(&io, &codec).await;
     }
     let rst = frame::Reset::new(id, Reason::NO_ERROR);
     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), true);
     io.encode(hdrs.into(), &codec).unwrap();
     io.send(rst.into(), &codec).await.unwrap();
     io.recv(&codec).await.unwrap().unwrap(); // headers
-    io.recv(&codec).await.unwrap().unwrap(); // data
-    io.recv(&codec).await.unwrap().unwrap(); // data eof
+    recv_body(&io, &codec).await;
 
     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
     assert_eq!(res.reason(), Reason::ENHANCE_YOUR_CALM);
@@ -1633,10 +1642,19 @@ async fn test_capacity_timeout() {
     );
     let _ = io.send(frame::WindowUpdate::new(id, 16).into(), &codec).await;
     let res = io.recv(&codec).await.unwrap().unwrap(); // rest
-    assert_eq!(
-        res,
-        frame::Frame::Data(frame::Data::new(id, Bytes::copy_from_slice(b"est body")))
-    );
+    let frame::Frame::Data(data) = res else {
+        panic!("Expect Data frame: {:?}", res);
+    };
+    assert_eq!(data.stream_id(), id);
+    assert_eq!(data.payload(), &Bytes::copy_from_slice(b"est body"));
+
+    // the last chunk of a sized body may end the stream, otherwise an empty
+    // frame follows
+    if !data.is_end_stream() {
+        let mut eof = frame::Data::new(id, Bytes::new());
+        eof.set_end_stream();
+        assert_eq!(io.recv(&codec).await.unwrap().unwrap(), frame::Frame::Data(eof));
+    }
 }
 
 #[ntex::test]
@@ -1808,7 +1826,10 @@ async fn test_client_connect_request() {
     assert!(matches!(msg.kind(), MessageKind::Headers { .. }), "{msg:?}");
     let msg = rcv.recv().await.unwrap();
     match msg.kind() {
-        MessageKind::Data(data, _) => assert_eq!(data.as_ref(), b"CONNECT //localhost:8080"),
+        // the last chunk of a sized body may end the stream
+        MessageKind::Data(data, _) | MessageKind::Eof(ntex_h2::StreamEof::Data(data, _)) => {
+            assert_eq!(data.as_ref(), b"CONNECT //localhost:8080")
+        }
         kind => panic!("unexpected message: {kind:?}"),
     }
 }
