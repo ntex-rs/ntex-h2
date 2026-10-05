@@ -141,6 +141,7 @@ pub mod server;
 pub use self::codec::Codec;
 pub use self::config::ServiceConfig;
 pub use self::control::{Control, ControlAck};
+pub use self::frame::recycle_header_map;
 pub use self::message::{Message, MessageKind, StreamEof};
 pub use self::stream::{Capacity, StreamData, StreamRef};
 pub use crate::error::{ConnectionError, EncoderError, OperationError, StreamError};

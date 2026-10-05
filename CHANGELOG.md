@@ -15,6 +15,9 @@
   the control `Pipeline`. Control readiness is checked without allocating per frame,
   the control service is shut down with its connection
 
+* Add `recycle_header_map()`, decoding of a header block reuses the allocation of a recycled
+  `HeaderMap`
+
 ## [4.1.0] - 2026-10-02
 
 * Send the control service GOAWAY and close the connection when the publish service
