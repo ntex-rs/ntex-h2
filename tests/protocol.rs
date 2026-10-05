@@ -531,6 +531,17 @@ impl ntex::service::Service<(), Control<&'static str>> for NotReadyControl {
     }
 }
 
+impl ntex::service::ServiceFactory<(), Control<&'static str>> for NotReadyControl {
+    type Res = ControlAck;
+    type Error = &'static str;
+    type Service = NotReadyControl;
+    type InitError = std::io::Error;
+
+    async fn create(&self, _: &()) -> Result<NotReadyControl, std::io::Error> {
+        Ok(NotReadyControl)
+    }
+}
+
 #[derive(Debug)]
 struct NotReadyFactory;
 

@@ -10,6 +10,11 @@
 * `StreamRef::send_response()` accepts `&HeaderMap`, the header block is encoded without
   taking the map
 
+* `Server::control()` accepts a service factory, the control service is created per
+  connection, `ServerError::ControlService` reports its init error, `handle_one()` takes
+  the control `Pipeline`. Control readiness is checked without allocating per frame,
+  the control service is shut down with its connection
+
 ## [4.1.0] - 2026-10-02
 
 * Send the control service GOAWAY and close the connection when the publish service

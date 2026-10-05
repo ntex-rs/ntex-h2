@@ -1,4 +1,4 @@
-use std::io;
+use std::{cell::Cell, io, rc::Rc};
 
 use ntex::http::{HeaderMap, Method};
 use ntex::io::{Io, IoBoxed, testing::IoTest};
@@ -17,6 +17,9 @@ fn server_error_display_and_conversion() {
 
     let err = ServerError::<()>::PublishService(Box::new(io::Error::other("publish")));
     assert_eq!(err.to_string(), "Publish service init error");
+
+    let err = ServerError::<()>::ControlService(Box::new(io::Error::other("control")));
+    assert_eq!(err.to_string(), "Control service init error");
 
     let err = ServerError::<()>::HandshakeTimeout;
     assert_eq!(err.to_string(), "Handshake timeout");
@@ -108,6 +111,95 @@ async fn server_publish_service_init_error() {
     assert_eq!(source.to_string(), "publish init");
 }
 
+#[derive(Debug, Default)]
+struct ControlCounters {
+    created: Cell<usize>,
+    shutdown: Cell<usize>,
+}
+
+#[derive(Debug)]
+struct ControlService(Rc<ControlCounters>);
+
+impl Service<(), Control<()>> for ControlService {
+    type Res = ControlAck;
+    type Error = ();
+
+    async fn call(&self, msg: Control<()>, _: Ctx<'_, Self, ()>) -> Result<ControlAck, ()> {
+        Ok(msg.ack())
+    }
+
+    async fn shutdown(&self, _: Ctx<'_, Self, ()>) {
+        self.0.shutdown.set(self.0.shutdown.get() + 1);
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ControlFactory(Option<Rc<ControlCounters>>);
+
+impl ServiceFactory<(), Control<()>> for ControlFactory {
+    type Res = ControlAck;
+    type Error = ();
+    type Service = ControlService;
+    type InitError = io::Error;
+
+    async fn create(&self, _: &()) -> Result<Self::Service, Self::InitError> {
+        if let Some(ref counters) = self.0 {
+            counters.created.set(counters.created.get() + 1);
+            Ok(ControlService(counters.clone()))
+        } else {
+            Err(io::Error::other("control init"))
+        }
+    }
+}
+
+#[ntex::test]
+async fn server_control_service_init_error() {
+    let (io, peer) = IoTest::create();
+    peer.remote_buffer_cap(1024 * 1024);
+    peer.write(PREFACE);
+
+    let err = Server::new(async |_msg: Message| Ok::<_, ()>(()))
+        .control(ControlFactory(None))
+        .run(Io::new(io, SharedCfg::default()))
+        .await
+        .unwrap_err();
+    let ServerError::ControlService(source) = err else {
+        panic!("unexpected server error: {err:?}")
+    };
+    assert_eq!(source.to_string(), "control init");
+}
+
+#[ntex::test]
+async fn server_control_service_per_connection() {
+    let counters = Rc::new(ControlCounters::default());
+    let server = Rc::new(
+        Server::new(async |_msg: Message| Ok::<_, ()>(()))
+            .control(ControlFactory(Some(counters.clone()))),
+    );
+
+    let mut peers = Vec::new();
+    for _ in 0..2 {
+        let (io, peer) = IoTest::create();
+        peer.remote_buffer_cap(1024 * 1024);
+        peer.write(PREFACE);
+        let server = server.clone();
+        ntex::rt::spawn(async move {
+            let _ = server.run(Io::new(io, SharedCfg::default())).await;
+        });
+        peers.push(peer);
+    }
+    ntex::time::sleep(Millis(100)).await;
+    assert_eq!(counters.created.get(), 2);
+    assert_eq!(counters.shutdown.get(), 0);
+
+    // control services are shut down with their connections
+    for peer in peers {
+        peer.close().await;
+    }
+    ntex::time::sleep(Millis(100)).await;
+    assert_eq!(counters.shutdown.get(), 2);
+}
+
 #[ntex::test]
 async fn server_control_error_is_returned() {
     let (client_io, server_io) = IoTest::create();
@@ -144,7 +236,7 @@ async fn handle_one_rejects_invalid_preface() {
     peer.write([0; 24]);
 
     let publish = Pipeline::new((), async |_msg: Message| Ok::<_, ()>(()));
-    let control = Pipeline::new((), async |msg: Control<()>| Ok::<_, ()>(msg.ack())).bind();
+    let control = Pipeline::new((), async |msg: Control<()>| Ok::<_, ()>(msg.ack()));
     let io: IoBoxed = Io::new(io, SharedCfg::default()).into();
 
     let err = handle_one(io, publish, control).await.unwrap_err();
