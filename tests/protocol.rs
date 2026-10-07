@@ -400,7 +400,11 @@ async fn read_timeout() {
 #[ntex::test]
 async fn write_timeout() {
     let cfg = SharedCfg::new("SRV")
-        .add(IoConfig::new().set_write_timeout(Seconds(1)).set_write_buf(64))
+        .add(
+            IoConfig::new()
+                .set_write_timeout(Seconds(1))
+                .set_write_backpressure(64),
+        )
         .build();
     let peer = start(cfg, None).await;
     peer.send(request(1, "/open", false)).await;
