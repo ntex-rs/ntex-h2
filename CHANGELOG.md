@@ -2,6 +2,9 @@
 
 ## [4.2.0] - Unreleased
 
+* Avoid temporary byte slices when consuming HPACK headers and discard string prefixes
+  before slicing values, allowing more short values to use inline storage
+
 * Client APIs take a `secure` flag instead of `ntex_http::uri::Scheme`,
   `Connector::scheme()` and `ClientBuilder::scheme()` are renamed to `secure()`
 

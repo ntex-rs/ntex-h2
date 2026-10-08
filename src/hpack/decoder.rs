@@ -461,9 +461,10 @@ fn peek_u8<B: Buf>(buf: &B) -> Option<u8> {
 
 fn take(buf: &mut Cursor<&mut Bytes>, n: usize) -> Bytes {
     let pos = buf.position() as usize;
-    let mut head = buf.get_mut().split_to(pos + n);
+    let bytes = buf.get_mut();
+    bytes.advance(pos);
+    let head = bytes.split_to(n);
     buf.set_position(0);
-    head.advance(pos);
     head
 }
 
@@ -481,10 +482,16 @@ impl StringMarker {
 }
 
 fn consume(buf: &mut Cursor<&mut Bytes>) {
-    // remove bytes from the internal BytesMut when they have been successfully
-    // decoded. This is a more permanent cursor position, which will be
-    // used to resume if decoding was only partial.
-    take(buf, 0);
+    // Commit decoded bytes so an incomplete representation can be retried.
+    let pos = buf.position() as usize;
+    let bytes = buf.get_mut();
+    if pos == bytes.len() {
+        // Advancing alone would keep the allocation alive.
+        bytes.clear();
+    } else {
+        bytes.advance(pos);
+    }
+    buf.set_position(0);
 }
 
 // ===== impl Table =====
@@ -838,6 +845,53 @@ mod test {
     }
 
     #[test]
+    fn test_consume() {
+        for data in [b"".as_slice(), b"inline", &[b'x'; 128]] {
+            for pos in [0, data.len() / 2, data.len()] {
+                let mut src = Bytes::copy_from_slice(data);
+                let original = src.clone();
+                let mut cursor = Cursor::new(&mut src);
+                cursor.set_position(pos as u64);
+                consume(&mut cursor);
+
+                assert_eq!(cursor.position(), 0);
+                assert_eq!(cursor.chunk(), &data[pos..]);
+                assert_eq!(original, data);
+                if pos == data.len() {
+                    assert!(src.is_inline(), "empty buffer must not retain the allocation");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_take() {
+        for len in [0, 4, 24, 64] {
+            for tail in [0, 8] {
+                let mut data = vec![b'p'; 32];
+                data.extend(vec![b'v'; len]);
+                data.extend(vec![b't'; tail]);
+                let mut src = Bytes::copy_from_slice(&data);
+                let original = src.clone();
+                let mut cursor = Cursor::new(&mut src);
+                cursor.set_position(32);
+                let value = take(&mut cursor, len);
+
+                assert_eq!(value, &data[32..32 + len]);
+                assert_eq!(cursor.position(), 0);
+                assert_eq!(cursor.chunk(), &data[32 + len..]);
+                assert_eq!(original, data);
+                if len <= 4 && tail > 0 {
+                    assert!(value.is_inline(), "short value must not retain the prefix");
+                }
+                if tail == 0 {
+                    assert!(src.is_inline(), "empty buffer must not retain the allocation");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn test_decode_string_empty() {
         let mut de = Decoder::new(0);
         let mut buf = Bytes::new();
@@ -921,6 +975,55 @@ mod test {
         let mut buf = BytesMut::new();
         huffman::encode(src, &mut buf);
         buf
+    }
+
+    #[test]
+    fn test_decode_at_every_split() {
+        for huff_name in [false, true] {
+            for huff_value in [false, true] {
+                let mut data = BytesMut::new();
+                data.extend_from_slice(&[0x82, 0x40]);
+                for (text, huff) in [(b"foo".as_slice(), huff_name), (b"bar", huff_value)] {
+                    if huff {
+                        let encoded = huff_encode(text);
+                        data.extend_from_slice(&[0x80 | encoded.len() as u8]);
+                        data.extend_from_slice(&encoded);
+                    } else {
+                        data.extend_from_slice(&[text.len() as u8]);
+                        data.extend_from_slice(text);
+                    }
+                }
+                data.extend_from_slice(&[0xbe, 0x84]);
+
+                let field = Header::new(&Bytes::from_static(b"foo"), Bytes::from_static(b"bar")).unwrap();
+                let expected = vec![
+                    Header::Method(Method::GET),
+                    field.clone(),
+                    field,
+                    Header::Path(ByteString::from_static("/")),
+                ];
+
+                for split in 0..=data.len() {
+                    let mut de = Decoder::default();
+                    let mut src = Bytes::copy_from_slice(&data[..split]);
+                    let mut headers = Vec::new();
+                    let result = de.decode(&mut Cursor::new(&mut src), |h| headers.push(h));
+                    assert!(
+                        matches!(result, Ok(()) | Err(DecoderError::NeedMore(_))),
+                        "split={split}, huff_name={huff_name}, huff_value={huff_value}: {result:?}"
+                    );
+
+                    let mut src = BytesMut::from(src);
+                    src.extend_from_slice(&data[split..]);
+                    let mut src = src.freeze();
+                    de.decode(&mut Cursor::new(&mut src), |h| headers.push(h))
+                        .unwrap();
+                    assert_eq!(headers, expected, "split={split}");
+                    assert!(src.is_empty());
+                    assert!(src.is_inline());
+                }
+            }
+        }
     }
 
     #[test]
