@@ -1,9 +1,15 @@
 # Changes
 
-## [4.2.0] - Unreleased
+## [4.3.0] - 2026-10-17
+
+* Replace `nanorand` with `fastrand`. `nanorand` does not link `advapi32` on Windows
+  (unresolved `SystemFunction036`), and the client pool seeded a new generator from
+  the OS for every request
 
 * Avoid temporary byte slices when consuming HPACK headers and discard string prefixes
   before slicing values, allowing more short values to use inline storage
+
+## [4.2.0] - 2026-10-05
 
 * Client APIs take a `secure` flag instead of `ntex_http::uri::Scheme`,
   `Connector::scheme()` and `ClientBuilder::scheme()` are renamed to `secure()`
