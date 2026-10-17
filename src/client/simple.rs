@@ -1,6 +1,5 @@
 use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll, time::SystemTime};
 
-use nanorand::Rng;
 use ntex_bytes::{BufMut, ByteString, BytesMut};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
 use ntex_error::Error;
@@ -387,11 +386,9 @@ impl Future for ClientDisconnect {
 fn gen_id() -> ByteString {
     const BASE: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
 
-    let mut rng = nanorand::tls_rng();
     let mut id = BytesMut::with_capacity(16);
     for _ in 0..16 {
-        let idx = rng.generate_range::<usize, _>(..BASE.len());
-        id.put_u8(BASE[idx]);
+        id.put_u8(BASE[fastrand::usize(..BASE.len())]);
     }
     ByteString::try_from(id).unwrap()
 }

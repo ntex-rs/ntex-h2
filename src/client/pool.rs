@@ -1,7 +1,6 @@
 use std::collections::VecDeque;
 use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
-use nanorand::{Rng, WyRand};
 use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_http::{HeaderMap, Method};
@@ -156,7 +155,7 @@ impl Client {
                 // check existing connections
                 let available = connections.iter().filter(|item| item.is_ready()).count();
                 let client = if available > 0 {
-                    let idx = WyRand::new().generate_range(0_usize..available);
+                    let idx = fastrand::usize(..available);
                     connections
                         .iter()
                         .filter(|item| item.is_ready())
