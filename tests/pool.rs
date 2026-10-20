@@ -3,7 +3,8 @@ use std::{
     cell::RefCell,
     future::{Future, poll_fn},
     rc::Rc,
-    task::Poll,
+    sync::{Arc, atomic::AtomicUsize, atomic::Ordering},
+    task::{Context, Poll, Wake, Waker},
 };
 
 use ntex::http::{HeaderMap, Method};
@@ -18,6 +19,15 @@ use ntex_h2::{Codec, ConnectionError};
 use ntex_net::connect::ConnectError;
 
 type Peers = Rc<RefCell<Vec<IoTest>>>;
+
+#[derive(Default)]
+struct WakeCount(AtomicUsize);
+
+impl Wake for WakeCount {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
+}
 
 fn encode(frm: impl Into<Frame>) -> Bytes {
     let mut buf = BytePages::default();
@@ -237,6 +247,115 @@ async fn zero_capacity_connection_waits_for_settings() {
     drop(reservation);
     assert_eq!(client.active_streams(), 0);
     assert!(pool.is_ready());
+}
+
+#[ntex::test]
+async fn cancelled_waiter_passes_notification() {
+    for ready in [false, true] {
+        for notified in [false, true] {
+            let peers = Peers::default();
+            let (p, s) = (peers.clone(), settings(Some(1)));
+            let pool = Client::builder("localhost")
+                .connection_limit(1)
+                .connector(async move |_| connect(&p, &s))
+                .build(SharedCfg::default());
+            let client = pool.client().await.unwrap();
+            wait_for_stream_limit(&client, 1).await;
+            let reservation = client.reserve().unwrap();
+
+            let mut first = Box::pin(async {
+                if ready {
+                    pool.ready().await;
+                } else {
+                    pool.client().await.unwrap();
+                }
+            });
+            let second_wakes = Arc::new(WakeCount::default());
+            let third_wakes = Arc::new(WakeCount::default());
+            let second_waker = Waker::from(second_wakes.clone());
+            let third_waker = Waker::from(third_wakes.clone());
+            let mut second = Box::pin(pool.client());
+            let mut third = Box::pin(pool.client());
+            assert!(
+                first
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            assert!(
+                second
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&second_waker))
+                    .is_pending()
+            );
+            assert!(
+                third
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&third_waker))
+                    .is_pending()
+            );
+
+            if notified {
+                drop(reservation);
+                assert_eq!(second_wakes.0.load(Ordering::Relaxed), 0);
+                drop(first);
+            } else {
+                drop(first);
+                assert_eq!(second_wakes.0.load(Ordering::Relaxed), 0);
+                drop(reservation);
+            }
+            assert!(pool.is_ready());
+            assert!(second_wakes.0.load(Ordering::Relaxed) > 0);
+            assert_eq!(third_wakes.0.load(Ordering::Relaxed), 0);
+
+            let selected = timeout(Millis(1_000), second).await.unwrap().unwrap();
+            assert_eq!(selected.id(), client.id());
+            let reservation = selected.reserve().unwrap();
+            // Successful acquisition must not pass its notification on.
+            assert_eq!(third_wakes.0.load(Ordering::Relaxed), 0);
+            drop(reservation);
+            assert!(third_wakes.0.load(Ordering::Relaxed) > 0);
+            let selected = timeout(Millis(1_000), third).await.unwrap().unwrap();
+            assert_eq!(selected.id(), client.id());
+            assert_eq!(pool.stat_total_connections(), 1);
+        }
+    }
+}
+
+#[ntex::test]
+async fn ready_waiter_passes_notification_on_completion() {
+    let peers = Peers::default();
+    let (p, s) = (peers.clone(), settings(Some(1)));
+    let pool = Client::builder("localhost")
+        .connection_limit(1)
+        .connector(async move |_| connect(&p, &s))
+        .build(SharedCfg::default());
+    let client = pool.client().await.unwrap();
+    wait_for_stream_limit(&client, 1).await;
+    let reservation = client.reserve().unwrap();
+
+    let mut ready = Box::pin(pool.ready());
+    let mut waiting = Box::pin(pool.client());
+    let wakes = Arc::new(WakeCount::default());
+    let waker = Waker::from(wakes.clone());
+    assert!(
+        ready
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    drop(reservation);
+    assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+    timeout(Millis(1_000), ready).await.unwrap();
+    assert!(wakes.0.load(Ordering::Relaxed) > 0);
+    let selected = timeout(Millis(1_000), waiting).await.unwrap().unwrap();
+    assert_eq!(selected.id(), client.id());
 }
 
 /// Without the peer's limit the pool stream limit decides which

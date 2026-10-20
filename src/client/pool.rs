@@ -1,4 +1,6 @@
 use std::collections::VecDeque;
+use std::future::poll_fn;
+use std::task::{Context, Poll, Waker};
 use std::{cell::Cell, cell::RefCell, fmt, marker::PhantomData, rc::Rc, time::Duration};
 
 use ntex_bytes::ByteString;
@@ -8,7 +10,7 @@ use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
 use ntex_service::{IntoService, Pipeline, Service, cfg::SharedCfg};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
-use ntex_util::{channel::oneshot, channel::pool, future::BoxFuture};
+use ntex_util::{channel::Canceled, channel::oneshot, channel::pool, future::BoxFuture};
 
 use super::stream::{InflightStorage, RecvStream, SendStream};
 use super::{ClientError, simple::SimpleClient};
@@ -27,6 +29,26 @@ struct Inner {
     cfg: SharedCfg,
     config: InnerConfig,
     connector: Connector,
+}
+
+struct Waiter<'a> {
+    rx: Option<pool::Receiver<()>>,
+    waiters: &'a RefCell<VecDeque<pool::Sender<()>>>,
+}
+
+impl Drop for Waiter<'_> {
+    fn drop(&mut self) {
+        let rx = self.rx.take().unwrap();
+        match rx.poll_recv(&mut Context::from_waker(Waker::noop())) {
+            Poll::Pending => {
+                // Mark the queued sender cancelled before pruning it.
+                drop(rx);
+                self.waiters.borrow_mut().retain(|tx| !tx.is_canceled());
+            }
+            Poll::Ready(Ok(())) => notify(&mut self.waiters.borrow_mut()),
+            Poll::Ready(Err(_)) => (),
+        }
+    }
 }
 
 /// Notify one active waiter
@@ -75,6 +97,10 @@ impl Client {
     /// connection limit. Connections with a peer stream limit of zero are skipped.
     /// The pool uses [`SimpleClient::on_capacity`] of its
     /// connections, replacing the callback stops waking the pool's waiters.
+    ///
+    /// Dropping this future removes its queued waiter and passes any unused
+    /// capacity notification to another waiter. An in-progress connection
+    /// attempt continues independently.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
             let (client, num) = self.get_client();
@@ -103,13 +129,21 @@ impl Client {
                 cfg.maxconn
             );
 
-            // wait for available connection
-            let (tx, rx) = cfg.pool.channel();
-            self.waiters.borrow_mut().push_back(tx);
-
-            rx.await.map_err(|e| Error::new(e, self.inner.cfg.service()))?;
+            self.wait_for_capacity()
+                .await
+                .map_err(|e| Error::new(e, self.inner.cfg.service()))?;
         }
         Ok(())
+    }
+
+    async fn wait_for_capacity(&self) -> Result<(), Canceled> {
+        let (tx, rx) = self.inner.config.pool.channel();
+        self.waiters.borrow_mut().push_back(tx);
+        let waiter = Waiter {
+            rx: Some(rx),
+            waiters: &self.waiters,
+        };
+        poll_fn(|cx| waiter.rx.as_ref().unwrap().poll_recv(cx)).await
     }
 
     fn get_client(&self) -> (Option<SimpleClient>, usize) {
@@ -242,21 +276,15 @@ impl Client {
     /// Waits until the pool can start another request.
     ///
     /// See [`is_ready`](Self::is_ready).
+    /// Dropping this future removes its queued waiter and passes any unused
+    /// capacity notification to another waiter.
     pub async fn ready(&self) {
         loop {
             if self.is_ready() {
                 break;
             }
-            // add waiter
-            let (tx, rx) = self.inner.config.pool.channel();
-            self.waiters.borrow_mut().push_back(tx);
-            let _ = rx.await;
-
-            'inner: while let Some(tx) = self.waiters.borrow_mut().pop_front() {
-                if tx.send(()).is_ok() {
-                    break 'inner;
-                }
-            }
+            let _ = self.wait_for_capacity().await;
+            notify(&mut self.waiters.borrow_mut());
         }
     }
 }
@@ -517,5 +545,58 @@ impl<A, S> fmt::Debug for ClientBuilder<A, S> {
             .field("connection_limit", &self.inner.maxconn)
             .field("max-streams", &self.inner.max_streams)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+
+    use super::*;
+
+    #[test]
+    fn cancelled_waiters_are_removed() {
+        for ready in [false, true] {
+            let pool = Client::builder("localhost")
+                .minconn(0)
+                .connection_limit(0)
+                .build(SharedCfg::default());
+            let mut cx = Context::from_waker(Waker::noop());
+            let mut live = Box::pin(pool.ready());
+            assert!(live.as_mut().poll(&mut cx).is_pending());
+
+            for _ in 0..2048 {
+                let mut cancelled = Box::pin(async {
+                    if ready {
+                        pool.ready().await;
+                    } else {
+                        pool.client().await.unwrap();
+                    }
+                });
+                assert!(cancelled.as_mut().poll(&mut cx).is_pending());
+                assert_eq!(pool.waiters.borrow().len(), 2);
+                drop(cancelled);
+                assert_eq!(pool.waiters.borrow().len(), 1);
+            }
+            drop(live);
+            assert_eq!(pool.waiters.borrow().len(), 0);
+        }
+    }
+
+    #[test]
+    fn cancelled_waiter_channel_reports_error() {
+        let pool = Client::builder("localhost")
+            .minconn(0)
+            .connection_limit(0)
+            .build(SharedCfg::default());
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut waiting = Box::pin(pool.client());
+        assert!(waiting.as_mut().poll(&mut cx).is_pending());
+        pool.waiters.borrow_mut().clear();
+        let Poll::Ready(Err(err)) = waiting.as_mut().poll(&mut cx) else {
+            panic!("cancelled waiter channel did not fail");
+        };
+        assert!(matches!(*err, ClientError::Disconnected(_)));
+        assert_eq!(pool.waiters.borrow().len(), 0);
     }
 }

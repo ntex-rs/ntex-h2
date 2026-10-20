@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Remove cancelled client-pool waiters promptly and forward unused capacity
+  notifications so cancellation cannot strand other waiting requests
+
 * Skip client-pool connections with no available stream capacity, allowing requests
   to use another connection or wait for pool capacity instead
 
