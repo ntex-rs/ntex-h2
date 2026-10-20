@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Skip redundant stream scans for connection-level WINDOW_UPDATE frames when
+  connection send capacity was already available
+
 * Avoid retaining connection state and I/O references while SETTINGS and keep-alive
   ping timers sleep
 
