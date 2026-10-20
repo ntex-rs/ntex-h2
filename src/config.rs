@@ -251,10 +251,11 @@ impl ServiceConfig {
     /// bound on the amount of state that is maintained. When this max value is
     /// reached, the oldest reset stream is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional `DATA`
-    /// or `WINDOW_UPDATE` frames received for that stream will result in a
-    /// connection level protocol error, forcing the connection to terminate.
-    /// `RST_STREAM` and `PRIORITY` frames are ignored.
+    /// A value of zero disables reset-history retention. Frames for closed
+    /// streams are then handled as if their history had already been purged:
+    /// late `DATA` receives `RST_STREAM(STREAM_CLOSED)`, while `WINDOW_UPDATE`,
+    /// `RST_STREAM` and `PRIORITY` frames are ignored. Other frames remain
+    /// subject to the usual closed-stream and stream-id validation.
     ///
     /// The default value is 32.
     pub fn set_max_concurrent_reset_streams(mut self, val: usize) -> Self {
@@ -277,10 +278,9 @@ impl ServiceConfig {
     /// this state will be maintained in memory. Once the duration elapses, the
     /// stream state is purged from memory.
     ///
-    /// Once the stream has been fully purged from memory, any additional `DATA`
-    /// or `WINDOW_UPDATE` frames received for that stream will result in a
-    /// connection level protocol error, forcing the connection to terminate.
-    /// `RST_STREAM` and `PRIORITY` frames are ignored.
+    /// Once the history is purged, late frames follow the closed-stream
+    /// handling described by [`Self::set_max_concurrent_reset_streams`].
+    /// This duration has no effect when that limit is zero.
     ///
     /// The default value is 30 seconds.
     pub fn set_reset_stream_duration(mut self, dur: Seconds) -> Self {

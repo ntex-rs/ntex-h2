@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Treat a zero reset-stream history limit as disabled retention, avoiding an infinite
+  loop when a stream is closed or reset
+
 * Disconnect open streams and wake their waiters when a server connection future is
   cancelled, breaking the connection-stream ownership cycle even with publish calls in flight
 

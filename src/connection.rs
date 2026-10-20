@@ -1421,6 +1421,13 @@ impl Pending {
     fn add(&self, id: StreamId, config: &ServiceConfig) {
         let mut inner = self.0.take().unwrap();
 
+        if config.reset_max == 0 {
+            inner.ids.clear();
+            inner.queue.clear();
+            self.0.set(Some(inner));
+            return;
+        }
+
         // a repeated reset refreshes the entry, a stale duplicate would
         // forget the id early
         if inner.ids.remove(&id)
@@ -1536,6 +1543,115 @@ mod tests {
         pending.add(id1, &config);
         pending.add(id1.next_id().unwrap().next_id().unwrap(), &config);
         assert!(pending.is_pending(id1));
+    }
+
+    #[test]
+    fn test_pending_reset_zero_limit() {
+        let pending = super::Pending::default();
+        let config = ServiceConfig::new().set_max_concurrent_reset_streams(0);
+        let id1 = frame::StreamId::CLIENT;
+        let id2 = id1.next_id().unwrap();
+
+        for id in [id1, id1, id2] {
+            pending.add(id, &config);
+            assert!(!pending.is_pending(id));
+            assert!(!pending.remove(id));
+        }
+
+        pending.add(id1, &ServiceConfig::new());
+        pending.add(id2, &config);
+        assert!(!pending.is_pending(id1));
+        let inner = pending.0.take().unwrap();
+        assert_eq!(inner.ids.len(), 0);
+        assert_eq!(inner.queue.len(), 0);
+    }
+
+    #[test]
+    fn test_pending_reset_one_limit() {
+        let pending = super::Pending::default();
+        let config = ServiceConfig::new().set_max_concurrent_reset_streams(1);
+        let id1 = frame::StreamId::CLIENT;
+        let id2 = id1.next_id().unwrap();
+
+        pending.add(id1, &config);
+        pending.add(id1, &config);
+        assert!(pending.is_pending(id1));
+        pending.add(id2, &config);
+        assert!(!pending.is_pending(id1));
+        assert!(pending.is_pending(id2));
+        assert!(pending.remove(id2));
+        assert!(!pending.is_pending(id2));
+    }
+
+    #[ntex::test]
+    async fn test_zero_reset_history_stream_lifecycle() {
+        let (wire, peer) = ntex::io::testing::IoTest::create();
+        peer.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("SRV")
+            .add(
+                ServiceConfig::new()
+                    .set_max_concurrent_reset_streams(0)
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds::ZERO),
+            )
+            .build();
+        let io = Io::new(wire, cfg.clone());
+        let con = super::Connection::new(
+            true,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            ntex::channel::pool::new(),
+        );
+        let recv = con.recv_half();
+        let codec = Codec::default();
+
+        for (id, reset) in [(frame::StreamId::CLIENT, false), (3.into(), true)] {
+            let headers = frame::Headers::new(
+                id,
+                frame::PseudoHeaders {
+                    method: Some(Method::GET),
+                    scheme: Some("http".into()),
+                    path: Some("/".into()),
+                    ..Default::default()
+                },
+                HeaderMap::new(),
+                true,
+            );
+            let (stream, _msg) = recv.recv_headers(headers).unwrap().unwrap();
+            if reset {
+                assert!(stream.reset(Reason::CANCEL));
+            } else {
+                stream
+                    .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+                    .unwrap();
+            }
+            assert!(!con.0.streams.borrow().contains_key(&id));
+            assert!(!con.0.local_pending_reset.is_pending(id));
+            io.flush(true).await.unwrap();
+            let _ = client_frames(&peer, &codec);
+
+            // Without history, late DATA is a stream error; updates and resets are ignored.
+            recv.recv_window_update(frame::WindowUpdate::new(id, 10)).unwrap();
+            recv.recv_rst_stream(frame::Reset::new(id, Reason::CANCEL))
+                .unwrap();
+            assert!(
+                recv.recv_data(frame::Data::new(id, Bytes::from_static(b"data")))
+                    .unwrap()
+                    .is_none()
+            );
+            io.flush(true).await.unwrap();
+            let frames = client_frames(&peer, &codec);
+            assert_eq!(frames.len(), 1);
+            let reset = get_reset(frames.into_iter().next().unwrap());
+            assert_eq!(reset.stream_id(), id);
+            assert_eq!(reset.reason(), Reason::STREAM_CLOSED);
+            assert!(con.check_error().is_ok());
+            assert_eq!(con.0.recv_size.get(), 0);
+        }
+        recv.disconnect();
     }
 
     #[ntex::test]
