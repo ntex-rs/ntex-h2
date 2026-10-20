@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Disconnect open streams and wake their waiters when a server connection future is
+  cancelled, breaking the connection-stream ownership cycle even with publish calls in flight
+
 * Replace `nanorand` with `fastrand`. `nanorand` does not link `advapi32` on Windows
   (unresolved `SystemFunction036`), and the client pool seeded a new generator from
   the OS for every request
