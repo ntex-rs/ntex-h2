@@ -1117,14 +1117,17 @@ impl RecvHalfConnection {
                     self.service(),
                 )))
             } else {
-                let window = self.0.send_window.get().inc(frm.size_increment()).map_err(|()| {
+                let original = self.0.send_window.get();
+                let window = original.inc(frm.size_increment()).map_err(|()| {
                     Either::Left(Error::new(ConnectionError::WindowValueOverflow, self.service()))
                 })?;
                 self.0.send_window.set(window);
 
-                // wake up streams if needed
-                for stream in self.0.streams.borrow().values() {
-                    stream.recv_window_update_connection();
+                // Only newly available connection capacity can unblock a sender.
+                if original.window_size() == 0 {
+                    for stream in self.0.streams.borrow().values() {
+                        stream.recv_window_update_connection();
+                    }
                 }
                 Ok(())
             }
@@ -3203,6 +3206,85 @@ mod tests {
             stream.stream().available_send_capacity() as usize,
             10_000 - (70_000 - conn_window)
         );
+    }
+
+    #[ntex::test]
+    async fn test_window_updates_wake_after_both_windows_open() {
+        use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
+        use std::task::{Context, Poll, Wake, Waker};
+
+        #[derive(Default)]
+        struct WakeCount(AtomicUsize);
+
+        impl Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        for connection_first in [false, true] {
+            for settings_update in [false, true] {
+                let initial = u32::try_from(frame::DEFAULT_INITIAL_WINDOW_SIZE).unwrap();
+                let (client, _srv) = window_client_with(initial, Seconds(5)).await;
+                let (stream, _recv) = client
+                    .send(Method::POST, "/".into(), HeaderMap::new(), false)
+                    .await
+                    .unwrap();
+                stream
+                    .send_payload(Bytes::from(vec![b'x'; initial as usize]), false)
+                    .await
+                    .unwrap();
+                let st = stream.stream();
+                let recv = st.0.con.recv_half();
+
+                // Both windows are exhausted; SETTINGS makes the stream window negative.
+                let mut settings = frame::Settings::default();
+                settings.set_initial_window_size(Some(initial - 5));
+                recv.recv_settings(settings).unwrap();
+                let count = Arc::new(WakeCount::default());
+                let waker = Waker::from(count.clone());
+                let cx = Context::from_waker(&waker);
+                assert!(st.poll_send_capacity(&cx).is_pending());
+                assert!(crate::timer::is_registered(st));
+
+                if connection_first {
+                    // The second update takes the already-positive fast path.
+                    for _ in 0..2 {
+                        recv.recv_window_update(frame::WindowUpdate::new(frame::StreamId::CON, 10))
+                            .unwrap();
+                        assert_eq!(count.0.load(Ordering::Relaxed), 0);
+                        assert!(crate::timer::is_registered(st));
+                    }
+                }
+
+                // Bringing the stream window from negative to zero still cannot wake it.
+                recv.recv_window_update(frame::WindowUpdate::new(st.id(), 5))
+                    .unwrap();
+                assert_eq!(count.0.load(Ordering::Relaxed), 0);
+                assert!(crate::timer::is_registered(st));
+
+                if settings_update {
+                    let mut settings = frame::Settings::default();
+                    settings.set_initial_window_size(Some(initial + 5));
+                    recv.recv_settings(settings).unwrap();
+                } else {
+                    recv.recv_window_update(frame::WindowUpdate::new(st.id(), 10))
+                        .unwrap();
+                }
+
+                if !connection_first {
+                    assert_eq!(count.0.load(Ordering::Relaxed), 0);
+                    assert!(crate::timer::is_registered(st));
+                    recv.recv_window_update(frame::WindowUpdate::new(frame::StreamId::CON, 10))
+                        .unwrap();
+                }
+
+                assert_eq!(count.0.load(Ordering::Relaxed), 1);
+                assert!(!crate::timer::is_registered(st));
+                assert!(matches!(st.poll_send_capacity(&cx), Poll::Ready(Ok(10))));
+                stream.send_payload("done", true).await.unwrap();
+            }
+        }
     }
 
     /// Large peer windows do not let a sender buffer unbounded data while
