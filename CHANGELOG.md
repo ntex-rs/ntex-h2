@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Skip client-pool connections with no available stream capacity, allowing requests
+  to use another connection or wait for pool capacity instead
+
 * Treat a zero reset-stream history limit as disabled retention, avoiding an infinite
   loop when a stream is closed or reset
 

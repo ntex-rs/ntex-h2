@@ -72,7 +72,8 @@ impl Client {
     /// Returns a connection that can open a stream.
     ///
     /// Waits for an existing connection, or opens a new one within the
-    /// connection limit. The pool uses [`SimpleClient::on_capacity`] of its
+    /// connection limit. Connections with a peer stream limit of zero are skipped.
+    /// The pool uses [`SimpleClient::on_capacity`] of its
     /// connections, replacing the callback stops waking the pool's waiters.
     pub async fn client(&self) -> Result<SimpleClient, Error<ClientError>> {
         loop {
@@ -147,7 +148,7 @@ impl Client {
             // first search for connections with less than 50% capacity usage
             let client = connections.iter().find(|item| {
                 let cap = item.max_streams().unwrap_or(cfg.max_streams) >> 1;
-                item.active_streams() <= cap
+                item.is_ready() && item.active_streams() <= cap
             });
             if let Some(client) = client {
                 (Some(client.clone()), num)
