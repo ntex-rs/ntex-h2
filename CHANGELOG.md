@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Avoid retaining connection state and I/O references while SETTINGS and keep-alive
+  ping timers sleep
+
 * Saturate the keep-alive ping statistic at `u16::MAX` instead of panicking in
   overflow-checked builds or wrapping to zero
 

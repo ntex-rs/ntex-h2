@@ -1,5 +1,6 @@
+use std::rc::{Rc, Weak};
 use std::task::{Context, Poll, Waker};
-use std::{cell::Cell, cell::RefCell, fmt, io, mem, rc::Rc};
+use std::{cell::Cell, cell::RefCell, fmt, io, mem};
 use std::{collections::VecDeque, future::poll_fn, time::Instant};
 
 use ntex_bytes::{BytePages, ByteString, Bytes};
@@ -141,7 +142,7 @@ impl Connection {
             remote_frame_size,
             remote_max_header_list_size: Cell::new(u32::MAX),
             pool,
-            io: io.clone(),
+            io,
             send_window: Cell::new(send_window),
             recv_window: Cell::new(recv_window),
             recv_size: Cell::new(0),
@@ -169,12 +170,15 @@ impl Connection {
 
         // start ping/pong
         if con.0.local_config.ping_timeout.non_zero() {
-            spawn(ping(con.clone(), con.0.local_config.ping_timeout, io));
+            spawn(ping(Rc::downgrade(&con.0), con.0.local_config.ping_timeout));
         }
 
         // wait for the local settings acknowledgment
         if con.0.local_config.settings_timeout.non_zero() {
-            spawn(settings_timer(con.clone(), con.0.local_config.settings_timeout));
+            spawn(settings_timer(
+                Rc::downgrade(&con.0),
+                con.0.local_config.settings_timeout,
+            ));
         }
 
         con
@@ -1342,17 +1346,29 @@ impl fmt::Debug for Connection {
     }
 }
 
-async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
+async fn ping(state: Weak<ConnectionState>, timeout: time::Seconds) {
     let mut counter: u64 = 0;
     let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
 
-    log::debug!(
-        "{}: start http client ping/pong task, ka: {keepalive:?}",
-        io.tag()
-    );
+    {
+        let Some(st) = state.upgrade().map(Connection) else {
+            return;
+        };
+        log::debug!(
+            "{}: start http client ping/pong task, ka: {keepalive:?}",
+            st.tag()
+        );
+        st.set_flags(ConnectionFlags::RECV_PONG);
+        if st.is_closed() {
+            return;
+        }
+    }
 
-    st.set_flags(ConnectionFlags::RECV_PONG);
     loop {
+        sleep(keepalive).await;
+        let Some(st) = state.upgrade().map(Connection) else {
+            break;
+        };
         if st.is_closed() {
             log::trace!(
                 "{}: http client connection is closed, stopping keep-alive task",
@@ -1360,12 +1376,8 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
             );
             break;
         }
-        sleep(keepalive).await;
-        if st.is_closed() {
-            break;
-        }
         if !st.0.flags.get().contains(ConnectionFlags::RECV_PONG) {
-            io.notify_timeout();
+            st.0.io.notify_timeout();
             break;
         }
 
@@ -1378,8 +1390,11 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
 }
 
 /// Closes the connection if the peer does not acknowledge the local settings in time.
-async fn settings_timer(st: Connection, timeout: time::Seconds) {
+async fn settings_timer(state: Weak<ConnectionState>, timeout: time::Seconds) {
     sleep(timeout).await;
+    let Some(st) = state.upgrade().map(Connection) else {
+        return;
+    };
     if !st.is_closed() && !st.settings_processed() {
         st.set_flags(ConnectionFlags::SETTINGS_TIMEOUT);
         st.0.io.notify_timeout();
@@ -1513,6 +1528,74 @@ mod tests {
         }
     }
 
+    async fn timer_releases_connection(config: ServiceConfig, ack: bool) {
+        let cfg = SharedCfg::new("CLI")
+            .add(config)
+            .add(ntex::io::IoConfig::new().set_metrics(true))
+            .build();
+        for started in [false, true] {
+            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let io = Io::new(wire, cfg.clone());
+            let metrics = io.cfg().metrics();
+            let closed = metrics.snapshot().closed.total;
+            let con = super::Connection::new(
+                false,
+                io.get_ref(),
+                Codec::default(),
+                cfg.get(),
+                false,
+                false,
+                ntex::channel::pool::new(),
+            );
+            if ack {
+                con.recv_half().recv_settings(frame::Settings::ack()).unwrap();
+            }
+            if started {
+                sleep(Millis(20)).await;
+            }
+
+            let weak = super::Rc::downgrade(&con.0);
+            drop(con);
+            drop(io);
+            assert!(
+                weak.upgrade().is_none(),
+                "timer retained the connection (started: {started}, ack: {ack})"
+            );
+
+            // IoState records closure on drop, after the transport tasks release it.
+            sleep(Millis(20)).await;
+            assert_eq!(
+                metrics.snapshot().closed.total,
+                closed + 1,
+                "timer retained an IoRef (started: {started}, ack: {ack})"
+            );
+        }
+    }
+
+    #[ntex::test]
+    async fn test_ping_timer_does_not_retain_connection() {
+        timer_releases_connection(
+            ServiceConfig::new()
+                .set_ping_timeout(Seconds(30))
+                .set_settings_timeout(Seconds::ZERO),
+            false,
+        )
+        .await;
+    }
+
+    #[ntex::test]
+    async fn test_settings_timer_does_not_retain_connection() {
+        for ack in [false, true] {
+            timer_releases_connection(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds(30)),
+                ack,
+            )
+            .await;
+        }
+    }
+
     #[ntex::test]
     async fn test_ping_counter_saturates() {
         use std::future::{Future, poll_fn};
@@ -1543,7 +1626,7 @@ mod tests {
         con.0.pings_count.set(u16::MAX - 2);
 
         // Drive the real ping task with a short interval, without a second spawned timer.
-        let mut ping = Box::pin(super::ping(con.clone(), Seconds::ZERO, io.get_ref()));
+        let mut ping = Box::pin(super::ping(super::Rc::downgrade(&con.0), Seconds::ZERO));
         for (counter, count) in [(1_u64, u16::MAX - 1), (2, u16::MAX), (3, u16::MAX)] {
             let payload = counter.to_be_bytes();
             ntex::time::timeout(
@@ -1559,6 +1642,11 @@ mod tests {
             )
             .await
             .expect("keep-alive ping was not sent");
+            assert_eq!(
+                super::Rc::strong_count(&con.0),
+                1,
+                "keep-alive task retained the connection between pings"
+            );
             assert_eq!(con.pings_count(), count);
             io.flush(true).await.unwrap();
             let frames = client_frames(&peer, &codec);
