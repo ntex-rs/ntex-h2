@@ -2,6 +2,9 @@
 
 ## [4.3.0] - 2026-10-17
 
+* Saturate the keep-alive ping statistic at `u16::MAX` instead of panicking in
+  overflow-checked builds or wrapping to zero
+
 * Remove cancelled client-pool waiters promptly and forward unused capacity
   notifications so cancellation cannot strand other waiting requests
 

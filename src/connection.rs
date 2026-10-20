@@ -1373,7 +1373,7 @@ async fn ping(st: Connection, timeout: time::Seconds, io: IoRef) {
         st.unset_flags(ConnectionFlags::RECV_PONG);
         st.0.ping_payload.set(counter.to_be_bytes());
         st.encode(frame::Ping::new(counter.to_be_bytes()));
-        st.0.pings_count.set(st.0.pings_count.get() + 1);
+        st.0.pings_count.set(st.0.pings_count.get().saturating_add(1));
     }
 }
 
@@ -1511,6 +1511,76 @@ mod tests {
             frame::Frame::GoAway(f) => f,
             _ => panic!("Expect Reset frame: {frm:?}"),
         }
+    }
+
+    #[ntex::test]
+    async fn test_ping_counter_saturates() {
+        use std::future::{Future, poll_fn};
+        use std::task::{Context, Poll, Waker};
+
+        let (wire, peer) = ntex::io::testing::IoTest::create();
+        peer.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("CLI")
+            .add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds::ZERO),
+            )
+            .build();
+        let io = Io::new(wire, cfg.clone());
+        let codec = Codec::default();
+        let con = super::Connection::new(
+            false,
+            io.get_ref(),
+            codec.clone(),
+            cfg.get(),
+            false,
+            false,
+            ntex::channel::pool::new(),
+        );
+        io.flush(true).await.unwrap();
+        let _ = client_frames(&peer, &codec);
+        con.0.pings_count.set(u16::MAX - 2);
+
+        // Drive the real ping task with a short interval, without a second spawned timer.
+        let mut ping = Box::pin(super::ping(con.clone(), Seconds::ZERO, io.get_ref()));
+        for (counter, count) in [(1_u64, u16::MAX - 1), (2, u16::MAX), (3, u16::MAX)] {
+            let payload = counter.to_be_bytes();
+            ntex::time::timeout(
+                Millis(1_000),
+                poll_fn(|cx| {
+                    assert!(ping.as_mut().poll(cx).is_pending());
+                    if con.0.ping_payload.get() == payload {
+                        Poll::Ready(())
+                    } else {
+                        Poll::Pending
+                    }
+                }),
+            )
+            .await
+            .expect("keep-alive ping was not sent");
+            assert_eq!(con.pings_count(), count);
+            io.flush(true).await.unwrap();
+            let frames = client_frames(&peer, &codec);
+            let [frame::Frame::Ping(frm)] = frames.as_slice() else {
+                panic!("expected a single ping: {frames:?}");
+            };
+            assert!(!frm.is_ack());
+            assert_eq!(*frm.payload(), payload);
+            if counter < 3 {
+                con.recv_half().recv_pong(&frame::Ping::pong(payload));
+            }
+        }
+
+        // The unacknowledged ping must still time out after the statistic saturates.
+        ntex::time::timeout(Millis(1_000), ping)
+            .await
+            .expect("missing pong did not stop the keep-alive task");
+        assert!(matches!(
+            io.poll_status_update(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(ntex::io::IoStatusUpdate::Timeout)
+        ));
+        assert_eq!(con.pings_count(), u16::MAX);
     }
 
     #[test]
