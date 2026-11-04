@@ -4,7 +4,7 @@ use ntex_bytes::ByteString;
 use ntex_error::Error;
 use ntex_io::IoBoxed;
 use ntex_net::connect::{Address, Connect, ConnectError, Connector as DefaultConnector};
-use ntex_service::{Ctx, IntoService, Service, cfg::SharedCfg};
+use ntex_service::{BindCtx, Ctx, IntoService, Service, cfg::SharedCfg};
 use ntex_util::{channel::pool, time::timeout_checked};
 
 use crate::client::{ClientError, SimpleClient, stream::InflightStorage};
@@ -112,6 +112,18 @@ where
             .and_then(|item| item)
     }
 
-    ntex_service::forward_ready!(SharedCfg, svc, |e| e.map(ClientError::from));
-    ntex_service::forward_shutdown!(SharedCfg, svc);
+    #[inline]
+    fn bind(&self, ctx: BindCtx<'_>) {
+        ctx.bind(&self.svc);
+    }
+
+    #[inline]
+    async fn ready(&self, ctx: Ctx<'_, Self, SharedCfg>) -> Result<(), Self::Error> {
+        ctx.ready(&self.svc).await.map_err(|e| e.map(ClientError::from))
+    }
+
+    #[inline]
+    async fn shutdown(&self, ctx: Ctx<'_, Self, SharedCfg>) {
+        ctx.shutdown(&self.svc).await;
+    }
 }

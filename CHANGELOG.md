@@ -1,6 +1,10 @@
 # Changes
 
-## [4.3.0] - 2026-10-17
+## [4.4.1] - 2026-11-04
+
+* Manually implement forward_xxx macros
+
+## [4.4.0] - 2026-10-21
 
 * Skip redundant stream scans for connection-level WINDOW_UPDATE frames when
   connection send capacity was already available
@@ -22,6 +26,8 @@
 
 * Disconnect open streams and wake their waiters when a server connection future is
   cancelled, breaking the connection-stream ownership cycle even with publish calls in flight
+
+## [4.3.0] - 2026-10-17
 
 * Replace `nanorand` with `fastrand`. `nanorand` does not link `advapi32` on Windows
   (unresolved `SystemFunction036`), and the client pool seeded a new generator from
