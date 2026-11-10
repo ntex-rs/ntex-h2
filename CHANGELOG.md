@@ -1,5 +1,10 @@
 # Changes
 
+## Unreleased
+
+* Skip reset-waiter registration for publish handlers that complete immediately,
+  preserving cancellation when a handler resets its stream during the first poll
+
 ## [4.4.1] - 2026-11-04
 
 * Manually implement forward_xxx macros
