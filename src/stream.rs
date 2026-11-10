@@ -147,6 +147,7 @@ bitflags::bitflags! {
         const WAIT_FOR_CAPACITY  = 0b0000_1000;
         const NO_RESET_ON_DROP   = 0b0001_0000;
         const CAPACITY_TIMER     = 0b0010_0000;
+        const QUEUED             = 0b0100_0000;
     }
 }
 
@@ -163,6 +164,10 @@ pub(crate) struct StreamState {
     send: Cell<HalfState>,
     send_window: Cell<Window>,
     send_cap: LocalWaker,
+    /// connection send capacity promised by the connection's blocked queue
+    claim: Cell<WindowSize>,
+    /// connection window updates count when the capacity timer was armed
+    capacity_epoch: Cell<u32>,
     /// Connection config
     pub(crate) con: Connection,
     /// error state
@@ -378,6 +383,8 @@ impl StreamRef {
             send: Cell::new(HalfState::Idle),
             send_window: Cell::new(send_window),
             send_cap: LocalWaker::new(),
+            claim: Cell::new(0),
+            capacity_epoch: Cell::new(0),
             error: Cell::new(None),
             local_close: Cell::new(None),
             content_length: Cell::new(ContentLength::Omitted),
@@ -705,19 +712,60 @@ impl StreamRef {
         self.0.remote_reset_stream(frm.reason());
     }
 
-    pub(crate) fn recv_window_update_connection(&self) {
-        self.wake_capacity_waiter();
-    }
-
     /// Wakes a waiting sender if both stream and connection capacity are available.
     ///
-    /// The capacity timer keeps running while either window is exhausted.
+    /// A sender that has stream capacity but no unclaimed connection capacity
+    /// waits in the connection's blocked queue. The capacity timer keeps
+    /// running while the sender is not woken.
     fn wake_capacity_waiter(&self) {
         if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
-            && self.available_send_capacity() > 0
+            && self.0.send_window.get().window_size() > 0
         {
+            if self.0.con.unclaimed_send_window() > 0 {
+                self.0.send_cap.wake();
+                self.stop_capacity_timer();
+            } else {
+                self.enqueue_blocked();
+            }
+        }
+    }
+
+    /// Queues the sender until connection send capacity is available.
+    fn enqueue_blocked(&self) {
+        if !self.0.flags.get().contains(StreamFlags::QUEUED) {
+            self.0.insert_flag(StreamFlags::QUEUED);
+            self.0.con.enqueue_blocked(self.0.id);
+        }
+    }
+
+    /// Wakes a sender taken from the connection's blocked queue.
+    ///
+    /// Returns the connection send capacity claimed by the woken sender, or
+    /// `0` if it no longer waits or its stream window is exhausted.
+    pub(crate) fn wake_from_queue(&self, budget: WindowSize) -> WindowSize {
+        self.0.remove_flag(StreamFlags::QUEUED);
+        let win = self.0.send_window.get().window_size();
+        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) && win > 0 {
+            let claim = cmp::min(win, budget);
+            self.0.claim.set(self.0.claim.get() + claim);
             self.0.send_cap.wake();
             self.stop_capacity_timer();
+            claim
+        } else {
+            0
+        }
+    }
+
+    /// Takes the connection send capacity claimed by the stream.
+    pub(crate) fn take_claim(&self) -> WindowSize {
+        self.0.claim.replace(0)
+    }
+
+    /// Returns the claimed connection send capacity to the connection.
+    fn release_claim(&self) {
+        let claim = self.take_claim();
+        if claim > 0 {
+            self.0.con.release_claim(claim);
         }
     }
 
@@ -929,6 +977,9 @@ impl StreamRef {
                     return Ok(());
                 }
 
+                // pass connection capacity left after sending to queued streams
+                let _guard = PassCapacity(&self.0.con);
+
                 loop {
                     // the io write buffer is full, wait until the peer reads it
                     if self.0.con.io().is_wr_backpressure() {
@@ -936,6 +987,7 @@ impl StreamRef {
                     }
 
                     // calaculate available send window size
+                    self.release_claim();
                     let win = self.available_send_capacity() as usize;
                     if win > 0 {
                         let size = cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
@@ -1014,6 +1066,7 @@ impl StreamRef {
             && let Some(to) = self.0.con.config().capacity_timeout
         {
             self.0.insert_flag(StreamFlags::CAPACITY_TIMER);
+            self.0.capacity_epoch.set(self.0.con.send_window_updates());
             timer::register(to, self);
         }
     }
@@ -1028,11 +1081,24 @@ impl StreamRef {
     pub(crate) fn capacity_timeout(&self) {
         self.0.remove_flag(StreamFlags::CAPACITY_TIMER);
 
-        // nobody waits, send side is already closed or capacity is available
-        if !self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
-            || self.0.send.get().is_closed()
-            || self.available_send_capacity() > 0
+        // nobody waits or send side is already closed
+        if !self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) || self.0.send.get().is_closed() {
+            return;
+        }
+
+        // capacity is available but the sender was not woken
+        if self.available_send_capacity() > 0 {
+            self.0.send_cap.wake();
+            return;
+        }
+
+        // the sender waits in the blocked queue behind other streams while
+        // the peer keeps opening the connection window
+        if self.0.flags.get().contains(StreamFlags::QUEUED)
+            && self.0.send_window.get().window_size() > 0
+            && self.0.capacity_epoch.get() != self.0.con.send_window_updates()
         {
+            self.start_capacity_timer();
             return;
         }
 
@@ -1090,14 +1156,19 @@ impl StreamRef {
         &self,
         cx: &Context<'_>,
     ) -> Poll<Result<WindowSize, Error<OperationError>>> {
+        // the claim only reserves capacity until the woken sender runs
+        self.release_claim();
+
         if let Err(err) = self.0.check_error().and_then(|()| self.0.con.check_error()) {
             self.cancel_capacity_wait();
+            self.0.con.wake_blocked();
             return Poll::Ready(Err(err));
         }
 
         // nothing can be sent after the send side is closed
         if let HalfState::Closed(reason) = self.0.send.get() {
             self.cancel_capacity_wait();
+            self.0.con.wake_blocked();
             return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
         }
 
@@ -1109,6 +1180,13 @@ impl StreamRef {
             self.register_send_waker(cx);
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
             self.start_capacity_timer();
+            if self.0.send_window.get().window_size() > 0 {
+                // blocked on the connection window
+                self.enqueue_blocked();
+            } else {
+                // blocked on the stream window, pass the connection capacity on
+                self.0.con.wake_blocked();
+            }
             Poll::Pending
         }
     }
@@ -1187,7 +1265,22 @@ struct CapacityWaiter<'a>(&'a StreamRef);
 
 impl Drop for CapacityWaiter<'_> {
     fn drop(&mut self) {
-        self.0.cancel_capacity_wait();
+        // an abandoned wait passes its claim on, after a successful wait the
+        // capacity is passed on once the data is sent
+        if self.0.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY) {
+            self.0.cancel_capacity_wait();
+            self.0.release_claim();
+            self.0.0.con.wake_blocked();
+        }
+    }
+}
+
+/// Wakes streams waiting for connection capacity when sending stops.
+struct PassCapacity<'a>(&'a Connection);
+
+impl Drop for PassCapacity<'_> {
+    fn drop(&mut self) {
+        self.0.wake_blocked();
     }
 }
 
