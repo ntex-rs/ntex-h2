@@ -14,6 +14,11 @@
 * Release HPACK tables and the decoding buffer once a connection dispatcher stops,
   even while user code still holds a `StreamRef`
 
+* Run keep-alive pings and the settings-acknowledgment timeout on the shared per-thread
+  timer instead of two tasks per connection; closed connections release their timer
+  state immediately. Deadlines now have one-second granularity and fire between the
+  configured timeout and one second later
+
 ## [4.4.1] - 2026-11-04
 
 * Manually implement forward_xxx macros

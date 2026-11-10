@@ -8,13 +8,13 @@ use ntex_error::Error;
 use ntex_http::{HeaderMap, Method};
 use ntex_io::IoRef;
 use ntex_service::cfg::Cfg;
-use ntex_util::time::{self, now, sleep};
-use ntex_util::{HashMap, HashSet, channel::pool, future::Either, spawn};
+use ntex_util::time::now;
+use ntex_util::{HashMap, HashSet, channel::pool, future::Either};
 
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
 use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
-use crate::{codec::Codec, config::ServiceConfig, consts, message::Message, window::Window};
+use crate::{codec::Codec, config::ServiceConfig, consts, message::Message, timer, window::Window};
 
 pub(crate) type EitherError = Either<Error<ConnectionError>, StreamErrorInner>;
 
@@ -38,7 +38,7 @@ bitflags::bitflags! {
     }
 }
 
-struct ConnectionState {
+pub(crate) struct ConnectionState {
     io: IoRef,
     codec: Codec,
     send_window: Cell<Window>,
@@ -60,6 +60,8 @@ struct ConnectionState {
     pings_count: Cell<u16>,
     // payload of the last keep-alive ping
     ping_payload: Cell<[u8; 8]>,
+    // shared timer registration of settings and keep-alive deadlines
+    timer_id: Cell<u64>,
     last_id: Cell<StreamId>,
 
     // Local config
@@ -154,6 +156,7 @@ impl Connection {
             streams_count: Cell::new(0),
             pings_count: Cell::new(0),
             ping_payload: Cell::new([0; 8]),
+            timer_id: Cell::new(0),
             last_id: Cell::new(StreamId::CON),
             readiness: RefCell::new(VecDeque::new()),
             on_capacity: Cell::new(None),
@@ -168,18 +171,14 @@ impl Connection {
         });
         let con = Connection(state);
 
-        // start ping/pong
-        if con.0.local_config.ping_timeout.non_zero() {
-            spawn(ping(Rc::downgrade(&con.0), con.0.local_config.ping_timeout));
-        }
-
-        // wait for the local settings acknowledgment
-        if con.0.local_config.settings_timeout.non_zero() {
-            spawn(settings_timer(
-                Rc::downgrade(&con.0),
-                con.0.local_config.settings_timeout,
-            ));
-        }
+        // keep-alive pings and the local settings acknowledgment deadline
+        // run on the shared per-thread timer
+        con.set_flags(ConnectionFlags::RECV_PONG);
+        con.0.timer_id.set(timer::register_connection(
+            Rc::downgrade(&con.0),
+            con.0.local_config.settings_timeout,
+            con.0.local_config.ping_timeout,
+        ));
 
         con
     }
@@ -199,6 +198,7 @@ impl Connection {
     /// Releases codec state and reset history after the protocol dispatcher
     /// has stopped, handles that outlive the connection keep only small state.
     pub(crate) fn release(&self) {
+        timer::unregister_connection(self.0.timer_id.replace(0));
         self.0.codec.release();
         self.0.local_pending_reset.release();
     }
@@ -1016,6 +1016,7 @@ impl RecvHalfConnection {
                 )));
             }
             self.set_flags(ConnectionFlags::SETTINGS_PROCESSED);
+            timer::settings_acked(self.0.timer_id.get());
             if let Some(max) = self.0.local_config.settings.max_frame_size() {
                 self.0.codec.set_recv_frame_size(max as usize);
             }
@@ -1356,58 +1357,47 @@ impl fmt::Debug for Connection {
     }
 }
 
-async fn ping(state: Weak<ConnectionState>, timeout: time::Seconds) {
-    let mut counter: u64 = 0;
-    let keepalive: time::Millis = time::Millis::from(timeout) + time::Millis(100);
-
-    {
-        let Some(st) = state.upgrade().map(Connection) else {
-            return;
+impl Connection {
+    /// Handles expired shared timer deadlines.
+    ///
+    /// Returns `true` if the next keep-alive ping must be scheduled.
+    pub(crate) fn timer_expired(state: &Weak<ConnectionState>, settings: bool, ping: bool) -> bool {
+        let Some(con) = state.upgrade().map(Connection) else {
+            return false;
         };
-        log::debug!(
-            "{}: start http client ping/pong task, ka: {keepalive:?}",
-            st.tag()
-        );
-        st.set_flags(ConnectionFlags::RECV_PONG);
-        if st.is_closed() {
-            return;
+        if settings && !con.is_closed() && !con.settings_processed() {
+            con.set_flags(ConnectionFlags::SETTINGS_TIMEOUT);
+            con.0.io.notify_timeout();
         }
+        ping && con.keepalive()
     }
 
-    loop {
-        sleep(keepalive).await;
-        let Some(st) = state.upgrade().map(Connection) else {
-            break;
-        };
-        if st.is_closed() {
-            log::trace!(
-                "{}: http client connection is closed, stopping keep-alive task",
-                st.tag()
-            );
-            break;
+    /// Sends the next keep-alive ping, or notifies an I/O timeout if the
+    /// previous ping is not acknowledged.
+    fn keepalive(&self) -> bool {
+        if self.is_closed() || self.flags().contains(ConnectionFlags::SETTINGS_TIMEOUT) {
+            log::trace!("{}: connection is closed, stopping keep-alive timer", self.tag());
+            return false;
         }
-        if !st.0.flags.get().contains(ConnectionFlags::RECV_PONG) {
-            st.0.io.notify_timeout();
-            break;
+        if !self.flags().contains(ConnectionFlags::RECV_PONG) {
+            self.0.io.notify_timeout();
+            return false;
         }
 
-        counter += 1;
-        st.unset_flags(ConnectionFlags::RECV_PONG);
-        st.0.ping_payload.set(counter.to_be_bytes());
-        st.encode(frame::Ping::new(counter.to_be_bytes()));
-        st.0.pings_count.set(st.0.pings_count.get().saturating_add(1));
+        let payload = u64::from_be_bytes(self.0.ping_payload.get())
+            .wrapping_add(1)
+            .to_be_bytes();
+        self.unset_flags(ConnectionFlags::RECV_PONG);
+        self.0.ping_payload.set(payload);
+        self.encode(frame::Ping::new(payload));
+        self.0.pings_count.set(self.0.pings_count.get().saturating_add(1));
+        true
     }
 }
 
-/// Closes the connection if the peer does not acknowledge the local settings in time.
-async fn settings_timer(state: Weak<ConnectionState>, timeout: time::Seconds) {
-    sleep(timeout).await;
-    let Some(st) = state.upgrade().map(Connection) else {
-        return;
-    };
-    if !st.is_closed() && !st.settings_processed() {
-        st.set_flags(ConnectionFlags::SETTINGS_TIMEOUT);
-        st.0.io.notify_timeout();
+impl Drop for ConnectionState {
+    fn drop(&mut self) {
+        timer::unregister_connection(self.timer_id.get());
     }
 }
 
@@ -1571,12 +1561,22 @@ mod tests {
                 sleep(Millis(20)).await;
             }
 
+            let id = con.0.timer_id.get();
             let weak = super::Rc::downgrade(&con.0);
             drop(con);
             drop(io);
             assert!(
                 weak.upgrade().is_none(),
                 "timer retained the connection (started: {started}, ack: {ack})"
+            );
+            assert!(
+                crate::timer::connection_deadlines(id).is_none(),
+                "timer kept a stale entry (started: {started}, ack: {ack})"
+            );
+            assert_eq!(
+                weak.weak_count(),
+                0,
+                "timer retained the connection allocation (started: {started}, ack: {ack})"
             );
 
             // IoState records closure on drop, after the transport tasks release it.
@@ -1595,8 +1595,8 @@ mod tests {
     /// HOW:
     /// - Enable the ping timer and disable the settings timer; test both before and after timer
     ///   startup.
-    /// - Drop the connection and I/O, then verify the weak connection reference expires and the
-    ///   I/O closure metric increases.
+    /// - Drop the connection and I/O, then verify the weak connection reference expires, the
+    ///   shared timer entry and its `Weak` are removed, and the I/O closure metric increases.
     #[ntex::test]
     async fn test_ping_timer_does_not_retain_connection() {
         timer_releases_connection(
@@ -1614,8 +1614,8 @@ mod tests {
     /// HOW:
     /// - Enable only the settings timer and repeat with settings acknowledged and
     ///   unacknowledged, before and after timer startup.
-    /// - Drop the connection and I/O; verify the weak reference expires and the I/O closure
-    ///   metric increases.
+    /// - Drop the connection and I/O; verify the weak reference expires, the shared timer entry
+    ///   and its `Weak` are removed, and the I/O closure metric increases.
     #[ntex::test]
     async fn test_settings_timer_does_not_retain_connection() {
         for ack in [false, true] {
@@ -1633,15 +1633,13 @@ mod tests {
     /// timeouts.
     ///
     /// HOW:
-    /// - Start the counter near its maximum and manually poll the ping task through three
-    ///   pings, acknowledging only the first two.
-    /// - Check each ping payload, the saturated counter, and that the task holds no extra
-    ///   strong connection reference between pings.
-    /// - Leave the final ping unacknowledged and verify the task ends with an I/O timeout while
-    ///   the counter remains saturated.
+    /// - Start the counter near its maximum and expire the keep-alive deadline through
+    ///   `Connection::timer_expired` three times, acknowledging only the first two pings.
+    /// - Check each ping payload, the saturated counter, and that the next ping is scheduled.
+    /// - Expire the deadline again with the final ping unacknowledged and verify no ping is
+    ///   scheduled, the I/O reports a timeout, and the counter remains saturated.
     #[ntex::test]
     async fn test_ping_counter_saturates() {
-        use std::future::{Future, poll_fn};
         use std::task::{Context, Poll, Waker};
 
         let (wire, peer) = ntex::io::testing::IoTest::create();
@@ -1668,28 +1666,11 @@ mod tests {
         let _ = client_frames(&peer, &codec);
         con.0.pings_count.set(u16::MAX - 2);
 
-        // Drive the real ping task with a short interval, without a second spawned timer.
-        let mut ping = Box::pin(super::ping(super::Rc::downgrade(&con.0), Seconds::ZERO));
+        let weak = super::Rc::downgrade(&con.0);
         for (counter, count) in [(1_u64, u16::MAX - 1), (2, u16::MAX), (3, u16::MAX)] {
             let payload = counter.to_be_bytes();
-            ntex::time::timeout(
-                Millis(1_000),
-                poll_fn(|cx| {
-                    assert!(ping.as_mut().poll(cx).is_pending());
-                    if con.0.ping_payload.get() == payload {
-                        Poll::Ready(())
-                    } else {
-                        Poll::Pending
-                    }
-                }),
-            )
-            .await
-            .expect("keep-alive ping was not sent");
-            assert_eq!(
-                super::Rc::strong_count(&con.0),
-                1,
-                "keep-alive task retained the connection between pings"
-            );
+            assert!(super::Connection::timer_expired(&weak, false, true));
+            assert_eq!(con.0.ping_payload.get(), payload);
             assert_eq!(con.pings_count(), count);
             io.flush(true).await.unwrap();
             let frames = client_frames(&peer, &codec);
@@ -1704,14 +1685,109 @@ mod tests {
         }
 
         // The unacknowledged ping must still time out after the statistic saturates.
-        ntex::time::timeout(Millis(1_000), ping)
-            .await
-            .expect("missing pong did not stop the keep-alive task");
+        assert!(!super::Connection::timer_expired(&weak, false, true));
         assert!(matches!(
             io.poll_status_update(&mut Context::from_waker(Waker::noop())),
             Poll::Ready(ntex::io::IoStatusUpdate::Timeout)
         ));
         assert_eq!(con.pings_count(), u16::MAX);
+    }
+
+    /// STATEMENT: Connection deadlines leave the shared timer once they are no longer needed.
+    ///
+    /// HOW:
+    /// - Create connections with both timeouts disabled and verify none is registered.
+    /// - With both timeouts enabled, acknowledge the local settings and verify only the
+    ///   keep-alive deadline remains.
+    /// - With only the settings timeout enabled, verify the acknowledgment removes the entry.
+    /// - Call `Connection::release` on a connection with both deadlines and verify its entry is
+    ///   removed.
+    #[ntex::test]
+    async fn test_connection_timer_entries() {
+        let new = |settings, ping| {
+            let cfg = SharedCfg::new("CLI")
+                .add(
+                    ServiceConfig::new()
+                        .set_ping_timeout(ping)
+                        .set_settings_timeout(settings),
+                )
+                .build();
+            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let io = Io::new(wire, cfg.clone());
+            let con = super::Connection::new(
+                false,
+                io.get_ref(),
+                Codec::default(),
+                cfg.get(),
+                false,
+                false,
+                ntex::channel::pool::new(),
+            );
+            (io, con)
+        };
+        let deadlines =
+            |con: &super::Connection| crate::timer::connection_deadlines(con.0.timer_id.get());
+
+        let (_io, con) = new(Seconds::ZERO, Seconds::ZERO);
+        assert_eq!(con.0.timer_id.get(), 0);
+        assert_eq!(deadlines(&con), None);
+
+        let (_io, con) = new(Seconds(30), Seconds(30));
+        assert_eq!(deadlines(&con), Some((true, true)));
+        con.recv_half().recv_settings(frame::Settings::ack()).unwrap();
+        assert_eq!(deadlines(&con), Some((false, true)));
+
+        let (_io, con) = new(Seconds(30), Seconds::ZERO);
+        let id = con.0.timer_id.get();
+        assert_eq!(deadlines(&con), Some((true, false)));
+        con.recv_half().recv_settings(frame::Settings::ack()).unwrap();
+        assert_eq!(crate::timer::connection_deadlines(id), None);
+
+        let (_io, con) = new(Seconds(30), Seconds(30));
+        let id = con.0.timer_id.get();
+        con.release();
+        assert_eq!(crate::timer::connection_deadlines(id), None);
+    }
+
+    /// STATEMENT: The shared timer fires a missed settings acknowledgment deadline and stops
+    /// once no deadlines remain.
+    ///
+    /// HOW:
+    /// - Create a connection with a one-second settings timeout and keep-alive disabled.
+    /// - Wait past the deadline and verify the `SETTINGS_TIMEOUT` flag and an I/O timeout.
+    /// - Verify the connection entry is removed and the shared timer driver stopped.
+    #[ntex::test]
+    async fn test_settings_deadline_fires() {
+        use std::task::{Context, Poll, Waker};
+
+        let cfg = SharedCfg::new("CLI")
+            .add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds(1)),
+            )
+            .build();
+        let (wire, _peer) = ntex::io::testing::IoTest::create();
+        let io = Io::new(wire, cfg.clone());
+        let con = super::Connection::new(
+            false,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            ntex::channel::pool::new(),
+        );
+        let id = con.0.timer_id.get();
+
+        sleep(Millis(2_500)).await;
+        assert!(con.flags().contains(super::ConnectionFlags::SETTINGS_TIMEOUT));
+        assert!(matches!(
+            io.poll_status_update(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(ntex::io::IoStatusUpdate::Timeout)
+        ));
+        assert_eq!(crate::timer::connection_deadlines(id), None);
+        assert!(!crate::timer::is_running());
     }
 
     /// STATEMENT: An excessive reset retention duration does not prevent an ID from entering
