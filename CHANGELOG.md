@@ -1,6 +1,6 @@
 # Changes
 
-## [4.4.2] - Unreleased
+## [4.4.2] - 2026-11-10
 
 * Skip reset-waiter registration for publish handlers that complete immediately,
   preserving cancellation when a handler resets its stream during the first poll
