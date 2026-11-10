@@ -5,6 +5,15 @@
 * Skip reset-waiter registration for publish handlers that complete immediately,
   preserving cancellation when a handler resets its stream during the first poll
 
+* Release burst-sized capacity-timer buckets instead of caching them for the worker
+  lifetime, and cache at most four drained buckets
+
+* Deliver connection-failure disconnect notifications concurrently, so a stalled
+  handler no longer delays or retains the other streams
+
+* Release HPACK tables and the decoding buffer once a connection dispatcher stops,
+  even while user code still holds a `StreamRef`
+
 ## [4.4.1] - 2026-11-04
 
 * Manually implement forward_xxx macros

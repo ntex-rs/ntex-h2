@@ -14,11 +14,13 @@ use crate::{config::ServiceConfig, consts, dispatcher::Dispatcher, frame, messag
 use super::ServerError;
 
 // The dispatcher service can outlive its driver through detached publish calls.
+// Dropped after the protocol dispatcher, no frames are decoded or encoded anymore.
 struct DisconnectGuard<'a>(&'a Connection);
 
 impl Drop for DisconnectGuard<'_> {
     fn drop(&mut self) {
         self.0.recv_half().disconnect();
+        self.0.release();
     }
 }
 
@@ -515,6 +517,60 @@ mod tests {
             assert!(matches!(*err, OperationError::Disconnected));
             drop(stream);
             assert_released(&observed).await;
+        }
+    }
+
+    /// STATEMENT: A stopped server connection releases its HPACK state even while a
+    /// `StreamRef` is still retained by user code.
+    ///
+    /// HOW:
+    /// - Exercise both `Server::run` and `handle_one` with a blocking handler.
+    /// - Send a request with a custom header and respond with a custom header so both
+    ///   HPACK tables index entries.
+    /// - Keep a strong `StreamRef`, drop the server future, and assert the codec reports
+    ///   empty tables and only the inline capacity of an empty decoding buffer.
+    #[ntex::test]
+    async fn stopped_connection_releases_hpack_state() {
+        for use_server in [false, true] {
+            let observed = Rc::new(Observed {
+                block_calls: true,
+                ..Observed::default()
+            });
+            let (io, peer) = connection(0, false);
+            let mut hdrs = HeaderMap::new();
+            hdrs.insert("x-request".try_into().unwrap(), "value".try_into().unwrap());
+            let mut buf = BytePages::default();
+            let headers = frame::Headers::new(
+                frame::StreamId::from(1),
+                frame::PseudoHeaders {
+                    method: Some(Method::GET),
+                    scheme: Some("http".into()),
+                    path: Some("/".into()),
+                    ..Default::default()
+                },
+                hdrs,
+                false,
+            );
+            Codec::default().encode(headers.into(), &mut buf).unwrap();
+            peer.write(buf.freeze());
+
+            let mut server = Box::pin(serve(io, observed.clone(), use_server));
+            drive_until(server.as_mut(), &observed, || {
+                observed.streams.borrow().len() == 1
+            })
+            .await;
+            let stream = StreamRef(observed.streams.borrow()[0].upgrade().unwrap());
+            let mut hdrs = HeaderMap::new();
+            hdrs.insert("x-response".try_into().unwrap(), "value".try_into().unwrap());
+            stream
+                .send_response(ntex_http::StatusCode::OK, hdrs, false)
+                .unwrap();
+            let [enc, _, dec, buf_cap] = stream.0.con.codec().retained_hpack();
+            let empty = ntex_bytes::BytesMut::new().capacity();
+            assert!(enc > 0 && dec > 0 && buf_cap > empty);
+
+            drop(server);
+            assert_eq!(stream.0.con.codec().retained_hpack(), [0, 0, 0, empty]);
         }
     }
 }

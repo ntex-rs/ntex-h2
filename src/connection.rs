@@ -196,6 +196,13 @@ impl Connection {
         &self.0.codec
     }
 
+    /// Releases codec state and reset history after the protocol dispatcher
+    /// has stopped, handles that outlive the connection keep only small state.
+    pub(crate) fn release(&self) {
+        self.0.codec.release();
+        self.0.local_pending_reset.release();
+    }
+
     pub(crate) fn config(&self) -> &ServiceConfig {
         &self.0.local_config
     }
@@ -1436,6 +1443,13 @@ impl Default for Pending {
 }
 
 impl Pending {
+    fn release(&self) {
+        self.0.set(Some(Box::new(PendingInner {
+            ids: HashSet::default(),
+            queue: VecDeque::new(),
+        })));
+    }
+
     fn add(&self, id: StreamId, config: &ServiceConfig) {
         let mut inner = self.0.take().unwrap();
 

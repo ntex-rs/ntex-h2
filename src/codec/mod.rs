@@ -170,6 +170,25 @@ impl Codec {
         self.0.encoder_max_frame_size.get()
     }
 
+    /// Releases HPACK tables, buffers and partial header blocks.
+    ///
+    /// Must be called only after the connection has stopped, the codec
+    /// loses the HPACK state shared with the peer.
+    pub(crate) fn release(&self) {
+        self.0.encoder_hpack.borrow_mut().release();
+        self.0.decoder_hpack.borrow_mut().release();
+        self.0.partial.borrow_mut().take();
+    }
+
+    #[cfg(test)]
+    /// Returns the retained HPACK sizes: encoder table and index capacity,
+    /// decoder table and buffer capacity.
+    pub(crate) fn retained_hpack(&self) -> [usize; 4] {
+        let (enc_size, enc_cap) = self.0.encoder_hpack.borrow().retained();
+        let (dec_size, dec_cap) = self.0.decoder_hpack.borrow().retained();
+        [enc_size, enc_cap, dec_size, dec_cap]
+    }
+
     /// Encodes a HEADERS frame from borrowed header fields.
     pub(crate) fn encode_headers_ref(
         &self,

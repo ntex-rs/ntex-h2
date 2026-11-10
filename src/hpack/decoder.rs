@@ -182,6 +182,22 @@ impl Decoder {
         }
     }
 
+    /// Releases the dynamic table and the decoding buffer.
+    ///
+    /// The peer's table state is lost, the decoder must not be used for the
+    /// same connection afterwards.
+    pub(crate) fn release(&mut self) {
+        self.max_size_update = None;
+        self.table = Table::new(self.table.max_size);
+        self.buffer = BytesMut::new();
+    }
+
+    #[cfg(test)]
+    /// Returns the dynamic table size and the decoding buffer capacity.
+    pub(crate) fn retained(&self) -> (usize, usize) {
+        (self.table.size(), self.buffer.capacity())
+    }
+
     /// Queues a maximum dynamic table size update.
     #[allow(dead_code)]
     pub fn queue_size_update(&mut self, size: usize) {
