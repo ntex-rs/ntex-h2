@@ -79,8 +79,10 @@ impl SimpleClient {
 
         let fut = IoDispatcher::new(io, con.codec().clone(), disp)
             .max_inflight(u32::from(con.config().max_inflight));
+        let con2 = con.clone();
         ntex_util::spawn(async move {
             let _ = fut.await;
+            con2.release();
         });
 
         SimpleClient(Rc::new(ClientRef {

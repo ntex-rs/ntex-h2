@@ -56,7 +56,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                     self.connection.tag()
                 );
                 let streams = self.connection.proto_error(&err);
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                 control(
                     Control::proto_error(err, self.connection.last_stream_id()),
                     &self.inner,
@@ -87,7 +87,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
     async fn codec_error(&self, err: ConnectionError) -> Result<Option<Frame>, Err> {
         let err = Error::new(err, self.connection.service());
         let streams = self.connection.proto_error(&err);
-        self.handle_connection_error(streams, err.clone().map(OperationError::from));
+        self.handle_connection_error(streams, &err.clone().map(OperationError::from));
         control(
             Control::proto_error(err, self.connection.last_stream_id()),
             &self.inner,
@@ -95,13 +95,20 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
         .await
     }
 
-    fn handle_connection_error(&self, streams: HashMap<StreamId, StreamRef>, err: Error<OperationError>) {
-        if !streams.is_empty() {
-            let publish = self.inner.publish.bind();
+    fn handle_connection_error(
+        &self,
+        streams: HashMap<StreamId, StreamRef>,
+        err: &Error<OperationError>,
+    ) {
+        // notifications are independent, a stalled handler must not delay or
+        // retain the remaining streams
+        for stream in streams.into_values() {
+            let call = self
+                .inner
+                .publish
+                .call_static(Message::disconnect(err.clone(), stream));
             spawn(async move {
-                for stream in streams.into_values() {
-                    let _ = publish.call(Message::disconnect(err.clone(), stream)).await;
-                }
+                let _ = call.await;
             });
         }
     }
@@ -163,7 +170,7 @@ where
                 Frame::Settings(settings) => match self.connection.recv_settings(settings) {
                     Err(Either::Left(err)) => {
                         let streams = self.connection.proto_error(&err);
-                        self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                        self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                         control(
                             Control::proto_error(err, self.connection.last_stream_id()),
                             &self.inner,
@@ -209,7 +216,7 @@ where
                         .recv_go_away(reason, frm.last_stream_id(), frm.data());
                     self.handle_connection_error(
                         streams,
-                        Error::new(ConnectionError::GoAway(reason), self.connection.service()),
+                        &Error::new(ConnectionError::GoAway(reason), self.connection.service()),
                     );
                     // remaining streams complete, connection closes when they are done
                     go_away(Control::go_away(frm), &self.inner).await
@@ -234,7 +241,7 @@ where
                 let streams = self.connection.settings_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::SettingsTimeout, self.connection.service());
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                 control(
                     Control::proto_error(err, self.connection.last_stream_id()),
                     &self.inner,
@@ -249,7 +256,7 @@ where
                 let streams = self.connection.ping_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::KeepaliveTimeout, self.connection.service());
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                 control(
                     Control::proto_error(err, self.connection.last_stream_id()),
                     &self.inner,
@@ -264,7 +271,7 @@ where
                 let streams = self.connection.read_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::ReadTimeout, self.connection.service());
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                 control(
                     Control::proto_error(err, self.connection.last_stream_id()),
                     &self.inner,
@@ -279,7 +286,7 @@ where
                 let streams = self.connection.write_timeout();
                 let err: Error<ConnectionError> =
                     Error::new(ConnectionError::WriteTimeout, self.connection.service());
-                self.handle_connection_error(streams, err.clone().map(OperationError::from));
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
                 control(
                     Control::proto_error(err, self.connection.last_stream_id()),
                     &self.inner,
@@ -290,7 +297,7 @@ where
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(
                     streams,
-                    Error::new(OperationError::Disconnected, self.connection.service()),
+                    &Error::new(OperationError::Disconnected, self.connection.service()),
                 );
                 control(Control::peer_gone(err), &self.inner).await
             }
@@ -300,7 +307,7 @@ where
                 let streams = self.connection.disconnect();
                 self.handle_connection_error(
                     streams,
-                    Error::new(OperationError::Disconnected, self.connection.service()),
+                    &Error::new(OperationError::Disconnected, self.connection.service()),
                 );
                 self.inner.connection.encode(
                     GoAway::new(Reason::INTERNAL_ERROR)
@@ -528,11 +535,15 @@ mod tests {
     }
 
     fn request(inner: &Inner<(), ()>, eof: bool) -> (StreamRef, Message) {
+        request_id(inner, 1, eof)
+    }
+
+    fn request_id(inner: &Inner<(), ()>, id: u32, eof: bool) -> (StreamRef, Message) {
         inner
             .connection
             .recv_half()
             .recv_headers(frame::Headers::new(
-                StreamId::from(1),
+                StreamId::from(id),
                 frame::PseudoHeaders {
                     method: Some(Method::POST),
                     scheme: Some("http".into()),
@@ -712,5 +723,48 @@ mod tests {
         assert_eq!(inner.connection.recv_half().disconnect(), HashMap::default());
         assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(None))));
         assert_eq!(dropped.get(), 1);
+    }
+
+    /// STATEMENT: Connection-failure notifications are delivered independently, so a
+    /// stalled handler neither delays nor retains the other streams.
+    ///
+    /// HOW:
+    /// - Open three streams and use a handler that never completes the first
+    ///   `Disconnect` message but completes every later one.
+    /// - Fail the connection through `handle_connection_error` and yield.
+    /// - Assert all three notifications were delivered and the two non-stalled
+    ///   handlers completed and dropped their `StreamRef`.
+    #[ntex::test]
+    async fn connection_error_notifies_streams_concurrently() {
+        let delivered = Rc::new(Cell::new(0));
+        let completed = Rc::new(Cell::new(0));
+        let delivered2 = delivered.clone();
+        let completed2 = completed.clone();
+        let (inner, _io, _ctx) = setup(Pipeline::new((), async move |msg: Message| {
+            assert!(matches!(msg.kind, MessageKind::Disconnect(_)));
+            delivered2.set(delivered2.get() + 1);
+            if delivered2.get() == 1 {
+                future::pending::<()>().await;
+            }
+            drop(msg);
+            completed2.set(completed2.get() + 1);
+            Ok(())
+        }));
+        let streams = [1, 3, 5].map(|id| Rc::downgrade(&request_id(&inner, id, false).0.0));
+        let disp = Dispatcher {
+            connection: inner.connection.recv_half(),
+            inner: Rc::new(inner),
+        };
+        let open = disp.connection.disconnect();
+        assert_eq!(open.len(), 3);
+        disp.handle_connection_error(
+            open,
+            &Error::new(OperationError::Disconnected, disp.connection.service()),
+        );
+        ntex_util::time::sleep(ntex_util::time::Millis(50)).await;
+
+        assert_eq!(delivered.get(), 3);
+        assert_eq!(completed.get(), 2);
+        assert_eq!(streams.iter().filter(|s| s.upgrade().is_none()).count(), 2);
     }
 }

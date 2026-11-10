@@ -25,6 +25,21 @@ impl Encoder {
         }
     }
 
+    /// Releases the dynamic table.
+    ///
+    /// The peer's table state is lost, the encoder must not be used for the
+    /// same connection afterwards.
+    pub(crate) fn release(&mut self) {
+        self.size_update = None;
+        self.table = Table::new(self.table.max_size(), 0);
+    }
+
+    #[cfg(test)]
+    /// Returns the dynamic table size and index capacity.
+    pub(crate) fn retained(&self) -> (usize, usize) {
+        (self.table.size(), self.table.capacity())
+    }
+
     /// Queues a maximum dynamic table size update.
     ///
     /// The next call to `encode` will include a dynamic size update frame.

@@ -8,6 +8,8 @@ use ntex_util::{HashMap, HashSet, spawn};
 use crate::stream::StreamRef;
 
 const CAP: usize = 4;
+/// Larger drained buckets are released instead of being kept for reuse.
+const MAX_CACHED_CAPACITY: usize = 128;
 const SEC: Duration = Duration::from_secs(1);
 
 thread_local! {
@@ -42,6 +44,14 @@ impl InnerMut {
             && let Some(streams) = self.notifications.get_mut(&id)
         {
             streams.remove(io);
+        }
+    }
+
+    /// Keeps a drained bucket for reuse, burst-sized buckets are released.
+    fn recycle(&mut self, items: HashSet<StreamRef>) {
+        debug_assert!(items.is_empty());
+        if self.cache.len() < CAP && items.capacity() <= MAX_CACHED_CAPACITY {
+            self.cache.push_back(items);
         }
     }
 }
@@ -110,9 +120,7 @@ pub(crate) fn register(timeout: Seconds, io: &StreamRef) {
                                         }
                                     }
                                 }
-                                if inner.cache.len() <= CAP {
-                                    inner.cache.push_back(items);
-                                }
+                                inner.recycle(items);
                             } else {
                                 break;
                             }
@@ -171,4 +179,96 @@ pub(crate) fn cancel() {
 #[cfg(test)]
 pub(crate) fn is_registered(io: &StreamRef) -> bool {
     TIMER.with(|timer| timer.storage.borrow().streams.contains_key(io))
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_io::{Io, testing::IoTest};
+    use ntex_service::cfg::SharedCfg;
+    use ntex_util::{channel::pool, time::Millis};
+
+    use super::*;
+    use crate::{ServiceConfig, codec::Codec, connection::Connection, frame::StreamId};
+
+    fn cached() -> Vec<usize> {
+        TIMER.with(|timer| {
+            let inner = timer.storage.borrow();
+            inner.cache.iter().map(HashSet::capacity).collect()
+        })
+    }
+
+    /// STATEMENT: The bucket cache holds at most `CAP` drained buckets, none larger than
+    /// `MAX_CACHED_CAPACITY`.
+    ///
+    /// HOW:
+    /// - Recycle `CAP + 2` small buckets and verify only `CAP` are cached.
+    /// - Recycle an oversized bucket into an empty cache and verify it is released, while a
+    ///   bucket at the capacity bound is kept.
+    #[test]
+    fn recycle_bounds_cache() {
+        let mut inner = InnerMut {
+            cache: VecDeque::new(),
+            streams: HashMap::default(),
+            notifications: BTreeMap::default(),
+        };
+        for _ in 0..CAP + 2 {
+            inner.recycle(HashSet::default());
+        }
+        assert_eq!(inner.cache.len(), CAP);
+
+        inner.cache.clear();
+        let mut items = HashSet::default();
+        items.reserve(MAX_CACHED_CAPACITY * 8);
+        inner.recycle(items);
+        assert_eq!(inner.cache.len(), 0);
+
+        let mut items = HashSet::default();
+        items.reserve(MAX_CACHED_CAPACITY / 2);
+        assert!(items.capacity() <= MAX_CACHED_CAPACITY);
+        inner.recycle(items);
+        assert_eq!(inner.cache.len(), 1);
+    }
+
+    /// STATEMENT: A burst of capacity timers does not leave its bucket allocation cached after
+    /// the deadline passes, while a small bucket is kept for reuse.
+    ///
+    /// HOW:
+    /// - Register 1000 streams for a one-second deadline and two streams for a two-second
+    ///   deadline, then unregister them all, as when capacity recovers.
+    /// - Wait until both deadlines expire and the timer task stops.
+    /// - Verify the cache holds only the small bucket, within `MAX_CACHED_CAPACITY`.
+    #[ntex::test]
+    async fn burst_bucket_is_released() {
+        let cfg = SharedCfg::new("SRV").add(ServiceConfig::new()).build();
+        let (wire, _peer) = IoTest::create();
+        let io = Io::new(wire, cfg.clone());
+        let con = Connection::new(
+            true,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            pool::new(),
+        );
+        let stream = |id: u32| StreamRef::new(StreamId::from(id * 2 + 1), true, con.clone());
+
+        let burst: Vec<_> = (0..1000).map(stream).collect();
+        let small: Vec<_> = (1000..1002).map(stream).collect();
+        for io in &burst {
+            register(Seconds(1), io);
+        }
+        for io in &small {
+            register(Seconds(2), io);
+        }
+        for io in burst.iter().chain(&small) {
+            unregister(io);
+        }
+
+        sleep(Millis(3500)).await;
+        assert!(!TIMER.with(|timer| timer.running.get()));
+        let cache = cached();
+        assert_eq!(cache.len(), 1);
+        assert!(cache[0] <= MAX_CACHED_CAPACITY);
+    }
 }
