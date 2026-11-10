@@ -8,6 +8,8 @@ pub(crate) const DEFAULT_MAX_CONCURRENT_STREAMS: u32 = 256;
 // assumed peer limit until its SETTINGS arrive, RFC 9113 §6.5.2 recommends
 // no smaller than 100
 pub(crate) const DEFAULT_REMOTE_MAX_CONCURRENT_STREAMS: u32 = 100;
+// an idle connection frees a stream map that held more streams than this
+pub(crate) const IDLE_STREAMS_MAX: usize = 2 * DEFAULT_MAX_CONCURRENT_STREAMS as usize;
 pub(crate) const DEFAULT_RESET_STREAM_MAX: usize = 32;
 // number of recent peer streams the rapid-reset ratio is measured over
 pub(crate) const RESET_RATIO_WINDOW: u32 = 1024;
