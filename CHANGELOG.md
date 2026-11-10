@@ -14,6 +14,12 @@
 * Release HPACK tables and the decoding buffer once a connection dispatcher stops,
   even while user code still holds a `StreamRef`
 
+* Allocate closed-stream reset history on the first retained stream, never allocate it
+  when reset history is disabled, and free it when the connection is released
+
+* Free the stream map of a connection when its last stream closes after a burst of more
+  than 512 concurrent streams, instead of keeping the peak allocation while idle
+
 * Run keep-alive pings and the settings-acknowledgment timeout on the shared per-thread
   timer instead of two tasks per connection; closed connections release their timer
   state immediately. Deadlines now have one-second granularity and fire between the

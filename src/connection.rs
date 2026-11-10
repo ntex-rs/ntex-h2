@@ -50,6 +50,8 @@ pub(crate) struct ConnectionState {
     recv_size: Cell<u32>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
+    // most streams open since the connection was last idle
+    streams_peak: Cell<usize>,
     // streams waiting for connection send capacity, in arrival order
     blocked: RefCell<VecDeque<StreamId>>,
     // connection send capacity promised to woken streams that have not run yet
@@ -158,6 +160,7 @@ impl Connection {
             recv_window: Cell::new(recv_window),
             recv_size: Cell::new(0),
             streams: RefCell::new(HashMap::default()),
+            streams_peak: Cell::new(0),
             blocked: RefCell::new(VecDeque::new()),
             claimed: Cell::new(0),
             send_window_updates: Cell::new(0),
@@ -755,6 +758,7 @@ impl ConnectionState {
         let mut claim = 0;
         let empty = {
             let mut streams = self.streams.borrow_mut();
+            self.streams_peak.set(self.streams_peak.get().max(streams.len()));
             if let Some(stream) = streams.remove(&id) {
                 removed = true;
                 claim = stream.take_claim();
@@ -773,7 +777,12 @@ impl ConnectionState {
                     released = true;
                 }
             }
-            streams.is_empty()
+            let empty = streams.is_empty();
+            // free the memory of a burst once the connection is idle
+            if empty && self.streams_peak.replace(0) > consts::IDLE_STREAMS_MAX {
+                *streams = HashMap::default();
+            }
+            empty
         };
         if released {
             self.notify_capacity();
@@ -1362,6 +1371,7 @@ impl RecvHalfConnection {
     /// counted until they are released.
     fn take_streams(&self) -> HashMap<StreamId, StreamRef> {
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        self.0.streams_peak.set(0);
         self.0.blocked.take();
         self.0.claimed.set(0);
         self.0.active_remote_streams.set(0);
@@ -1510,6 +1520,8 @@ impl Drop for ReadyWaiter<'_> {
     }
 }
 
+/// Recently closed stream ids, allocated on the first retained id.
+#[derive(Default)]
 struct Pending(Cell<Option<Box<PendingInner>>>);
 
 struct PendingInner {
@@ -1517,32 +1529,22 @@ struct PendingInner {
     queue: VecDeque<(StreamId, Instant)>,
 }
 
-impl Default for Pending {
-    fn default() -> Self {
-        Self(Cell::new(Some(Box::new(PendingInner {
-            ids: HashSet::default(),
-            queue: VecDeque::with_capacity(16),
-        }))))
-    }
-}
-
 impl Pending {
     fn release(&self) {
-        self.0.set(Some(Box::new(PendingInner {
-            ids: HashSet::default(),
-            queue: VecDeque::new(),
-        })));
+        self.0.set(None);
     }
 
     fn add(&self, id: StreamId, config: &ServiceConfig) {
-        let mut inner = self.0.take().unwrap();
-
         if config.reset_max == 0 {
-            inner.ids.clear();
-            inner.queue.clear();
-            self.0.set(Some(inner));
+            self.0.set(None);
             return;
         }
+        let mut inner = self.0.take().unwrap_or_else(|| {
+            Box::new(PendingInner {
+                ids: HashSet::default(),
+                queue: VecDeque::with_capacity(config.reset_max.min(16)),
+            })
+        });
 
         // a repeated reset refreshes the entry, a stale duplicate would
         // forget the id early
@@ -1579,7 +1581,9 @@ impl Pending {
     }
 
     fn remove(&self, id: StreamId) -> bool {
-        let mut inner = self.0.take().unwrap();
+        let Some(mut inner) = self.0.take() else {
+            return false;
+        };
         let removed = inner.ids.remove(&id);
         if removed {
             for idx in 0..inner.queue.len() {
@@ -1594,10 +1598,20 @@ impl Pending {
     }
 
     fn is_pending(&self, id: StreamId) -> bool {
-        let inner = self.0.take().unwrap();
+        let Some(inner) = self.0.take() else {
+            return false;
+        };
         let pending = inner.ids.contains(&id);
         self.0.set(Some(inner));
         pending
+    }
+
+    #[cfg(test)]
+    fn is_allocated(&self) -> bool {
+        let inner = self.0.take();
+        let allocated = inner.is_some();
+        self.0.set(inner);
+        allocated
     }
 }
 
@@ -1934,9 +1948,10 @@ mod tests {
     /// entries.
     ///
     /// HOW:
-    /// - Add repeated and distinct IDs with a zero limit; verify none can be found or removed.
+    /// - Add repeated and distinct IDs with a zero limit; verify none can be found or removed
+    ///   and no history storage is allocated.
     /// - Populate history with the default configuration, add with the zero limit, and verify
-    ///   both the ID set and queue are empty.
+    ///   the history storage is freed.
     #[test]
     fn test_pending_reset_zero_limit() {
         let pending = super::Pending::default();
@@ -1948,14 +1963,117 @@ mod tests {
             pending.add(id, &config);
             assert!(!pending.is_pending(id));
             assert!(!pending.remove(id));
+            assert!(!pending.is_allocated());
         }
 
         pending.add(id1, &ServiceConfig::new());
+        assert!(pending.is_allocated());
         pending.add(id2, &config);
         assert!(!pending.is_pending(id1));
-        let inner = pending.0.take().unwrap();
-        assert_eq!(inner.ids.len(), 0);
-        assert_eq!(inner.queue.len(), 0);
+        assert!(!pending.is_allocated());
+    }
+
+    /// STATEMENT: Reset history allocates storage on the first retained ID and frees it on
+    /// release.
+    ///
+    /// HOW:
+    /// - Create `Pending` and verify lookups and removals report nothing without allocating.
+    /// - Add an ID and verify storage is allocated and the ID is pending.
+    /// - Release the history and verify the storage is freed and the ID is forgotten.
+    #[test]
+    fn test_pending_reset_lazy_allocation() {
+        let pending = super::Pending::default();
+        let id = frame::StreamId::CLIENT;
+        assert!(!pending.is_allocated());
+        assert!(!pending.is_pending(id));
+        assert!(!pending.remove(id));
+        assert!(!pending.is_allocated());
+
+        pending.add(id, &ServiceConfig::new());
+        assert!(pending.is_allocated());
+        assert!(pending.is_pending(id));
+
+        pending.release();
+        assert!(!pending.is_allocated());
+        assert!(!pending.is_pending(id));
+    }
+
+    /// STATEMENT: An idle connection frees a stream map grown by a large burst and keeps a
+    /// map sized for the default concurrency limit.
+    ///
+    /// HOW:
+    /// - Open 600 peer streams on a server connection, complete all but one, and verify the
+    ///   map still tracks the open stream.
+    /// - Complete the last stream and verify the map capacity drops to zero and the active
+    ///   stream counter is zero.
+    /// - Open and complete 512 streams, twice the default concurrency limit, and verify the
+    ///   idle map keeps its allocation.
+    #[ntex::test]
+    async fn test_idle_stream_map_capacity() {
+        let (wire, peer) = ntex::io::testing::IoTest::create();
+        peer.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("SRV")
+            .add(
+                ServiceConfig::new()
+                    .set_max_concurrent_streams(1024)
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds::ZERO),
+            )
+            .build();
+        let io = Io::new(wire, cfg.clone());
+        let con = super::Connection::new(
+            true,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            ntex::channel::pool::new(),
+        );
+        let recv = con.recv_half();
+        let mut next = 1u32;
+        let mut open = |count: usize| -> Vec<crate::StreamRef> {
+            (0..count)
+                .map(|_| {
+                    let id = frame::StreamId::from(next);
+                    next += 2;
+                    let headers = frame::Headers::new(
+                        id,
+                        frame::PseudoHeaders {
+                            method: Some(Method::GET),
+                            scheme: Some("http".into()),
+                            path: Some("/".into()),
+                            ..Default::default()
+                        },
+                        HeaderMap::new(),
+                        true,
+                    );
+                    recv.recv_headers(headers).unwrap().unwrap().0
+                })
+                .collect()
+        };
+        let complete = |stream: &crate::StreamRef| {
+            stream
+                .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+                .unwrap();
+        };
+
+        let mut streams = open(600);
+        let last = streams.pop().unwrap();
+        streams.iter().for_each(complete);
+        assert_eq!(con.0.streams.borrow().len(), 1);
+        assert!(con.0.streams.borrow().contains_key(&last.id()));
+
+        complete(&last);
+        assert_eq!(con.0.streams.borrow().capacity(), 0);
+        assert_eq!(con.0.active_remote_streams.get(), 0);
+
+        // removals leave tombstones that lower `capacity`, a kept map is not empty
+        let streams = open(512);
+        assert!(con.0.streams.borrow().capacity() >= 512);
+        streams.iter().for_each(complete);
+        assert!(con.0.streams.borrow().is_empty());
+        assert!(con.0.streams.borrow().capacity() > 0);
     }
 
     /// STATEMENT: A one-entry reset history ignores duplicate additions and evicts the older
@@ -1988,8 +2106,8 @@ mod tests {
     /// HOW:
     /// - Create a server connection with zero reset history and finish one stream normally and
     ///   another with a local reset.
-    /// - Verify each stream leaves the active map without entering reset history; send late
-    ///   window updates, resets, and data.
+    /// - Verify each stream leaves the active map without entering or allocating reset
+    ///   history; send late window updates, resets, and data.
     /// - Check that only a `Reset` with `Reason::STREAM_CLOSED` is emitted, the connection
     ///   remains healthy, and `recv_size` stays zero.
     #[ntex::test]
@@ -2039,6 +2157,7 @@ mod tests {
             }
             assert!(!con.0.streams.borrow().contains_key(&id));
             assert!(!con.0.local_pending_reset.is_pending(id));
+            assert!(!con.0.local_pending_reset.is_allocated());
             io.flush(true).await.unwrap();
             let _ = client_frames(&peer, &codec);
 
