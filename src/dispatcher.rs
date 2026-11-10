@@ -330,8 +330,27 @@ where
         let waiter = stream.on_reset();
         let fut = inner.publish.call(msg);
         let mut pinned = std::pin::pin!(fut);
+        let mut first = true;
         let mut watch = true;
         let result = future::poll_fn(|cx| {
+            if first {
+                first = false;
+                if let Poll::Ready(result) = pinned.as_mut().poll(cx) {
+                    return Poll::Ready(Some(result));
+                }
+
+                let closed = waiter.poll_ready(cx).is_ready();
+                // A reset or I/O close during the first poll predates registration.
+                return if stream.has_error() {
+                    Poll::Ready(None)
+                } else {
+                    if closed {
+                        cx.waker().wake_by_ref();
+                    }
+                    Poll::Pending
+                };
+            }
+
             // the stream is reset during the call, the request body
             // can outlive the response
             while watch && waiter.poll_ready(cx).is_ready() {
@@ -432,5 +451,266 @@ where
             inner.connection.close();
             Err(err)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::{Future, poll_fn},
+        sync::{Arc, atomic::AtomicUsize, atomic::Ordering},
+        task::{Context, Wake, Waker},
+    };
+
+    use ntex_bytes::Bytes;
+    use ntex_http::{HeaderMap, Method, StatusCode};
+    use ntex_io::{Handle, Io, IoContext, IoStream};
+    use ntex_service::cfg::SharedCfg;
+    use ntex_util::{channel::pool, time::Seconds};
+
+    use super::*;
+    use crate::{MessageKind, ServiceConfig, StreamEof, frame};
+
+    #[derive(Default)]
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    struct DropCount(Rc<Cell<usize>>);
+
+    impl Drop for DropCount {
+        fn drop(&mut self) {
+            self.0.set(self.0.get() + 1);
+        }
+    }
+
+    struct Transport(Rc<Cell<Option<IoContext>>>);
+
+    impl IoStream for Transport {
+        fn start(self, ctx: IoContext) -> Box<dyn Handle> {
+            self.0.set(Some(ctx));
+            Box::new(self)
+        }
+    }
+
+    impl Handle for Transport {}
+
+    fn setup(publish: Pipeline<Message, (), ()>) -> (Inner<(), ()>, Io, IoContext) {
+        let cfg = SharedCfg::new("SRV")
+            .add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds::ZERO),
+            )
+            .build();
+        let ctx = Rc::new(Cell::new(None));
+        let io = Io::new(Transport(ctx.clone()), cfg.clone());
+        let connection = Connection::new(
+            true,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            pool::new(),
+        );
+        let inner = Inner {
+            publish,
+            control: Pipeline::new((), async |msg: Control<()>| Ok::<_, ()>(msg.ack())),
+            connection,
+            disconnected: Cell::new(false),
+        };
+        (inner, io, ctx.take().unwrap())
+    }
+
+    fn request(inner: &Inner<(), ()>, eof: bool) -> (StreamRef, Message) {
+        inner
+            .connection
+            .recv_half()
+            .recv_headers(frame::Headers::new(
+                StreamId::from(1),
+                frame::PseudoHeaders {
+                    method: Some(Method::POST),
+                    scheme: Some("http".into()),
+                    path: Some("/".into()),
+                    ..Default::default()
+                },
+                HeaderMap::new(),
+                eof,
+            ))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// STATEMENT: An immediately completed response does not register a reset waiter or
+    /// wake its own publish task.
+    ///
+    /// HOW:
+    /// - Receive an end-of-stream request and use a handler that immediately completes
+    ///   the response.
+    /// - Poll publication once with a counting waker and assert it completes without
+    ///   waking that task.
+    #[ntex::test]
+    async fn publish_ready_does_not_wake_itself() {
+        let (inner, _io, _ctx) = setup(Pipeline::new((), async |msg: Message| {
+            msg.stream
+                .send_response(StatusCode::OK, HeaderMap::new(), true)
+                .unwrap();
+            Ok(())
+        }));
+        inner.publish.ready().await.unwrap();
+        let (stream, msg) = request(&inner, true);
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut fut = std::pin::pin!(publish(msg, stream, &inner));
+
+        assert!(matches!(
+            fut.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(None))
+        ));
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+    }
+
+    /// STATEMENT: A reset during the first handler poll cancels a pending call without
+    /// losing the final local error, while a ready handler error retains precedence.
+    ///
+    /// HOW:
+    /// - Reset an open request inside its handler and return `Pending`, `Ok`, or `Err`.
+    /// - Poll publication once and assert it completes and drops the original handler.
+    /// - Verify the pending and successful cases publish one `LocalReset` message,
+    ///   whereas the error case notifies only the control service.
+    #[ntex::test]
+    async fn publish_reset_during_first_poll() {
+        for result in [Poll::Pending, Poll::Ready(Ok(())), Poll::Ready(Err(()))] {
+            let dropped = Rc::new(Cell::new(0));
+            let errors = Rc::new(Cell::new(0));
+            let controls = Rc::new(Cell::new(0));
+            let dropped2 = dropped.clone();
+            let errors2 = errors.clone();
+            let controls2 = controls.clone();
+            let (mut inner, _io, _ctx) =
+                setup(Pipeline::new((), async move |msg: Message| match msg.kind {
+                    MessageKind::Headers { .. } => {
+                        let _guard = DropCount(dropped2.clone());
+                        assert!(msg.stream.reset(Reason::CANCEL));
+                        poll_fn(|_| result).await
+                    }
+                    MessageKind::Eof(StreamEof::Error(err)) => {
+                        assert!(matches!(*err, StreamError::LocalReset(Reason::CANCEL)));
+                        errors2.set(errors2.get() + 1);
+                        Ok(())
+                    }
+                    _ => panic!("unexpected message"),
+                }));
+            inner.control = Pipeline::new((), async move |msg: Control<()>| {
+                assert!(matches!(
+                    msg,
+                    Control::Disconnect(crate::control::Reason::Error(_))
+                ));
+                controls2.set(controls2.get() + 1);
+                Ok::<_, ()>(msg.ack())
+            });
+            inner.publish.ready().await.unwrap();
+            inner.control.ready().await.unwrap();
+            let (stream, msg) = request(&inner, false);
+            let mut fut = std::pin::pin!(publish(msg, stream, &inner));
+
+            assert!(matches!(
+                fut.as_mut().poll(&mut Context::from_waker(Waker::noop())),
+                Poll::Ready(Ok(None))
+            ));
+            assert_eq!(dropped.get(), 1);
+            let failed = matches!(result, Poll::Ready(Err(())));
+            assert_eq!(errors.get(), usize::from(!failed));
+            assert_eq!(controls.get(), usize::from(failed));
+        }
+    }
+
+    /// STATEMENT: A pending publish call registers for later resets without being polled
+    /// twice initially, and normal request EOF does not cancel it.
+    ///
+    /// HOW:
+    /// - Poll a permanently pending handler once and assert its poll count is one.
+    /// - Deliver request EOF, observe a wake, and poll again without dropping the handler.
+    /// - Reset the stream, observe another wake, and assert publication completes without
+    ///   polling the handler again and drops its guard.
+    #[ntex::test]
+    async fn publish_pending_waits_for_reset() {
+        let polls = Rc::new(Cell::new(0));
+        let dropped = Rc::new(Cell::new(0));
+        let polls2 = polls.clone();
+        let dropped2 = dropped.clone();
+        let (inner, _io, _ctx) = setup(Pipeline::new((), async move |_: Message| {
+            let _guard = DropCount(dropped2.clone());
+            poll_fn(|_| {
+                polls2.set(polls2.get() + 1);
+                Poll::<Result<(), ()>>::Pending
+            })
+            .await
+        }));
+        inner.publish.ready().await.unwrap();
+        let (stream, msg) = request(&inner, false);
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(publish(msg, stream.clone(), &inner));
+
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(polls.get(), 1);
+        let mut data = frame::Data::new(stream.id(), Bytes::new());
+        data.set_end_stream();
+        inner.connection.recv_half().recv_data(data).unwrap();
+        assert!(wakes.0.swap(0, Ordering::Relaxed) > 0);
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(polls.get(), 2);
+        assert_eq!(dropped.get(), 0);
+
+        assert!(stream.reset(Reason::CANCEL));
+        assert!(wakes.0.load(Ordering::Relaxed) > 0);
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(None))));
+        assert_eq!(polls.get(), 2);
+        assert_eq!(dropped.get(), 1);
+    }
+
+    /// STATEMENT: Closing I/O during the first handler poll does not lose the wake
+    /// needed to observe a subsequent connection failure.
+    ///
+    /// HOW:
+    /// - Complete a response, report its transport as stopped, and leave the handler pending.
+    /// - Assert the first publication poll schedules another poll despite the stream
+    ///   already being removed from the connection.
+    /// - Fail the connection and verify publication completes and drops the handler.
+    #[ntex::test]
+    async fn publish_io_closed_during_first_poll() {
+        let dropped = Rc::new(Cell::new(0));
+        let dropped2 = dropped.clone();
+        let transport = Rc::new(Cell::new(None::<IoContext>));
+        let transport2 = transport.clone();
+        let (inner, _io, ctx) = setup(Pipeline::new((), async move |msg: Message| {
+            let _guard = DropCount(dropped2.clone());
+            msg.stream
+                .send_response(StatusCode::OK, HeaderMap::new(), true)
+                .unwrap();
+            transport2.take().unwrap().stopped(None);
+            future::pending::<Result<(), ()>>().await
+        }));
+        transport.set(Some(ctx));
+        inner.publish.ready().await.unwrap();
+        let (stream, msg) = request(&inner, true);
+        let wakes = Arc::new(WakeCount::default());
+        let waker = Waker::from(wakes.clone());
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = std::pin::pin!(publish(msg, stream, &inner));
+
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        assert!(wakes.0.load(Ordering::Relaxed) > 0);
+        assert_eq!(dropped.get(), 0);
+        assert_eq!(inner.connection.recv_half().disconnect(), HashMap::default());
+        assert!(matches!(fut.as_mut().poll(&mut cx), Poll::Ready(Ok(None))));
+        assert_eq!(dropped.get(), 1);
     }
 }
