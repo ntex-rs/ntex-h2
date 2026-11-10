@@ -33,6 +33,12 @@
   capacity timeout of a queued sender is extended while the peer keeps opening the
   connection window
 
+* Share one readiness pool per thread for `handle_one` connections instead of
+  allocating a pool for each connection
+
+* Release excess timer map and batch capacity every 30 seconds after a connection
+  or stream burst, instead of keeping it while the timer driver runs
+
 ## [4.4.1] - 2026-11-04
 
 * Manually implement forward_xxx macros

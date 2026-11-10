@@ -196,6 +196,12 @@ async fn read_preface<Err>(io: &IoBoxed) -> Result<(), ServerError<Err>> {
     }
 }
 
+thread_local! {
+    /// Readiness waiters are used only by client connections, server
+    /// connections of a thread share one pool instead of allocating each.
+    static POOL: pool::Pool<()> = pool::new();
+}
+
 /// Serves one established HTTP/2 transport with existing service pipelines.
 ///
 /// Reads the connection preface within the handshake timeout, then serves
@@ -227,7 +233,7 @@ pub async fn handle_one<Err: 'static, PErr: 'static>(
         config,
         true,
         false,
-        pool::new(),
+        POOL.with(Clone::clone),
     );
     let con2 = con.clone();
     let _guard = DisconnectGuard(&con2);
@@ -572,5 +578,30 @@ mod tests {
             drop(server);
             assert_eq!(stream.0.con.codec().retained_hpack(), [0, 0, 0, empty]);
         }
+    }
+
+    /// STATEMENT: `handle_one` connections use the per-thread readiness pool instead of
+    /// allocating a pool for each connection.
+    ///
+    /// HOW:
+    /// - Serve a request through `handle_one` with a blocking publish call and capture its stream.
+    /// - Create a channel in the thread pool, then confirm the connection pool reports it.
+    #[ntex::test]
+    async fn handle_one_shares_thread_pool() {
+        let observed = Rc::new(Observed {
+            block_calls: true,
+            ..Observed::default()
+        });
+        let (io, _peer) = connection(1, false);
+        let mut server = Box::pin(serve(io, observed.clone(), false));
+        drive_until(server.as_mut(), &observed, || {
+            observed.streams.borrow().len() == 1
+        })
+        .await;
+        let stream = observed.streams.borrow()[0].upgrade().unwrap();
+
+        let (_tx, _rx) = POOL.with(pool::Pool::channel);
+        assert_eq!(format!("{:?}", stream.con.pool()), "Pool { size: 1 }");
+        drop(server);
     }
 }

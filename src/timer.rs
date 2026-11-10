@@ -12,6 +12,10 @@ const CAP: usize = 4;
 /// Larger drained buckets are released instead of being kept for reuse.
 const MAX_CACHED_CAPACITY: usize = 128;
 const SEC: Duration = Duration::from_secs(1);
+/// Timer maps and batches are checked for excess capacity every `SHRINK_TICKS` ticks.
+const SHRINK_TICKS: u32 = 30;
+/// Capacity below this bound is kept.
+const SHRINK_MIN_CAPACITY: usize = 1024;
 
 thread_local! {
     static TIMER: Inner = Inner {
@@ -60,7 +64,28 @@ impl ConnectionTimer {
     }
 }
 
+/// Returns the capacity to shrink to, if less than a quarter of a large capacity is used.
+fn shrink_target(len: usize, capacity: usize) -> Option<usize> {
+    (capacity > SHRINK_MIN_CAPACITY && len < capacity / 4).then_some(len * 2)
+}
+
+fn shrink_vec<T>(items: &mut Vec<T>) {
+    if let Some(target) = shrink_target(items.len(), items.capacity()) {
+        items.shrink_to(target);
+    }
+}
+
 impl InnerMut {
+    /// Releases the excess capacity left by a burst of connections or streams.
+    fn shrink(&mut self) {
+        if let Some(target) = shrink_target(self.connections.len(), self.connections.capacity()) {
+            self.connections.shrink_to(target);
+        }
+        if let Some(target) = shrink_target(self.streams.len(), self.streams.capacity()) {
+            self.streams.shrink_to(target);
+        }
+    }
+
     fn unregister(&mut self, io: &StreamRef) {
         if let Some(id) = self.streams.remove(io)
             && let Some(streams) = self.notifications.get_mut(&id)
@@ -294,6 +319,12 @@ async fn driver() {
             TIMER.with(|timer| timer.reschedule(id, current, ping));
         }
 
+        if current.is_multiple_of(SHRINK_TICKS) {
+            TIMER.with(|timer| timer.storage.borrow_mut().shrink());
+            shrink_vec(&mut streams);
+            shrink_vec(&mut connections);
+        }
+
         // new registrations during notification keep the driver running
         let stop = TIMER.with(|timer| {
             if timer.storage.borrow().is_empty() {
@@ -410,6 +441,35 @@ mod tests {
         assert!(items.capacity() <= MAX_CACHED_CAPACITY);
         inner.recycle(items);
         assert_eq!(inner.cache.len(), 1);
+    }
+
+    /// STATEMENT: The timer driver releases the connection map capacity left by a burst once
+    /// most connections are unregistered.
+    ///
+    /// HOW:
+    /// - Register 2000 connection keep-alive timers, then unregister all but one, which keeps
+    ///   the driver running.
+    /// - Move the current tick to a multiple of `SHRINK_TICKS` so the next tick shrinks.
+    /// - Wait for one tick and verify the map capacity dropped below `SHRINK_MIN_CAPACITY`.
+    #[ntex::test]
+    async fn burst_connection_map_is_shrunk() {
+        let ids: Vec<_> = (0..2000)
+            .map(|_| register_connection(Weak::new(), Seconds::ZERO, Seconds(600)))
+            .collect();
+        for id in &ids[1..] {
+            unregister_connection(*id);
+        }
+        let capacity = || TIMER.with(|timer| timer.storage.borrow().connections.capacity());
+        assert!(capacity() > SHRINK_MIN_CAPACITY);
+
+        TIMER.with(|timer| {
+            let current = timer.current.get();
+            timer.current.set(current.next_multiple_of(SHRINK_TICKS));
+        });
+        sleep(Millis(1500)).await;
+        assert!(capacity() < SHRINK_MIN_CAPACITY);
+        assert_eq!(connection_deadlines(ids[0]), Some((false, true)));
+        unregister_connection(ids[0]);
     }
 
     /// STATEMENT: A burst of capacity timers does not leave its bucket allocation cached after
