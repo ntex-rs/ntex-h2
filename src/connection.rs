@@ -297,6 +297,11 @@ impl Connection {
         self.0.io.with_write_src(f)
     }
 
+    #[cfg(test)]
+    pub(crate) fn pool(&self) -> &pool::Pool<()> {
+        &self.0.pool
+    }
+
     pub(crate) fn check_error(&self) -> Result<(), Error<OperationError>> {
         if let Some(err) = self.0.error.take() {
             self.0.error.set(Some(err.clone()));
