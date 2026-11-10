@@ -9,7 +9,7 @@ repository = "https://github.com/ntex-rs/ntex-h2"
 readme = "README.md"
 keywords = ["http", "async", "non-blocking"]
 categories = ["asynchronous", "web-programming", "network-programming"]
-exclude = ["fixtures/**", "util/**", "fuzz/**"]
+exclude = ["fixtures/**"]
 edition = "2024"
 rust-version = "1.97"
 

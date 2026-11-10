@@ -99,6 +99,7 @@
 //! [Starting HTTP/2]: https://www.rfc-editor.org/rfc/rfc9113#section-3
 //! [Flow control]: https://www.rfc-editor.org/rfc/rfc9113#section-5.2
 //! [upgrade]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Protocol_upgrade_mechanism
+#![forbid(unsafe_code)]
 #![deny(clippy::pedantic)]
 #![warn(missing_docs)]
 #![allow(

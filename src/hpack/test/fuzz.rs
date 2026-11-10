@@ -30,21 +30,6 @@ fn hpack_fuzz() {
         .quickcheck(prop as fn(FuzzHpack) -> TestResult);
 }
 
-/*
-/// STATEMENT: A manually enabled seed-based fuzz case checks HPACK header round-tripping.
-///
-/// HOW:
-/// - To test with a specific feed, uncomment this template and fill in the seed.
-/// - Run `FuzzHpack::new(seed).run()` to encode/decode generated frames with table resizes.
-/// - Check ordered header equality and that no expected headers remain.
-#[test]
-fn hpack_fuzz_seeded() {
-    let _ = env_logger::try_init();
-    let seed = [/* fill me in*/];
-    FuzzHpack::new(seed).run();
-}
-*/
-
 #[derive(Debug, Clone)]
 struct FuzzHpack {
     // The set of headers to encode / decode
