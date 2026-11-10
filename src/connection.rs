@@ -18,6 +18,9 @@ use crate::{codec::Codec, config::ServiceConfig, consts, message::Message, timer
 
 pub(crate) type EitherError = Either<Error<ConnectionError>, StreamErrorInner>;
 
+/// Smallest blocked stream queue that is checked for closed streams.
+const MIN_BLOCKED_COMPACTION: usize = 32;
+
 #[derive(Clone)]
 pub struct Connection(Rc<ConnectionState>);
 
@@ -47,6 +50,12 @@ pub(crate) struct ConnectionState {
     recv_size: Cell<u32>,
     next_stream_id: Cell<StreamId>,
     streams: RefCell<HashMap<StreamId, StreamRef>>,
+    // streams waiting for connection send capacity, in arrival order
+    blocked: RefCell<VecDeque<StreamId>>,
+    // connection send capacity promised to woken streams that have not run yet
+    claimed: Cell<WindowSize>,
+    // number of received connection WINDOW_UPDATE frames
+    send_window_updates: Cell<u32>,
     active_remote_streams: Cell<u32>,
     active_local_streams: Cell<u32>,
     // reserved local streams, not opened yet
@@ -149,6 +158,9 @@ impl Connection {
             recv_window: Cell::new(recv_window),
             recv_size: Cell::new(0),
             streams: RefCell::new(HashMap::default()),
+            blocked: RefCell::new(VecDeque::new()),
+            claimed: Cell::new(0),
+            send_window_updates: Cell::new(0),
             active_remote_streams: Cell::new(0),
             active_local_streams: Cell::new(0),
             reserved_streams: Cell::new(0),
@@ -325,6 +337,31 @@ impl Connection {
 
     pub(crate) fn send_window_size(&self) -> WindowSize {
         self.0.send_window.get().window_size()
+    }
+
+    /// Returns the connection send capacity not promised to woken streams.
+    pub(crate) fn unclaimed_send_window(&self) -> WindowSize {
+        self.0.unclaimed_send_window()
+    }
+
+    /// Returns the number of received connection `WINDOW_UPDATE` frames.
+    pub(crate) fn send_window_updates(&self) -> u32 {
+        self.0.send_window_updates.get()
+    }
+
+    /// Queues a stream that waits for connection send capacity.
+    pub(crate) fn enqueue_blocked(&self, id: StreamId) {
+        self.0.enqueue_blocked(id);
+    }
+
+    /// Wakes queued streams while unclaimed connection send capacity is left.
+    pub(crate) fn wake_blocked(&self) {
+        self.0.wake_blocked();
+    }
+
+    /// Returns connection send capacity promised to a stream.
+    pub(crate) fn release_claim(&self, claim: WindowSize) {
+        self.0.release_claim(claim);
     }
 
     pub(crate) fn remote_window_size(&self) -> i32 {
@@ -666,13 +703,61 @@ impl ConnectionState {
         }
     }
 
+    fn unclaimed_send_window(&self) -> WindowSize {
+        self.send_window
+            .get()
+            .window_size()
+            .saturating_sub(self.claimed.get())
+    }
+
+    fn enqueue_blocked(&self, id: StreamId) {
+        let mut blocked = self.blocked.borrow_mut();
+
+        // ids of closed streams are skipped when dequeued, drop them before
+        // they outnumber the open streams
+        if blocked.len() >= MIN_BLOCKED_COMPACTION
+            && let Ok(streams) = self.streams.try_borrow()
+            && blocked.len() >= streams.len() * 2
+        {
+            blocked.retain(|id| streams.contains_key(id));
+        }
+        blocked.push_back(id);
+    }
+
+    /// Wakes queued streams in arrival order, each woken stream claims
+    /// up to its stream window of the unclaimed connection send capacity.
+    ///
+    /// Waking only as many senders as the capacity can serve avoids waking
+    /// every blocked sender when a small window update arrives.
+    fn wake_blocked(&self) {
+        let mut budget = self.unclaimed_send_window();
+        while budget > 0 {
+            let Some(id) = self.blocked.borrow_mut().pop_front() else {
+                break;
+            };
+            let stream = self.streams.borrow().get(&id).cloned();
+            if let Some(stream) = stream {
+                let claim = stream.wake_from_queue(budget);
+                self.claimed.set(self.claimed.get() + claim);
+                budget -= claim;
+            }
+        }
+    }
+
+    fn release_claim(&self, claim: WindowSize) {
+        // claims are dropped with the streams on connection failure
+        self.claimed.set(self.claimed.get().saturating_sub(claim));
+    }
+
     fn drop_stream(&self, id: StreamId) {
         let mut released = false;
         let mut removed = false;
+        let mut claim = 0;
         let empty = {
             let mut streams = self.streams.borrow_mut();
             if let Some(stream) = streams.remove(&id) {
                 removed = true;
+                claim = stream.take_claim();
                 stream.stop_capacity_timer();
                 #[cfg(feature = "trace")]
                 log::trace!(
@@ -692,6 +777,11 @@ impl ConnectionState {
         };
         if released {
             self.notify_capacity();
+        }
+        // pass the capacity promised to the dropped stream to queued streams
+        if claim > 0 {
+            self.release_claim(claim);
+            self.wake_blocked();
         }
         let flags = self.flags.get();
 
@@ -1130,12 +1220,14 @@ impl RecvHalfConnection {
                     Either::Left(Error::new(ConnectionError::WindowValueOverflow, self.service()))
                 })?;
                 self.0.send_window.set(window);
+                self.0
+                    .send_window_updates
+                    .set(self.0.send_window_updates.get().wrapping_add(1));
 
-                // Only newly available connection capacity can unblock a sender.
-                if original.window_size() == 0 {
-                    for stream in self.0.streams.borrow().values() {
-                        stream.recv_window_update_connection();
-                    }
+                // wake queued senders in arrival order, as many as the new
+                // capacity can serve
+                if original.window_size() < window.window_size() {
+                    self.0.wake_blocked();
                 }
                 Ok(())
             }
@@ -1270,6 +1362,8 @@ impl RecvHalfConnection {
     /// counted until they are released.
     fn take_streams(&self) -> HashMap<StreamId, StreamRef> {
         let streams = mem::take(&mut *self.0.streams.borrow_mut());
+        self.0.blocked.take();
+        self.0.claimed.set(0);
         self.0.active_remote_streams.set(0);
         self.0.active_local_streams.set(self.0.reserved_streams.get());
         streams
@@ -3644,6 +3738,264 @@ mod tests {
                 stream.send_payload("done", true).await.unwrap();
             }
         }
+    }
+
+    /// Waker that counts wake-ups
+    #[derive(Default)]
+    struct WakeCount(std::sync::atomic::AtomicUsize);
+
+    impl std::task::Wake for WakeCount {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    impl WakeCount {
+        fn count(&self) -> usize {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// Senders blocked on an exhausted connection window, polled with counting wakers
+    struct BlockedSenders {
+        client: h2::client::SimpleClient,
+        srv: ntex::io::testing::IoTest,
+        streams: Vec<h2::client::SendStream>,
+        _recv: Vec<h2::client::RecvStream>,
+        wakers: Vec<(std::sync::Arc<WakeCount>, std::task::Waker)>,
+    }
+
+    impl BlockedSenders {
+        /// Opens `n` streams with `window` bytes of stream window and blocks each of them,
+        /// in order, on the connection window
+        async fn new(n: usize, window: u32, capacity_timeout: Seconds) -> Self {
+            let (client, srv) = window_client_with(window, capacity_timeout).await;
+            let mut streams = Vec::new();
+            let mut recv = Vec::new();
+            for _ in 0..n {
+                let (stream, rx) = client
+                    .send(Method::POST, "/".into(), HeaderMap::default(), false)
+                    .await
+                    .unwrap();
+                streams.push(stream);
+                recv.push(rx);
+            }
+            let con = &streams[0].stream().0.con;
+            con.consume_send_window(con.send_window_size());
+
+            let mut senders = BlockedSenders {
+                client,
+                srv,
+                streams,
+                _recv: recv,
+                wakers: Vec::new(),
+            };
+            for i in 0..n {
+                let count = std::sync::Arc::new(WakeCount::default());
+                senders
+                    .wakers
+                    .push((count.clone(), std::task::Waker::from(count)));
+                assert!(senders.poll(i).is_pending());
+            }
+            senders
+        }
+
+        fn stream(&self, i: usize) -> &crate::StreamRef {
+            self.streams[i].stream()
+        }
+
+        fn con(&self) -> &super::Connection {
+            &self.stream(0).0.con
+        }
+
+        fn poll(
+            &self,
+            i: usize,
+        ) -> std::task::Poll<Result<frame::WindowSize, ntex_error::Error<h2::OperationError>>> {
+            let cx = std::task::Context::from_waker(&self.wakers[i].1);
+            self.stream(i).poll_send_capacity(&cx)
+        }
+
+        fn wakes(&self) -> Vec<usize> {
+            self.wakers.iter().map(|(count, _)| count.count()).collect()
+        }
+
+        fn connection_update(&self, inc: u32) {
+            self.con()
+                .recv_half()
+                .recv_window_update(frame::WindowUpdate::new(frame::StreamId::CON, inc))
+                .unwrap();
+        }
+    }
+
+    /// STATEMENT: A connection window update wakes blocked senders in arrival order, only as
+    /// many as the new capacity can serve.
+    ///
+    /// HOW:
+    /// - Block four senders with ten-byte stream windows on an exhausted connection window,
+    ///   and re-poll the last one to check it is queued once.
+    /// - Open the connection window by 25 bytes and verify only the first three senders are
+    ///   woken, the third with the five bytes left after the first two stream windows.
+    /// - Send from the woken senders until the window is exhausted, then open it by ten bytes
+    ///   and verify the fourth sender is woken.
+    #[ntex::test]
+    async fn test_connection_window_update_wakes_blocked_senders_in_order() {
+        let s = BlockedSenders::new(4, 10, Seconds::ZERO).await;
+        assert!(s.poll(3).is_pending());
+        assert_eq!(s.con().0.blocked.borrow().len(), 4);
+
+        s.connection_update(25);
+        assert_eq!(s.wakes(), [1, 1, 1, 0]);
+        assert_eq!(s.con().0.claimed.get(), 25);
+
+        // the woken senders send without polling for capacity again
+        for (i, size) in [(0, 10), (1, 10), (2, 5)] {
+            s.streams[i]
+                .send_payload(Bytes::from(vec![b'x'; size]), false)
+                .await
+                .unwrap();
+        }
+        assert_eq!(s.con().send_window_size(), 0);
+        assert_eq!(s.con().0.claimed.get(), 0);
+        assert_eq!(s.wakes(), [1, 1, 1, 0]);
+
+        s.connection_update(10);
+        assert_eq!(s.wakes(), [1, 1, 1, 1]);
+        assert!(matches!(s.poll(3), std::task::Poll::Ready(Ok(10))));
+    }
+
+    /// STATEMENT: Connection capacity claimed by a woken sender but not used is passed to the
+    /// next blocked sender.
+    ///
+    /// HOW:
+    /// - Block three senders, the second one through a `send_capacity` future, and open the
+    ///   connection window by ten bytes, which wakes only the first sender.
+    /// - Send three bytes from the first sender and verify the second sender is woken for the
+    ///   seven bytes left.
+    /// - Drop the second sender's wait before it runs and verify the third sender is woken.
+    /// - Repeat with a woken sender that is reset before it runs.
+    #[ntex::test]
+    async fn test_unused_connection_capacity_passed_to_blocked_senders() {
+        let s = BlockedSenders::new(3, 10, Seconds::ZERO).await;
+        let st = s.stream(1).clone();
+        let mut wait = Box::pin(st.send_capacity());
+        let mut cx = std::task::Context::from_waker(&s.wakers[1].1);
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+
+        s.connection_update(10);
+        assert_eq!(s.wakes(), [1, 0, 0]);
+
+        // sending less than claimed
+        s.streams[0].send_payload("xxx", true).await.unwrap();
+        assert_eq!(s.wakes(), [1, 1, 0]);
+        assert_eq!(s.con().0.claimed.get(), 7);
+
+        // abandoned wait
+        drop(wait);
+        assert_eq!(s.wakes(), [1, 1, 1]);
+        assert_eq!(s.con().0.claimed.get(), 7);
+
+        // reset before running
+        let s = BlockedSenders::new(2, 10, Seconds::ZERO).await;
+        s.connection_update(10);
+        assert_eq!(s.wakes(), [1, 0]);
+        s.stream(0).reset(Reason::CANCEL);
+        assert_eq!(s.wakes(), [1, 1]);
+        assert_eq!(s.con().0.claimed.get(), 10);
+    }
+
+    /// STATEMENT: The blocked sender queue drops ids of closed streams and is cleared when
+    /// the connection closes.
+    ///
+    /// HOW:
+    /// - Block 40 senders and reset 39 of them, which leaves their ids in the queue.
+    /// - Block a new sender and verify the queue keeps only the two open streams.
+    /// - Open the connection window and verify the first open sender is woken.
+    /// - Close the connection and verify the queue and claims are cleared.
+    #[ntex::test]
+    async fn test_blocked_senders_queue_bounded() {
+        let s = BlockedSenders::new(41, 10, Seconds::ZERO).await;
+        let (stream, _recv) = s
+            .client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        for i in 1..40 {
+            s.stream(i).reset(Reason::CANCEL);
+        }
+        assert_eq!(s.con().0.blocked.borrow().len(), 41);
+
+        let cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(stream.stream().poll_send_capacity(&cx).is_pending());
+        assert_eq!(
+            *s.con().0.blocked.borrow(),
+            [s.stream(0).id(), s.stream(40).id(), stream.stream().id()]
+        );
+
+        s.connection_update(10);
+        assert_eq!(s.wakes()[0], 1);
+        assert_eq!(s.con().0.blocked.borrow().len(), 2);
+
+        s.srv.close().await;
+        sleep(Millis(50)).await;
+        assert!(s.con().is_closed());
+        assert!(s.con().0.blocked.borrow().is_empty());
+        assert_eq!(s.con().0.claimed.get(), 0);
+    }
+
+    /// STATEMENT: The capacity timeout of a sender waiting behind other senders is extended
+    /// while the peer opens the connection window, and fires when it stops.
+    ///
+    /// HOW:
+    /// - Block two senders with a capacity timeout.
+    /// - Open the connection window for the first sender and send its data, which keeps the
+    ///   second sender queued.
+    /// - Expire the second sender's timer and verify it is re-armed instead of resetting the
+    ///   stream.
+    /// - Expire it again without connection progress and verify the stream is reset with
+    ///   `CapacityTimeout`.
+    #[ntex::test]
+    async fn test_queued_sender_capacity_timeout_extended_by_connection_progress() {
+        let s = BlockedSenders::new(2, 10, Seconds(30)).await;
+        s.connection_update(10);
+        assert_eq!(s.wakes(), [1, 0]);
+        s.streams[0]
+            .send_payload(Bytes::from(vec![b'x'; 10]), true)
+            .await
+            .unwrap();
+
+        s.stream(1).capacity_timeout();
+        assert!(!s.stream(1).is_reset());
+        assert!(crate::timer::is_registered(s.stream(1)));
+        assert!(s.poll(1).is_pending());
+
+        s.stream(1).capacity_timeout();
+        assert!(s.stream(1).is_reset());
+        assert!(matches!(
+            s.poll(1),
+            std::task::Poll::Ready(Err(err))
+                if matches!(&*err, h2::OperationError::Stream(h2::StreamError::CapacityTimeout))
+        ));
+    }
+
+    /// STATEMENT: The capacity timeout wakes a queued sender instead of resetting it while
+    /// connection capacity is available.
+    ///
+    /// HOW:
+    /// - Block two senders with a capacity timeout and open the connection window for the
+    ///   first one, which never runs and keeps its claim.
+    /// - Expire the second sender's timer and verify it is woken, not reset, and gets
+    ///   capacity.
+    #[ntex::test]
+    async fn test_capacity_timeout_wakes_queued_sender_with_capacity() {
+        let s = BlockedSenders::new(2, 10, Seconds(30)).await;
+        s.connection_update(10);
+        assert_eq!(s.wakes(), [1, 0]);
+
+        s.stream(1).capacity_timeout();
+        assert_eq!(s.wakes(), [1, 1]);
+        assert!(!s.stream(1).is_reset());
+        assert!(matches!(s.poll(1), std::task::Poll::Ready(Ok(10))));
     }
 
     /// STATEMENT: I/O write backpressure pauses payload sending despite large peer windows,

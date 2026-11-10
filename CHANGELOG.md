@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## [4.4.2] - Unreleased
 
 * Skip reset-waiter registration for publish handlers that complete immediately,
   preserving cancellation when a handler resets its stream during the first poll
@@ -20,6 +20,12 @@
   configured timeout and one second later
 
 * Move the remaining `Bytes` payload into the final DATA frame instead of cloning it
+
+* Wake senders blocked on the connection send window in FIFO order, only as many as
+  the window allows, instead of waking every waiting stream on each connection
+  WINDOW_UPDATE. Unused capacity of a woken sender is passed to the next one, and the
+  capacity timeout of a queued sender is extended while the peer keeps opening the
+  connection window
 
 ## [4.4.1] - 2026-11-04
 
