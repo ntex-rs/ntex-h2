@@ -19,6 +19,8 @@
   state immediately. Deadlines now have one-second granularity and fire between the
   configured timeout and one second later
 
+* Move the remaining `Bytes` payload into the final DATA frame instead of cloning it
+
 ## [4.4.1] - 2026-11-04
 
 * Manually implement forward_xxx macros

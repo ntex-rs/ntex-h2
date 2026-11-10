@@ -1,6 +1,6 @@
 use std::task::{Context, Poll};
 use std::{
-    borrow::Borrow, cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, ops, pin, rc::Rc,
+    borrow::Borrow, cell::Cell, cmp, fmt, future::Future, future::poll_fn, hash, mem, ops, pin, rc::Rc,
 };
 
 use ntex_bytes::{BytePages, Bytes};
@@ -1314,10 +1314,7 @@ impl StreamData {
         if size >= self.len() {
             Head::new(Kind::Data, u8::from(eof), id).encode(size, dst);
             match &mut self.0 {
-                Either::Left(b) => {
-                    dst.append(b.clone());
-                    *b = Bytes::new();
-                }
+                Either::Left(b) => dst.append(mem::take(b)),
                 Either::Right(pages) => pages.move_to(dst),
             }
             true
