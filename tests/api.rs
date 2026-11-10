@@ -11,6 +11,13 @@ use ntex_io::{Io, testing::IoTest};
 use ntex_service::cfg::SharedCfg;
 use ntex_util::{channel::mpsc, spawn};
 
+/// STATEMENT: Connection errors expose the expected diagnostic signatures and go-away reasons.
+///
+/// HOW:
+/// - Build connection-error cases covering peer shutdown, codec and protocol failures, flow
+///   control, reset limits, and timeouts.
+/// - Assert each `ConnectionError::signature` and the reason returned by `to_goaway` match the
+///   expected values.
 #[test]
 fn connection_error_diagnostics_and_goaway() {
     let cases = [
@@ -107,6 +114,14 @@ fn connection_error_diagnostics_and_goaway() {
     }
 }
 
+/// STATEMENT: Stream and operation errors expose stable diagnostic signatures, including
+/// wrapped errors.
+///
+/// HOW:
+/// - Enumerate stream-state, flow-control, payload, reset, frame, pseudo-header, and
+///   informational errors and assert their signatures.
+/// - Enumerate operation errors and assert their signatures, including preservation of wrapped
+///   stream and connection signatures.
 #[test]
 fn stream_and_operation_error_diagnostics() {
     let stream_errors = [
@@ -170,6 +185,14 @@ fn stream_and_operation_error_diagnostics() {
     }
 }
 
+/// STATEMENT: A connection-error control event exposes its diagnostic and acknowledges without
+/// an expectation.
+///
+/// HOW:
+/// - Wrap `ConnectionError::MissingSettings` in the control error type and assert `get_ref`
+///   exposes its signature.
+/// - Override the reason with `Reason::INTERNAL_ERROR`, acknowledge the event, and assert
+///   `into_expect` returns `None`.
 #[test]
 fn protocol_control_error_accessors() {
     let err = ntex_error::Error::from(ConnectionError::MissingSettings);
@@ -184,6 +207,17 @@ fn protocol_control_error_accessors() {
     );
 }
 
+/// STATEMENT: Expectation controls preserve request metadata through mutation, extraction,
+/// acceptance, and failure.
+///
+/// HOW:
+/// - Send an end-of-stream `POST /upload` over in-memory I/O and assert the received message
+///   has matching stream identifiers and a headers kind.
+/// - Build `Control::Expect`, assert its path and empty headers, add `x-test: value`, and
+///   verify cloned parts retain the stream, path, and header.
+/// - Acknowledge a reconstructed control as `ExpectResult::Continue`, then fail it with
+///   `StatusCode::EXPECTATION_FAILED` and assert the stream, status, and empty response
+///   headers.
 #[ntex::test]
 async fn expect_control_and_message_accessors() {
     let (client_io, server_io) = IoTest::create();

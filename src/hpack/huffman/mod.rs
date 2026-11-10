@@ -109,6 +109,11 @@ mod test {
         super::decode(src, &mut buf)
     }
 
+    /// STATEMENT: Single-byte Huffman encodings decode to their expected characters.
+    ///
+    /// HOW:
+    /// - Decode the fixed one-byte encodings for `o`, `0`, and `A`.
+    /// - Assert each result equals its expected character.
     #[test]
     fn decode_single_byte() {
         assert_eq!("o", decode(&[0b0011_1111]).unwrap());
@@ -116,6 +121,12 @@ mod test {
         assert_eq!("A", decode(&[(0x21 << 2) + 3]).unwrap());
     }
 
+    /// STATEMENT: Huffman characters spanning multiple bytes decode correctly.
+    ///
+    /// HOW:
+    /// - Decode the fixed two-byte encodings for `#` and `$` and four-byte encoding for a
+    ///   newline.
+    /// - Assert each result equals its expected character.
     #[test]
     fn single_char_multi_byte() {
         assert_eq!("#", decode(&[255, 160 + 15]).unwrap());
@@ -123,12 +134,22 @@ mod test {
         assert_eq!("\x0a", decode(&[255, 255, 255, 240 + 3]).unwrap());
     }
 
+    /// STATEMENT: Adjacent Huffman characters decode correctly across byte boundaries.
+    ///
+    /// HOW:
+    /// - Decode two fixed two-byte sequences containing adjacent character codes.
+    /// - Assert the resulting strings are `!0` and ` !`.
     #[test]
     fn multi_char() {
         assert_eq!("!0", decode(&[254, 1]).unwrap());
         assert_eq!(" !", decode(&[0b0101_0011, 0b1111_1000]).unwrap());
     }
 
+    /// STATEMENT: Short Huffman codes are padded into the expected single output byte.
+    ///
+    /// HOW:
+    /// - Encode `o`, `0`, and `A`, clearing the destination between inputs.
+    /// - Compare each complete output with its expected one-byte representation.
     #[test]
     fn encode_single_byte() {
         let mut dst = BytesMut::with_capacity(1);
@@ -145,6 +166,11 @@ mod test {
         assert_eq!(&dst[..], &[(0x21 << 2) + 3]);
     }
 
+    /// STATEMENT: Huffman encoding and decoding round-trip representative text strings.
+    ///
+    /// HOW:
+    /// - Encode header names, values, URLs, mixed-case strings, and longer prose samples.
+    /// - Decode each output and compare its bytes with the original string.
     #[test]
     fn encode_decode_str() {
         const DATA: &[&str] = &[
@@ -182,6 +208,13 @@ mod test {
         }
     }
 
+    /// STATEMENT: Huffman encoding and decoding round-trip binary bytes, including zero and
+    /// high values.
+    ///
+    /// HOW:
+    /// - Encode byte slices containing single and repeated zeros, control bytes, and high-
+    ///   valued bytes.
+    /// - Decode each output and assert exact equality with the original byte slice.
     #[test]
     fn encode_decode_u8() {
         const DATA: &[&[u8]] = &[b"\0", b"\0\0\0", b"\0\x01\x02\x03\x04\x05", b"\xFF\xF8"];

@@ -835,6 +835,12 @@ pub(super) fn get_static(idx: usize) -> Header {
 mod test {
     use super::*;
 
+    /// STATEMENT: `peek_u8` observes the next byte without consuming it and returns `None` at
+    /// EOF.
+    ///
+    /// HOW:
+    /// - Peek at a one-byte `Cursor`, then read the same byte with `get_u8`.
+    /// - Confirm that peeking after the read returns `None`.
     #[test]
     fn test_peek_u8() {
         let b = 0xff;
@@ -844,6 +850,13 @@ mod test {
         assert_eq!(peek_u8(&buf), None);
     }
 
+    /// STATEMENT: `consume` discards the cursor prefix, resets its position, and releases empty
+    /// storage.
+    ///
+    /// HOW:
+    /// - Consume empty, inline, and larger buffers at the start, midpoint, and end.
+    /// - Check the remaining bytes, zero cursor position, and unchanged original clone.
+    /// - Confirm fully consumed buffers use inline storage.
     #[test]
     fn test_consume() {
         for data in [b"".as_slice(), b"inline", &[b'x'; 128]] {
@@ -864,6 +877,14 @@ mod test {
         }
     }
 
+    /// STATEMENT: `take` extracts a value after the cursor prefix without retaining unnecessary
+    /// storage.
+    ///
+    /// HOW:
+    /// - Extract values of several lengths after a 32-byte prefix, with and without a tail.
+    /// - Check extracted bytes, remaining tail, zero cursor position, and unchanged original
+    ///   clone.
+    /// - Confirm short values with a tail and fully consumed source buffers use inline storage.
     #[test]
     fn test_take() {
         for len in [0, 4, 24, 64] {
@@ -891,6 +912,11 @@ mod test {
         }
     }
 
+    /// STATEMENT: Decoding a string from empty input requests more bytes.
+    ///
+    /// HOW:
+    /// - Create a `Decoder` with zero table capacity and an empty input buffer.
+    /// - Call `decode_string` and assert `NeedMore::UnexpectedEndOfStream`.
     #[test]
     fn test_decode_string_empty() {
         let mut de = Decoder::new(0);
@@ -899,6 +925,11 @@ mod test {
         assert_eq!(err, DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
     }
 
+    /// STATEMENT: Decoding an empty HPACK header block succeeds.
+    ///
+    /// HOW:
+    /// - Create a `Decoder` with zero table capacity and an empty input buffer.
+    /// - Call `decode` and assert that it returns `Ok(())`.
     #[test]
     #[allow(clippy::unit_cmp, clippy::let_unit_value)]
     fn test_decode_empty() {
@@ -908,6 +939,12 @@ mod test {
         assert_eq!(empty, ());
     }
 
+    /// STATEMENT: Decoded dynamic-table values do not retain the source allocation.
+    ///
+    /// HOW:
+    /// - Place indexed literals for `foo` and `:path` after a 16 KiB allocation prefix.
+    /// - Decode the sliced header block and check that two headers and table entries result.
+    /// - Assert each stored value pointer lies outside the original allocation range.
     #[test]
     fn test_table_entries_do_not_reference_source() {
         let mut de = Decoder::default();
@@ -942,6 +979,14 @@ mod test {
         }
     }
 
+    /// STATEMENT: An incrementally indexed literal decodes even when the dynamic table has no
+    /// capacity.
+    ///
+    /// HOW:
+    /// - Decode a literal with Huffman-encoded name `foo` and value `bar` using
+    ///   `Decoder::new(0)`.
+    /// - Assert one matching `Header::Field` is emitted and the dynamic table size remains
+    ///   zero.
     #[test]
     fn test_decode_indexed_larger_than_table() {
         let mut de = Decoder::new(0);
@@ -977,6 +1022,15 @@ mod test {
         buf
     }
 
+    /// STATEMENT: HPACK decoding resumes correctly at every byte boundary of a mixed header
+    /// block.
+    ///
+    /// HOW:
+    /// - Combine static indexes, a new literal, and a dynamic index with every name/value
+    ///   Huffman choice.
+    /// - Decode each possible prefix, accepting success or `DecoderError::NeedMore`, then
+    ///   append the suffix.
+    /// - Check the four expected headers in order and an empty, inline source buffer.
     #[test]
     fn test_decode_at_every_split() {
         for huff_name in [false, true] {
@@ -1026,6 +1080,14 @@ mod test {
         }
     }
 
+    /// STATEMENT: A literal with a plain name resumes decoding after an incomplete Huffman
+    /// value.
+    ///
+    /// HOW:
+    /// - Decode `foo` with only the first byte of the Huffman-encoded `bar` value.
+    /// - Assert `NeedMore::StringUnderflow`, append the remaining value bytes, and decode
+    ///   again.
+    /// - Check one `foo: bar` field is emitted and the zero-capacity table stays empty.
     #[test]
     fn test_decode_continuation_header_with_non_huff_encoded_name() {
         let mut de = Decoder::new(0);

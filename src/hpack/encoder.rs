@@ -290,6 +290,11 @@ mod test {
 
     use super::*;
 
+    /// STATEMENT: `GET` uses its static HPACK index without populating the dynamic table.
+    ///
+    /// HOW:
+    /// - Encode a `GET` method header with the default `Encoder`.
+    /// - Assert the single byte references static index 2 and the dynamic table is empty.
     #[test]
     fn test_encode_method_get() {
         let mut encoder = Encoder::default();
@@ -298,6 +303,11 @@ mod test {
         assert_eq!(encoder.table.len(), 0);
     }
 
+    /// STATEMENT: `POST` uses its static HPACK index without populating the dynamic table.
+    ///
+    /// HOW:
+    /// - Encode a `POST` method header with the default `Encoder`.
+    /// - Assert the single byte references static index 3 and the dynamic table is empty.
     #[test]
     fn test_encode_method_post() {
         let mut encoder = Encoder::default();
@@ -306,6 +316,12 @@ mod test {
         assert_eq!(encoder.table.len(), 0);
     }
 
+    /// STATEMENT: `PATCH` is inserted as an indexed-name literal and subsequently encoded by
+    /// dynamic index.
+    ///
+    /// HOW:
+    /// - Encode `PATCH` and check static name index 2, its Huffman value, and one table entry.
+    /// - Encode it again and assert the output is a single reference to dynamic index 62.
     #[test]
     fn test_encode_method_patch() {
         let mut encoder = Encoder::default();
@@ -323,6 +339,11 @@ mod test {
         assert_eq!(1, res.len());
     }
 
+    /// STATEMENT: Different values for a static header name use incrementally indexed literals.
+    ///
+    /// HOW:
+    /// - Encode `content-language` first as `foo`, then as `bar`, with the same `Encoder`.
+    /// - Check both literals use static name index 27 and the expected Huffman-encoded values.
     #[test]
     fn test_encode_indexed_name_literal_value() {
         let mut encoder = Encoder::default();
@@ -340,6 +361,12 @@ mod test {
         assert_eq!("bar", huff_decode(&res[2..5]));
     }
 
+    /// STATEMENT: A repeated custom header reuses its dynamic-table entry.
+    ///
+    /// HOW:
+    /// - Encode `foo: hello` and check its literal bytes, Huffman name/value, and one table
+    ///   entry.
+    /// - Encode it again and assert a single dynamic index 62 byte with no additional entry.
     #[test]
     fn test_repeated_headers_are_indexed() {
         let mut encoder = Encoder::default();
@@ -359,6 +386,15 @@ mod test {
         assert_eq!(encoder.table.len(), 1);
     }
 
+    /// STATEMENT: A full dynamic table evicts its oldest header and preserves indexes for
+    /// retained headers.
+    ///
+    /// HOW:
+    /// - Insert 64 distinct headers, verify their literal bytes and indexed reuse, and check a
+    ///   4096-byte table.
+    /// - Confirm all existing headers are indexed, then insert a 65th literal without growing
+    ///   the entry count.
+    /// - Re-encode the 64 retained headers and verify their expected dynamic indexes.
     #[test]
     fn test_evicting_headers() {
         let mut encoder = Encoder::default();
@@ -411,6 +447,12 @@ mod test {
         }
     }
 
+    /// STATEMENT: A large custom header is encoded without indexing and leaves the dynamic
+    /// table empty.
+    ///
+    /// HOW:
+    /// - Encode a long name/value pair with `Encoder::new(128, 0)`.
+    /// - Check the non-indexed literal prefix and zero dynamic-table entry count and byte size.
     #[test]
     fn test_large_headers_are_not_indexed() {
         let mut encoder = Encoder::new(128, 0);
@@ -424,6 +466,16 @@ mod test {
         assert_eq!(0, encoder.table.size());
     }
 
+    /// STATEMENT: Sensitive header values use the never-indexed representation for every name
+    /// source.
+    ///
+    /// HOW:
+    /// - Mark `12345` sensitive and encode it with a new `my-password` name and static
+    ///   `authorization` name.
+    /// - Insert a non-sensitive `my-password` field, then encode the sensitive value using its
+    ///   dynamic name.
+    /// - Check never-indexed prefixes, name indexes or literal name, and the decoded Huffman
+    ///   value.
     #[test]
     fn test_sensitive_headers_are_never_indexed() {
         use ntex_http::HeaderValue;
@@ -484,6 +536,12 @@ mod test {
         assert_eq!("12345", huff_decode(&res[3..]));
     }
 
+    /// STATEMENT: `content-length` values use a non-indexed literal with the static name index.
+    ///
+    /// HOW:
+    /// - Encode `content-length: 1234` with the default `Encoder`.
+    /// - Check the literal prefix and Huffman length, decode `1234`, and assert six output
+    ///   bytes.
     #[test]
     fn test_content_length_value_not_indexed() {
         let mut encoder = Encoder::default();
@@ -494,6 +552,13 @@ mod test {
         assert_eq!(6, res.len());
     }
 
+    /// STATEMENT: Distinct values sharing a header name can be indexed and retrieved
+    /// independently.
+    ///
+    /// HOW:
+    /// - Encode `hello: one`, then verify `hello: two` reuses the dynamic name in a new
+    ///   literal.
+    /// - Encode both fields again and check dynamic indexes 63 and 62 respectively.
     #[test]
     fn test_encoding_headers_with_same_name() {
         let mut encoder = Encoder::default();
@@ -517,6 +582,14 @@ mod test {
         assert_eq!(&[0x80 | 62], &res[..]);
     }
 
+    /// STATEMENT: A literal may reference a dynamic name while inserting it evicts the
+    /// referenced entry.
+    ///
+    /// HOW:
+    /// - Fill a two-entry, 76-byte table with `foo: bar` and `bar: foo`.
+    /// - Insert `foo: baz`, checking its reference to name index 63 and the unchanged entry
+    ///   count.
+    /// - Encode `foo: baz` again and check dynamic index 62 and two retained entries.
     #[test]
     fn test_evicting_headers_when_multiple_of_same_name_are_in_table() {
         // The encoder only has space for 2 headers
@@ -540,6 +613,14 @@ mod test {
         assert_eq!(2, encoder.table.len());
     }
 
+    /// STATEMENT: A zero-capacity dynamic table still permits static indexes and non-indexed
+    /// literals.
+    ///
+    /// HOW:
+    /// - Encode `GET` by static index and check that the table remains empty.
+    /// - Encode `foo: bar` without indexing and check its Huffman name/value and empty table.
+    /// - Encode `transfer-encoding: chunked` using its static name and verify the Huffman
+    ///   value.
     #[test]
     fn test_max_size_zero() {
         // Static table only
@@ -561,6 +642,14 @@ mod test {
         assert_eq!("chunked", huff_decode(&res[3..]));
     }
 
+    /// STATEMENT: Pending table-size updates retain the required minimum and final sizes.
+    ///
+    /// HOW:
+    /// - Check the default capacity and that setting the same size queues no update.
+    /// - Queue a shrink to zero followed by growth, checking `SizeUpdate::One` and
+    ///   `SizeUpdate::Two`.
+    /// - Apply growth and successive shrinks and verify the minimum and final queued sizes each
+    ///   time.
     #[test]
     fn test_update_max_size_combos() {
         let mut encoder = Encoder::default();
@@ -593,6 +682,16 @@ mod test {
         assert_eq!(Some(SizeUpdate::One(50)), encoder.size_update);
     }
 
+    /// STATEMENT: Table-size changes are emitted and applied when the next header block is
+    /// encoded.
+    ///
+    /// HOW:
+    /// - Insert `foo: bar`, request a one-byte table, and confirm the entry persists until
+    ///   encoding `GET`.
+    /// - Check the size-update prefix, ensuing eviction, and non-indexed re-encoding of the
+    ///   custom field.
+    /// - Resize to 100 and then zero, verifying update bytes and indexed versus non-indexed
+    ///   literal prefixes.
     #[test]
     fn test_resizing_table() {
         let mut encoder = Encoder::default();
@@ -619,6 +718,12 @@ mod test {
         assert_eq!(&[32, 0], &res[..2]);
     }
 
+    /// STATEMENT: Shrinking the table without exceeding the new capacity preserves indexed
+    /// headers.
+    ///
+    /// HOW:
+    /// - Insert `foo: bar`, reduce the maximum size to 100, and check one entry remains.
+    /// - Encode the field again and assert the size update is followed by dynamic index 62.
     #[test]
     fn test_decreasing_table_size_without_eviction() {
         let mut encoder = Encoder::default();
@@ -633,6 +738,14 @@ mod test {
         assert_eq!(&[32 | 31, 69, 0x80 | 62], &res[..]);
     }
 
+    /// STATEMENT: A nameless field reuses the previous header name without indexing its new
+    /// value.
+    ///
+    /// HOW:
+    /// - Encode `hello: world` followed by a field with no name and value `zomg`.
+    /// - Check the first indexed literal and its Huffman name/value.
+    /// - Check the second non-indexed literal references dynamic name index 62 and decodes to
+    ///   `zomg`.
     #[test]
     fn test_nameless_header() {
         let mut encoder = Encoder::default();
@@ -661,6 +774,12 @@ mod test {
         assert_eq!("zomg", huff_decode(&res[14..]));
     }
 
+    /// STATEMENT: Large dynamic-table size updates use the expected multibyte HPACK integer
+    /// encoding.
+    ///
+    /// HOW:
+    /// - Request a maximum size of 1,912,930,560 and assert the pending `SizeUpdate::One`.
+    /// - Encode size updates and compare all six output bytes with the expected representation.
     #[test]
     fn test_large_size_update() {
         let mut encoder = Encoder::default();

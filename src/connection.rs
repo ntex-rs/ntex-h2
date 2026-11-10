@@ -1575,6 +1575,14 @@ mod tests {
         }
     }
 
+    /// STATEMENT: The keep-alive timer does not retain the connection or its I/O after their
+    /// owners drop.
+    ///
+    /// HOW:
+    /// - Enable the ping timer and disable the settings timer; test both before and after timer
+    ///   startup.
+    /// - Drop the connection and I/O, then verify the weak connection reference expires and the
+    ///   I/O closure metric increases.
     #[ntex::test]
     async fn test_ping_timer_does_not_retain_connection() {
         timer_releases_connection(
@@ -1586,6 +1594,14 @@ mod tests {
         .await;
     }
 
+    /// STATEMENT: The settings timer does not retain the connection or its I/O, with or without
+    /// an acknowledgment.
+    ///
+    /// HOW:
+    /// - Enable only the settings timer and repeat with settings acknowledged and
+    ///   unacknowledged, before and after timer startup.
+    /// - Drop the connection and I/O; verify the weak reference expires and the I/O closure
+    ///   metric increases.
     #[ntex::test]
     async fn test_settings_timer_does_not_retain_connection() {
         for ack in [false, true] {
@@ -1599,6 +1615,16 @@ mod tests {
         }
     }
 
+    /// STATEMENT: The ping counter saturates at `u16::MAX` without disabling missing-pong
+    /// timeouts.
+    ///
+    /// HOW:
+    /// - Start the counter near its maximum and manually poll the ping task through three
+    ///   pings, acknowledging only the first two.
+    /// - Check each ping payload, the saturated counter, and that the task holds no extra
+    ///   strong connection reference between pings.
+    /// - Leave the final ping unacknowledged and verify the task ends with an I/O timeout while
+    ///   the counter remains saturated.
     #[ntex::test]
     async fn test_ping_counter_saturates() {
         use std::future::{Future, poll_fn};
@@ -1674,6 +1700,12 @@ mod tests {
         assert_eq!(con.pings_count(), u16::MAX);
     }
 
+    /// STATEMENT: An excessive reset retention duration does not prevent an ID from entering
+    /// reset history.
+    ///
+    /// HOW:
+    /// - Set `reset_duration` to `Duration::MAX` and add a stream ID to `Pending`.
+    /// - Verify `is_pending` still reports the ID without a time-underflow panic.
     #[test]
     fn test_pending_reset_time_underflow() {
         let pending = super::Pending::default();
@@ -1686,6 +1718,14 @@ mod tests {
         assert!(pending.is_pending(id));
     }
 
+    /// STATEMENT: Duplicate reset IDs do not consume history slots or evict a newly reinserted
+    /// ID.
+    ///
+    /// HOW:
+    /// - Set the reset history limit to two, add one ID twice and another once, and verify both
+    ///   remain pending.
+    /// - Remove and reinsert the first ID, then add a third ID and verify the reinserted ID is
+    ///   retained.
     #[test]
     fn test_pending_reset_duplicates() {
         let pending = super::Pending::default();
@@ -1706,6 +1746,13 @@ mod tests {
         assert!(pending.is_pending(id1));
     }
 
+    /// STATEMENT: A zero reset history limit retains no IDs and clears previously retained
+    /// entries.
+    ///
+    /// HOW:
+    /// - Add repeated and distinct IDs with a zero limit; verify none can be found or removed.
+    /// - Populate history with the default configuration, add with the zero limit, and verify
+    ///   both the ID set and queue are empty.
     #[test]
     fn test_pending_reset_zero_limit() {
         let pending = super::Pending::default();
@@ -1727,6 +1774,13 @@ mod tests {
         assert_eq!(inner.queue.len(), 0);
     }
 
+    /// STATEMENT: A one-entry reset history ignores duplicate additions and evicts the older
+    /// distinct ID.
+    ///
+    /// HOW:
+    /// - Add the first ID twice with a limit of one and verify it remains pending.
+    /// - Add a second ID, verify the first is evicted, then remove the second and confirm it is
+    ///   no longer pending.
     #[test]
     fn test_pending_reset_one_limit() {
         let pending = super::Pending::default();
@@ -1744,6 +1798,16 @@ mod tests {
         assert!(!pending.is_pending(id2));
     }
 
+    /// STATEMENT: Disabling reset history preserves stream cleanup and confines late data
+    /// errors to the stream.
+    ///
+    /// HOW:
+    /// - Create a server connection with zero reset history and finish one stream normally and
+    ///   another with a local reset.
+    /// - Verify each stream leaves the active map without entering reset history; send late
+    ///   window updates, resets, and data.
+    /// - Check that only a `Reset` with `Reason::STREAM_CLOSED` is emitted, the connection
+    ///   remains healthy, and `recv_size` stays zero.
     #[ntex::test]
     async fn test_zero_reset_history_stream_lifecycle() {
         let (wire, peer) = ntex::io::testing::IoTest::create();
@@ -1815,6 +1879,14 @@ mod tests {
         recv.disconnect();
     }
 
+    /// STATEMENT: A remotely refused stream delivers EOF, rejects further payload, and leaves
+    /// no active stream entry.
+    ///
+    /// HOW:
+    /// - Run a server that resets incoming streams with `Reason::REFUSED_STREAM`, then open a
+    ///   client request.
+    /// - Verify the receiver obtains `MessageKind::Eof`, sending payload fails, and the
+    ///   connection stream map is empty.
     #[ntex::test]
     async fn test_remote_stream_refused() {
         let srv = test::server_with_config(
@@ -1861,8 +1933,14 @@ mod tests {
         assert!(con.streams.borrow().is_empty());
     }
 
-    /// A sender waiting for capacity in its own task continues when SETTINGS
-    /// increases the initial window size.
+    /// STATEMENT: A sender waiting in its own task resumes when peer settings increase the
+    /// initial stream window.
+    ///
+    /// HOW:
+    /// - Have the peer advertise a one-byte window, then raise it to 65,535 using only
+    ///   `Settings` after the first payload byte.
+    /// - Send the full request body, verify completion in under 500 milliseconds, and receive
+    ///   response headers.
     #[ntex::test]
     async fn test_settings_initial_window_wakes_sender() {
         let srv = test::server(async |()| {
@@ -1923,8 +2001,15 @@ mod tests {
         assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
     }
 
-    /// Until the peer's SETTINGS arrive, the client assumes a limit of
-    /// 100 concurrent streams.
+    /// STATEMENT: The client assumes 100 concurrent streams until peer settings remove the
+    /// provisional limit.
+    ///
+    /// HOW:
+    /// - Withhold peer settings, verify `max_streams` is 100, open 100 streams, and check the
+    ///   client is not ready.
+    /// - Delay settings without a concurrency limit and verify the next request waits at least
+    ///   100 milliseconds before succeeding.
+    /// - Check that `max_streams` becomes `None` and the client is ready again.
     #[ntex::test]
     async fn test_assumed_max_concurrent_streams() {
         let srv = test::server(async |()| {
@@ -1980,7 +2065,14 @@ mod tests {
         assert!(client.is_ready());
     }
 
-    /// A client must treat `SETTINGS_ENABLE_PUSH=1` as a connection error.
+    /// STATEMENT: A client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection
+    /// protocol error.
+    ///
+    /// HOW:
+    /// - Have the server enable push in its initial `Settings` and capture the resulting
+    ///   `GoAway`.
+    /// - Verify `Reason::PROTOCOL_ERROR` with the diagnostic "Server enabled push", then
+    ///   confirm a new request fails.
     #[ntex::test]
     async fn test_client_rejects_enable_push() {
         use std::sync::{Arc, Mutex};
@@ -2026,7 +2118,15 @@ mod tests {
         );
     }
 
-    /// Requests over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail locally.
+    /// STATEMENT: Oversized request headers fail locally without consuming a stream ID.
+    ///
+    /// HOW:
+    /// - Advertise `SETTINGS_MAX_HEADER_LIST_SIZE` of 200 and send a request with an oversized
+    ///   user-agent header.
+    /// - Verify `OperationError::HeaderListTooLarge` reports the limit, then send a small
+    ///   request successfully.
+    /// - Have the peer verify that the successful request still uses `StreamId::CLIENT` and
+    ///   return response headers.
     #[ntex::test]
     async fn test_client_max_header_list_size() {
         let srv = test::server(async |()| {
@@ -2082,7 +2182,15 @@ mod tests {
         assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
     }
 
-    /// Responses and trailers over the peer's `SETTINGS_MAX_HEADER_LIST_SIZE` fail locally.
+    /// STATEMENT: Responses and trailers above the peer header-list limit fail locally without
+    /// closing the stream.
+    ///
+    /// HOW:
+    /// - Advertise `SETTINGS_MAX_HEADER_LIST_SIZE` of 120 and request a response from the
+    ///   server.
+    /// - Attempt oversized and empty response headers, then oversized and empty trailers;
+    ///   verify the success flags are false, true, false, true.
+    /// - Receive exactly two `Headers` frames through end-of-stream without a reset.
     #[ntex::test]
     async fn test_server_max_header_list_size() {
         use std::sync::{Arc, Mutex};
@@ -2167,7 +2275,16 @@ mod tests {
         assert_eq!(*results.lock().unwrap(), [false, true, false, true]);
     }
 
-    /// A malformed response is a stream error, the connection stays usable.
+    /// STATEMENT: Malformed response pseudo-headers fail only their streams and leave the
+    /// connection usable.
+    ///
+    /// HOW:
+    /// - Return one response without a status and another with an unexpected path pseudo-
+    ///   header.
+    /// - Verify EOF errors report `MissingPseudo("status")` and `UnexpectedPseudo("path")`, and
+    ///   observed resets use `Reason::PROTOCOL_ERROR`.
+    /// - Send a valid request on the same connection and verify response headers contain status
+    ///   200.
     #[ntex::test]
     async fn test_malformed_response_pseudo() {
         let srv = test::server(async |()| {
@@ -2230,8 +2347,16 @@ mod tests {
         }
     }
 
-    /// Streams reset by the local side get the final message, if the
-    /// receive side is still open.
+    /// STATEMENT: Local resets publish a final error message while the stream receive side
+    /// remains open.
+    ///
+    /// HOW:
+    /// - Advertise a zero send window to a server configured with a one-second capacity
+    ///   timeout.
+    /// - Open one request that the server resets explicitly and another whose response payload
+    ///   times out; verify both wire resets use `Reason::CANCEL`.
+    /// - Check that server EOF events identify the streams with `StreamError::LocalReset` and
+    ///   `StreamError::CapacityTimeout`, respectively.
     #[ntex::test]
     async fn test_local_reset_publishes_eof() {
         use std::sync::{Arc, Mutex};
@@ -2339,8 +2464,15 @@ mod tests {
         );
     }
 
-    /// During shutdown all new streams are refused, without hitting the
-    /// reset limit.
+    /// STATEMENT: Shutdown refuses new streams without exhausting the reset limit or disrupting
+    /// the connection.
+    ///
+    /// HOW:
+    /// - Trigger `ServiceConfig::shutdown` from an open request and verify a `GoAway` with
+    ///   `Reason::NO_ERROR` names that stream.
+    /// - Open 32 later streams, verify each receives `Reason::REFUSED_STREAM`, and send late
+    ///   data for each refused stream.
+    /// - Send a `Ping` and verify its acknowledgment still arrives.
     #[ntex::test]
     async fn test_shutdown_refuses_new_streams() {
         let srv = test::server_with_config(
@@ -2417,6 +2549,17 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Reset history temporarily ignores late data, then treats forgotten-stream
+    /// data as a stream error.
+    ///
+    /// HOW:
+    /// - Reset a stream with one-second retention and verify late data is ignored by observing
+    ///   a ping acknowledgment.
+    /// - Wait for expiry and reset another stream; verify old-stream data receives
+    ///   `Reason::STREAM_CLOSED`, late window updates are ignored, and idle-stream data
+    ///   triggers `Reason::PROTOCOL_ERROR`.
+    /// - On a second connection, acknowledge a local reset with a peer reset and verify
+    ///   subsequent data immediately receives `Reason::STREAM_CLOSED`.
     #[ntex::test]
     async fn test_delay_reset_queue() {
         let srv = test::server_with_config(
@@ -2558,8 +2701,15 @@ mod tests {
         assert_eq!(res.reason(), Reason::STREAM_CLOSED);
     }
 
-    /// Late frames for closed streams that are purged from the reset queue
-    /// are not connection errors (F5).
+    /// STATEMENT: Late frames for streams purged from reset history do not cause connection
+    /// errors (F5).
+    ///
+    /// HOW:
+    /// - Limit reset history to one entry and reset streams 1 and 3, evicting stream 1.
+    /// - Send trailers for retained stream 3 and a late window update for stream 1; verify a
+    ///   ping is acknowledged.
+    /// - Send late data for stream 1, verify `Reason::STREAM_CLOSED` on that stream, and
+    ///   confirm another ping is acknowledged.
     #[ntex::test]
     async fn test_late_frames_for_forgotten_streams() {
         let srv = test::server_with_config(
@@ -2662,7 +2812,13 @@ mod tests {
         (client, srv)
     }
 
-    /// Reset waiter completes on a remote reset.
+    /// STATEMENT: A reset waiter completes when the peer resets its stream.
+    ///
+    /// HOW:
+    /// - Open a zero-window stream, verify it is not reset, and spawn a task awaiting
+    ///   `on_reset`.
+    /// - Check the task remains pending, inject a peer reset, and verify both the task and
+    ///   stream report the reset within 500 milliseconds.
     #[ntex::test]
     async fn test_on_reset_remote_reset() {
         let (client, srv) = zero_window_client().await;
@@ -2686,7 +2842,12 @@ mod tests {
         assert!(stream.is_reset());
     }
 
-    /// Reset waiter completes once the connection is closed.
+    /// STATEMENT: A reset waiter completes and reports a reset when the connection closes.
+    ///
+    /// HOW:
+    /// - Open a zero-window stream and spawn a task awaiting `on_reset`.
+    /// - Close the peer transport and verify the task finishes within 500 milliseconds with
+    ///   `is_reset` true.
     #[ntex::test]
     async fn test_on_reset_connection_closed() {
         let (client, srv) = zero_window_client().await;
@@ -2707,7 +2868,13 @@ mod tests {
         assert!(res.unwrap().unwrap());
     }
 
-    /// Only one task may wait for send capacity on a stream.
+    /// STATEMENT: In debug builds, distinct tasks cannot wait for send capacity on the same
+    /// stream.
+    ///
+    /// HOW:
+    /// - Open a zero-window stream and spawn a task waiting in `send_capacity`.
+    /// - Poll capacity from the test task and expect a panic containing "concurrent send
+    ///   capacity waiters".
     #[cfg(debug_assertions)]
     #[ntex::test]
     #[should_panic(expected = "concurrent send capacity waiters")]
@@ -2725,7 +2892,13 @@ mod tests {
         let _ = ntex::util::lazy(|cx| stream.stream().poll_send_capacity(cx)).await;
     }
 
-    /// The same task may poll for send capacity repeatedly.
+    /// STATEMENT: The same task may repeatedly poll send capacity and observe readiness after a
+    /// reset.
+    ///
+    /// HOW:
+    /// - Open a zero-window stream and poll `poll_send_capacity` twice from the same task,
+    ///   verifying both results are pending.
+    /// - Reset the stream with `Reason::CANCEL` and verify the next capacity poll is ready.
     #[ntex::test]
     async fn test_capacity_waiter_repoll() {
         let (client, _srv) = zero_window_client().await;
@@ -2749,6 +2922,14 @@ mod tests {
         assert!(ntex::util::lazy(|cx| st.poll_send_capacity(cx)).await.is_ready());
     }
 
+    /// STATEMENT: Resetting a stream unregisters its capacity timer and fails its pending
+    /// capacity waiter.
+    ///
+    /// HOW:
+    /// - Spawn a `send_capacity` waiter on a zero-window stream and verify its timer is
+    ///   registered.
+    /// - Reset the stream with `Reason::CANCEL`, verify the timer is unregistered, and check
+    ///   the waiter returns an error.
     #[ntex::test]
     async fn test_capacity_timer_stopped_on_close() {
         let (client, _srv) = zero_window_client().await;
@@ -2769,6 +2950,14 @@ mod tests {
         assert!(fut.await.unwrap().is_err());
     }
 
+    /// STATEMENT: Connection failure unregisters stream capacity timers and fails pending
+    /// capacity waiters.
+    ///
+    /// HOW:
+    /// - Spawn a `send_capacity` waiter on a zero-window stream and verify its timer is
+    ///   registered.
+    /// - Disconnect the receive half of the connection, verify the timer is unregistered, and
+    ///   check the waiter returns an error.
     #[ntex::test]
     async fn test_capacity_timer_stopped_on_failure() {
         let (client, _srv) = zero_window_client().await;
@@ -2788,7 +2977,14 @@ mod tests {
         assert!(fut.await.unwrap().is_err());
     }
 
-    /// Timer task cancellation releases registered streams.
+    /// STATEMENT: Cancelling the timer task releases its registered streams, as during runtime
+    /// shutdown.
+    ///
+    /// HOW:
+    /// - Spawn a capacity waiter on a zero-window stream and verify the stream has a registered
+    ///   timer.
+    /// - Call `timer::cancel` to simulate timer-task cancellation and verify the stream is no
+    ///   longer registered.
     #[ntex::test]
     async fn test_capacity_timer_released_on_timer_cancel() {
         let (client, _srv) = zero_window_client().await;
@@ -2807,6 +3003,14 @@ mod tests {
         assert!(!crate::timer::is_registered(stream.stream()));
     }
 
+    /// STATEMENT: Dropping a capacity wait removes its timer and prevents a later spurious
+    /// stream reset.
+    ///
+    /// HOW:
+    /// - Time out a zero-window `send_capacity` wait after 100 milliseconds and verify its
+    ///   timer is unregistered.
+    /// - Wait beyond the configured capacity timeout, inject a stream window update, and verify
+    ///   payload can still be sent.
     #[ntex::test]
     async fn test_dropped_capacity_wait_stops_timer() {
         let (client, srv) = zero_window_client().await;
@@ -2830,6 +3034,14 @@ mod tests {
         stream.send_payload("test", true).await.unwrap();
     }
 
+    /// STATEMENT: Peer resets clear retained local reset history while later unknown-stream
+    /// resets are ignored.
+    ///
+    /// HOW:
+    /// - Locally reset a stream, verify its ID is retained, then inject a peer reset and verify
+    ///   the ID is removed.
+    /// - Inject resets for the forgotten stream and an unknown stream; verify the client
+    ///   remains open and accepts a new request.
     #[ntex::test]
     async fn test_rst_stream_for_unknown_stream_ignored() {
         let (client, srv) = zero_window_client().await;
@@ -2876,6 +3088,14 @@ mod tests {
         size
     }
 
+    /// STATEMENT: Connection receive capacity is replenished only when received data is
+    /// consumed.
+    ///
+    /// HOW:
+    /// - Configure a 100,000-byte connection window, receive two 15,000-byte data messages, and
+    ///   retain them.
+    /// - Verify no connection window update is sent while the messages are retained, then drop
+    ///   them and verify updates total 30,000 bytes.
     #[ntex::test]
     async fn test_connection_window_released_on_consume() {
         let (io, srv) = ntex::io::testing::IoTest::create();
@@ -2920,6 +3140,14 @@ mod tests {
         assert_eq!(conn_window_updates(&srv, &codec), 30_000);
     }
 
+    /// STATEMENT: Final data retains connection receive capacity until its EOF messages are
+    /// consumed.
+    ///
+    /// HOW:
+    /// - Configure a 100,000-byte connection window and receive 15,000 bytes with end-of-stream
+    ///   on each of two streams.
+    /// - Retain both `StreamEof::Data` messages and verify no connection window update is sent.
+    /// - Drop the messages and verify connection window updates total 30,000 bytes.
     #[ntex::test]
     async fn test_connection_window_released_on_eof_data_consume() {
         let (io, srv) = ntex::io::testing::IoTest::create();
@@ -3024,12 +3252,28 @@ mod tests {
         size
     }
 
+    /// STATEMENT: Consuming received data sends stream window updates only while the stream
+    /// remains open.
+    ///
+    /// HOW:
+    /// - Receive and retain 30,000 bytes, then consume them with the stream still open and
+    ///   verify a positive stream window update.
+    /// - Repeat with a peer reset before consumption and verify no stream window update is
+    ///   emitted.
     #[ntex::test]
     async fn test_no_window_update_for_closed_stream() {
         assert!(stream_window_updates(false).await > 0);
         assert_eq!(stream_window_updates(true).await, 0);
     }
 
+    /// STATEMENT: A capacity timeout cancels its stream without incrementing the connection
+    /// reset counter.
+    ///
+    /// HOW:
+    /// - Await `send_capacity` on a zero-window stream and verify
+    ///   `StreamError::CapacityTimeout` and a zero `rst_count`.
+    /// - Decode outgoing frames and verify a `Reset` targets the timed-out stream with
+    ///   `Reason::CANCEL`.
     #[ntex::test]
     async fn test_capacity_timeout_not_counted_as_reset() {
         use ntex_codec::Decoder;
@@ -3131,8 +3375,16 @@ mod tests {
             .sum()
     }
 
-    /// Payload is split by the stream send window, the sender waits for
-    /// window updates.
+    /// STATEMENT: Payload is split by the stream send window and resumes only as window updates
+    /// arrive.
+    ///
+    /// HOW:
+    /// - Start with a ten-byte stream window and send 25 bytes with end-of-stream from a
+    ///   spawned task.
+    /// - Verify the first ten bytes exhaust capacity, then a ten-byte update releases another
+    ///   ten without end-of-stream.
+    /// - Add 100 bytes of window, verify the final five bytes carry end-of-stream, and check
+    ///   the task succeeds with 95 bytes of capacity left.
     #[ntex::test]
     async fn test_send_limited_by_stream_window() {
         let (client, srv) = window_client(10).await;
@@ -3162,8 +3414,15 @@ mod tests {
         assert_eq!(stream.stream().available_send_capacity(), 95);
     }
 
-    /// Payload is limited by the connection send window, stream window
-    /// updates do not release data while the connection window is exhausted.
+    /// STATEMENT: An exhausted connection window blocks payload even when the stream window has
+    /// capacity.
+    ///
+    /// HOW:
+    /// - Give the stream a large window and send 70,000 bytes; verify only the default
+    ///   connection window is sent in bounded, nonfinal frames.
+    /// - Increase only the stream window and verify no data or usable capacity appears.
+    /// - Increase the connection window by 10,000, verify the remaining payload ends the
+    ///   stream, and check the sender succeeds with the expected capacity.
     #[ntex::test]
     async fn test_send_limited_by_connection_window() {
         let (client, srv) = window_client(1_000_000).await;
@@ -3208,6 +3467,16 @@ mod tests {
         );
     }
 
+    /// STATEMENT: A capacity waiter wakes exactly once when both stream and connection windows
+    /// become positive.
+    ///
+    /// HOW:
+    /// - Exhaust both windows, make the stream window negative with `Settings`, and register a
+    ///   counting waker and capacity timer.
+    /// - Test both update orders and both `Settings` and `WindowUpdate` stream increases;
+    ///   verify partial updates, including negative-to-zero, do not wake or cancel the timer.
+    /// - Once both windows open, verify one wake, timer removal, ten bytes of ready capacity,
+    ///   and a successful payload send.
     #[ntex::test]
     async fn test_window_updates_wake_after_both_windows_open() {
         use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
@@ -3287,8 +3556,14 @@ mod tests {
         }
     }
 
-    /// Large peer windows do not let a sender buffer unbounded data while
-    /// the peer does not read, the io write back-pressure pauses the sender.
+    /// STATEMENT: I/O write backpressure pauses payload sending despite large peer windows,
+    /// bounding buffered data.
+    ///
+    /// HOW:
+    /// - Raise both windows, stop the peer from reading, and spawn a one-megabyte payload send.
+    /// - Verify the send remains unfinished with ample flow-control capacity still available.
+    /// - Restore peer reads, collect exactly one megabyte through end-of-stream, and verify the
+    ///   send completes successfully.
     #[ntex::test]
     async fn test_send_waits_for_write_backpressure() {
         const SIZE: usize = 1024 * 1024;
@@ -3341,7 +3616,13 @@ mod tests {
         assert!(done.get());
     }
 
-    /// A sender waiting for the write back-pressure release fails on reset.
+    /// STATEMENT: A sender blocked by I/O write backpressure fails when its stream is reset.
+    ///
+    /// HOW:
+    /// - Give both windows ample capacity, stop peer reads, and spawn a one-megabyte payload
+    ///   send.
+    /// - Verify the task remains pending, reset the stream with `Reason::CANCEL`, and check the
+    ///   task returns an error within 500 milliseconds.
     #[ntex::test]
     async fn test_write_backpressure_wait_fails_on_reset() {
         let (client, srv) = window_client(i32::MAX as u32).await;
@@ -3371,8 +3652,16 @@ mod tests {
         assert!(res.unwrap().unwrap().is_err());
     }
 
-    /// A received GOAWAY fails only local streams above `last_stream_id`,
-    /// remaining streams complete, new streams are refused (RFC 9113 §6.8).
+    /// STATEMENT: A received `GoAway` rejects only later local streams and permits earlier
+    /// streams to finish, per RFC 9113 §6.8.
+    ///
+    /// HOW:
+    /// - Open streams 1 and 3, then inject `GoAway` with last stream ID 1 and
+    ///   `Reason::INTERNAL_ERROR`.
+    /// - Verify stream 3 rejects payload and new requests report the `GoAway` error while the
+    ///   client is disconnecting but not closed.
+    /// - Complete stream 1 in both directions, verify its final data and headers, and check the
+    ///   connection then closes.
     #[ntex::test]
     async fn test_go_away_last_stream_id() {
         use crate::error::{ConnectionError, OperationError};
@@ -3423,7 +3712,13 @@ mod tests {
         assert!(client.is_closed());
     }
 
-    /// A protocol error during graceful GOAWAY handling closes the connection.
+    /// STATEMENT: A protocol error during graceful `GoAway` handling closes the connection
+    /// immediately.
+    ///
+    /// HOW:
+    /// - Open a stream, inject a graceful `GoAway`, and verify the client is disconnecting.
+    /// - Inject a zero-increment connection window update, then verify closure and an outgoing
+    ///   `GoAway` with `Reason::PROTOCOL_ERROR`.
     #[ntex::test]
     async fn test_go_away_then_protocol_error() {
         let (client, srv) = window_client(1024).await;
@@ -3450,8 +3745,16 @@ mod tests {
         );
     }
 
-    /// `SETTINGS_INITIAL_WINDOW_SIZE` changes adjust open stream windows, the
-    /// window can become negative (RFC 9113 §6.9.2).
+    /// STATEMENT: `SETTINGS_INITIAL_WINDOW_SIZE` adjusts existing stream windows, including
+    /// negative values, per RFC 9113 §6.9.2.
+    ///
+    /// HOW:
+    /// - Exhaust a ten-byte window, reduce the initial window to five, and verify usable
+    ///   capacity remains zero.
+    /// - Queue three bytes, bring the window from negative to zero without releasing data, then
+    ///   add two and verify exactly two bytes are sent.
+    /// - Raise the initial window to 20, verify the final byte is sent with 14 bytes remaining,
+    ///   and check a new stream starts with capacity 20.
     #[ntex::test]
     async fn test_send_window_adjusted_by_settings() {
         let (client, srv) = window_client(10).await;
@@ -3501,7 +3804,16 @@ mod tests {
         assert_eq!(stream2.stream().available_send_capacity(), 20);
     }
 
-    /// Empty payload without eof sends nothing and does not wait for capacity.
+    /// STATEMENT: Empty nonfinal payloads send nothing and neither wait for nor consume flow-
+    /// control capacity.
+    ///
+    /// HOW:
+    /// - With a zero stream window, verify an empty nonfinal payload completes within 500
+    ///   milliseconds.
+    /// - Add ten bytes of window, send another empty nonfinal payload, and verify no data
+    ///   frames or capacity consumption.
+    /// - Send an empty final payload and verify a zero-length `Data` frame carries end-of-
+    ///   stream.
     #[ntex::test]
     async fn test_send_empty_payload_zero_window() {
         let (client, srv) = window_client(0).await;
@@ -3528,8 +3840,16 @@ mod tests {
         assert_eq!(client_data(&srv, &codec), [(0, true)]);
     }
 
-    /// Stream window updates do not extend the capacity timeout while the
-    /// connection window is exhausted.
+    /// STATEMENT: Stream window updates do not extend a capacity timeout while the connection
+    /// window is exhausted.
+    ///
+    /// HOW:
+    /// - Configure a one-second capacity timeout and exhaust the default connection window on a
+    ///   stream with a large window.
+    /// - Queue another payload and inject only stream window updates every 300 milliseconds for
+    ///   three seconds.
+    /// - Verify the sender has finished with `StreamError::CapacityTimeout` rather than
+    ///   continuing to wait.
     #[ntex::test]
     async fn test_stream_updates_do_not_extend_capacity_timeout() {
         let (client, srv) = window_client_with(1_000_000, Seconds(1)).await;
@@ -3562,7 +3882,15 @@ mod tests {
         ));
     }
 
-    /// Capacity waiters fail once the send side is closed.
+    /// STATEMENT: Closing the send side fails capacity waiters regardless of remaining flow-
+    /// control capacity.
+    ///
+    /// HOW:
+    /// - Exhaust a three-byte stream window, start a capacity waiter, and close with trailers;
+    ///   verify the waiter returns `OperationError::Closed(None)`.
+    /// - End another stream with one byte and verify a capacity wait fails with the same error
+    ///   despite two bytes remaining.
+    /// - Check the last data frame is the one-byte final frame, with no later data.
     #[ntex::test]
     async fn test_send_capacity_after_send_close() {
         let (client, srv) = window_client(3).await;
@@ -3599,8 +3927,16 @@ mod tests {
         assert_eq!(data.last(), Some(&(1, true)));
     }
 
-    /// Received data capacity is released on consume, stream window updates
-    /// are sent once the released size reaches the threshold.
+    /// STATEMENT: Receive capacity is released on consumption, with stream window updates gated
+    /// by a threshold.
+    ///
+    /// HOW:
+    /// - Receive two 15,000-byte chunks, combine their capacities, and verify overconsumption
+    ///   panics without changing the 30,000-byte capacity.
+    /// - Consume 10,000 bytes without an update, then 15,000 more and verify a 25,000-byte
+    ///   update; dropping the final 5,000 stays below the threshold.
+    /// - Send three more 16,383-byte chunks, verify all arrive, and check the connection
+    ///   remains open.
     #[ntex::test]
     async fn test_recv_capacity_consume() {
         let (client, srv) = window_client(65_535).await;
@@ -3693,8 +4029,13 @@ mod tests {
         frame::Headers::new(id, frame::PseudoHeaders::response(status), hdrs, eof)
     }
 
-    /// A server cannot open streams with HEADERS, push is not enabled
-    /// (RFC 9113 §8.4).
+    /// STATEMENT: A server cannot initiate a stream with `Headers` when push is disabled, per
+    /// RFC 9113 §8.4.
+    ///
+    /// HOW:
+    /// - Inject response headers for server-initiated stream 2 into an otherwise idle client
+    ///   connection.
+    /// - Verify the client closes and sends `GoAway` with `Reason::PROTOCOL_ERROR`.
     #[ntex::test]
     async fn test_client_rejects_server_initiated_stream() {
         let (client, srv) = window_client(1024).await;
@@ -3711,8 +4052,16 @@ mod tests {
         );
     }
 
-    /// `content-length` must match the payload if the message ends with
-    /// the headers or the trailers (RFC 9113 §8.1.1).
+    /// STATEMENT: End-of-stream headers or trailers enforce content length, except for omitted
+    /// 304 bodies, per RFC 9113 §8.1.1.
+    ///
+    /// HOW:
+    /// - End a 200 response in headers despite content length ten; verify `WrongPayloadLength`
+    ///   and a stream reset with `Reason::PROTOCOL_ERROR`.
+    /// - Send five of ten declared bytes before trailers and verify headers and data precede a
+    ///   `WrongPayloadLength` EOF error.
+    /// - End a 304 response with content length ten and no body; verify final headers are
+    ///   accepted and the client remains open.
     #[ntex::test]
     async fn test_content_length_without_data() {
         let (client, srv) = window_client(1024).await;
@@ -3772,7 +4121,13 @@ mod tests {
         assert!(!client.is_closed());
     }
 
-    /// Old streams do not allow an unbounded burst of resets.
+    /// STATEMENT: Old streams cannot justify an unbounded burst of resets after the reset-ratio
+    /// window decays.
+    ///
+    /// HOW:
+    /// - Seed a connection with 100,000 streams and 40,000 resets, then update its reset count.
+    /// - Verify the stream count drops below `RESET_RATIO_WINDOW` and fewer than half a window
+    ///   of further resets succeeds before an error.
     #[ntex::test]
     async fn test_rst_count_decays() {
         let (client, _srv) = window_client(1024).await;
@@ -3797,7 +4152,14 @@ mod tests {
         );
     }
 
-    /// Trailers must not include pseudo-headers (RFC 9113 §8.1).
+    /// STATEMENT: Trailers containing pseudo-headers fail the stream with a protocol error, per
+    /// RFC 9113 §8.1.
+    ///
+    /// HOW:
+    /// - Send valid initial response headers followed by final headers containing another
+    ///   status pseudo-header.
+    /// - Verify the initial headers arrive, then EOF reports `UnexpectedPseudo("status")` and a
+    ///   matching stream reset uses `Reason::PROTOCOL_ERROR`.
     #[ntex::test]
     async fn test_pseudo_header_in_trailers() {
         let (client, srv) = window_client(1024).await;
@@ -3825,6 +4187,17 @@ mod tests {
         ));
     }
 
+    /// STATEMENT: Local resets and capacity timeouts wake a pending client receiver to return
+    /// `None`.
+    ///
+    /// HOW:
+    /// - Open zero-window streams and spawn receivers, checking each remains pending before
+    ///   failure.
+    /// - Trigger a timeout through `StreamRef::send_capacity`, then through a single capacity
+    ///   poll without an active waiter; verify each receiver finishes and the latter receive
+    ///   state is closed.
+    /// - Reset another stream through `StreamRef` with `Reason::CANCEL` and verify its receiver
+    ///   also finishes.
     #[ntex::test]
     async fn test_recv_woken_on_local_reset() {
         use std::{cell::Cell, rc::Rc};
@@ -3879,7 +4252,13 @@ mod tests {
         assert!(done.get());
     }
 
-    /// A failed stream is not reported as closed before its final message.
+    /// STATEMENT: A failed stream delivers its final disconnect message instead of reporting
+    /// closure prematurely.
+    ///
+    /// HOW:
+    /// - Open a stream and spawn a task awaiting its next received message.
+    /// - Close the peer transport and verify the task returns
+    ///   `Some(MessageKind::Disconnect(_))` within 500 milliseconds.
     #[ntex::test]
     async fn test_recv_waits_for_disconnect_message() {
         let (client, srv) = window_client(1024).await;

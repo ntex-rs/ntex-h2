@@ -554,6 +554,14 @@ mod tests {
 
     use super::*;
 
+    /// STATEMENT: Canceled readiness and acquisition waiters are removed from the pool queue
+    /// without accumulating.
+    ///
+    /// HOW:
+    /// - Disable connections and retain one pending readiness waiter.
+    /// - Repeatedly enqueue and cancel 2,048 `ready` or `client` waiters, checking the queue
+    ///   grows to two and shrinks to one each time.
+    /// - Drop the retained waiter and assert the queue is empty.
     #[test]
     fn cancelled_waiters_are_removed() {
         for ready in [false, true] {
@@ -583,6 +591,13 @@ mod tests {
         }
     }
 
+    /// STATEMENT: A canceled pool-waiter channel fails acquisition with a disconnected-client
+    /// error.
+    ///
+    /// HOW:
+    /// - Disable connections, poll a `client` acquisition to pending, and clear the waiter
+    ///   queue to cancel its channel.
+    /// - Poll again and assert `ClientError::Disconnected` is returned and no waiters remain.
     #[test]
     fn cancelled_waiter_channel_reports_error() {
         let pool = Client::builder("localhost")

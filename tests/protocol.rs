@@ -201,8 +201,15 @@ async fn start_default() -> Peer {
     start(SharedCfg::new("SRV").build(), None).await
 }
 
-/// An invalid HEADERS frame resets a new stream, the same frame for a
-/// closed stream is a connection error.
+/// STATEMENT: An invalid `Headers` frame resets a new stream but becomes a connection error for
+/// the closed stream.
+///
+/// HOW:
+/// - Send self-dependent headers for stream 1 and assert a `Reset` with
+///   `Reason::PROTOCOL_ERROR`; confirm a ping still succeeds.
+/// - Repeat those headers and assert `GoAway` has `Reason::PROTOCOL_ERROR` and last stream ID
+///   1.
+/// - Check the control event contains `InvalidStreamId` and the server stops.
 #[ntex::test]
 async fn invalid_headers_frame() {
     let peer = start_default().await;
@@ -225,7 +232,13 @@ async fn invalid_headers_frame() {
     peer.stopped().await;
 }
 
-/// HEADERS for an old stream id is a connection error.
+/// STATEMENT: Headers using an older stream ID cause a connection error.
+///
+/// HOW:
+/// - Complete a request on stream 3 and check its response headers.
+/// - Send headers for stream 1 and assert `GoAway` has `Reason::PROTOCOL_ERROR` and last stream
+///   ID 3.
+/// - Check the control event contains `InvalidStreamId` and the server stops.
 #[ntex::test]
 async fn headers_for_closed_stream() {
     let peer = start_default().await;
@@ -241,7 +254,15 @@ async fn headers_for_closed_stream() {
     peer.stopped().await;
 }
 
-/// Connection level flow control and stream zero errors.
+/// STATEMENT: Connection-level flow-control and invalid frame errors close the connection with
+/// the matching reason.
+///
+/// HOW:
+/// - Start a fresh handshaked server for a connection-window overflow, a stream-zero reset, an
+///   idle-stream window update, and a duplicate settings acknowledgment.
+/// - Confirm a ping succeeds before each invalid frame, then send the frame.
+/// - Assert the expected `GoAway` reason and control-event text, then wait for the server to
+///   stop.
 #[ntex::test]
 async fn connection_frame_errors() {
     let cases: [(&[u8], Reason, &str); 4] = [
@@ -282,7 +303,14 @@ async fn connection_frame_errors() {
     }
 }
 
-/// PRIORITY frames are accepted and ignored.
+/// STATEMENT: Priority frames are ignored except that self-dependency on an open stream resets
+/// that stream.
+///
+/// HOW:
+/// - Open stream 1, send a valid priority frame followed by a self-dependent one, and assert a
+///   `Reset` with `Reason::PROTOCOL_ERROR` for stream 1.
+/// - Send self-dependent and malformed priority frames for idle streams and confirm a ping
+///   still succeeds.
 #[ntex::test]
 async fn priority_frames_are_ignored() {
     let peer = start_default().await;
@@ -305,7 +333,12 @@ async fn priority_frames_are_ignored() {
     peer.ping().await;
 }
 
-/// The peer's SETTINGS_MAX_FRAME_SIZE is used for DATA frames.
+/// STATEMENT: Outgoing data frames honor the peer's `SETTINGS_MAX_FRAME_SIZE`.
+///
+/// HOW:
+/// - Advertise a 32,768-byte frame limit and request the 40,000-byte response.
+/// - Collect data-frame lengths until end-of-stream and assert their sum is 40,000.
+/// - Assert at least one frame exceeds 16,384 bytes and no frame exceeds 32,768 bytes.
 #[ntex::test]
 async fn peer_max_frame_size() {
     let mut peer = start_default().await;
@@ -334,7 +367,15 @@ async fn peer_max_frame_size() {
     assert!(sizes.iter().all(|sz| *sz <= 32_768), "{sizes:?}");
 }
 
-/// The control service can replace the GOAWAY reason.
+/// STATEMENT: The control service can replace the `GoAway` reason for publish-service and
+/// protocol errors.
+///
+/// HOW:
+/// - Fail the publish service and assert the overridden `Reason::CANCEL`, last stream ID 1, and
+///   the original error control event.
+/// - Send a stream-zero reset and assert the overridden `Reason::ENHANCE_YOUR_CALM` and a
+///   protocol-error control event.
+/// - Wait for each server to stop.
 #[ntex::test]
 async fn control_overrides_goaway_reason() {
     // publish service error
@@ -362,7 +403,13 @@ async fn control_overrides_goaway_reason() {
     peer.stopped().await;
 }
 
-/// Remote GOAWAY and peer disconnect are reported to the control service.
+/// STATEMENT: Remote `GoAway` frames and peer disconnects are reported to the control service.
+///
+/// HOW:
+/// - Send `GoAway` with `Reason::ENHANCE_YOUR_CALM` and assert the control event reports that
+///   reason.
+/// - Close a separate peer and assert a peer-gone event is received; wait for both servers to
+///   stop.
 #[ntex::test]
 async fn control_remote_events() {
     let peer = start_default().await;
@@ -378,7 +425,15 @@ async fn control_remote_events() {
     peer.stopped().await;
 }
 
-/// A peer that stops in the middle of a frame is disconnected.
+/// STATEMENT: A peer that stops in the middle of a frame is disconnected after the read
+/// timeout.
+///
+/// HOW:
+/// - Configure a one-second frame-read rate timeout and confirm the handshaked peer answers a
+///   ping.
+/// - Flush a partial frame header and assert `GoAway` has `Reason::NO_ERROR` and the control
+///   event contains `ReadTimeout`.
+/// - Wait for the server to stop.
 #[ntex::test]
 async fn read_timeout() {
     let cfg = SharedCfg::new("SRV")
@@ -396,7 +451,16 @@ async fn read_timeout() {
     peer.stopped().await;
 }
 
-/// A peer that does not read is disconnected.
+/// STATEMENT: A peer that does not read triggers a write timeout shared by the connection and
+/// open streams.
+///
+/// HOW:
+/// - Configure a one-second write timeout and low backpressure threshold, then leave a request
+///   stream open.
+/// - Stop peer reads and send pings to fill the server write buffer; assert the control event
+///   contains `WriteTimeout`.
+/// - Assert the stream disconnect and failed response both report `WriteTimeout`, not
+///   `ReadTimeout`, and wait for server shutdown.
 #[ntex::test]
 async fn write_timeout() {
     let cfg = SharedCfg::new("SRV")
@@ -450,7 +514,13 @@ fn simple_client() -> (ntex_h2::client::SimpleClient, IoTest) {
     (client, srv)
 }
 
-/// A client rejects an invalid HEADERS frame for a server initiated stream.
+/// STATEMENT: A client rejects invalid headers for a server-initiated stream with a connection
+/// error.
+///
+/// HOW:
+/// - Start an in-memory client and send self-dependent headers for server stream 2.
+/// - Wait for the client to close, decode its output, and assert `GoAway` has
+///   `Reason::PROTOCOL_ERROR`.
 #[ntex::test]
 async fn client_invalid_headers_for_server_stream() {
     let (client, srv) = simple_client();
@@ -472,7 +542,13 @@ async fn client_invalid_headers_for_server_stream() {
     assert_eq!(goaway.unwrap().reason(), Reason::PROTOCOL_ERROR);
 }
 
-/// A client does not open streams after GOAWAY.
+/// STATEMENT: A client does not open new streams after receiving `GoAway`.
+///
+/// HOW:
+/// - Open a request and have the peer send `GoAway` with `Reason::NO_ERROR` and last stream ID
+///   `StreamId::CLIENT`.
+/// - Attempt another request and assert it fails with `OperationError::Connection` wrapping
+///   `ConnectionError::GoAway(Reason::NO_ERROR)`.
 #[ntex::test]
 async fn client_send_after_goaway() {
     let (client, srv) = simple_client();
@@ -560,8 +636,14 @@ impl ntex::service::ServiceFactory<(), Message> for NotReadyFactory {
     }
 }
 
-/// A publish service readiness failure is reported to the control service,
-/// a control service failure stops the server.
+/// STATEMENT: A publish-service readiness failure reaches the control service, whose failure
+/// stops the server.
+///
+/// HOW:
+/// - Start a server with `NotReadyFactory` and a control service that returns the received
+///   publish error.
+/// - Send the connection preface and settings, then assert the server finishes with
+///   `ServerError::Service("not ready")`.
 #[ntex::test]
 async fn publish_service_not_ready() {
     let (cli, srv) = IoTest::create();
@@ -597,8 +679,14 @@ async fn publish_service_not_ready() {
     );
 }
 
-/// Control ack for a failed publish service sends GOAWAY and closes the
-/// connection.
+/// STATEMENT: Acknowledging a publish-service readiness failure sends `GoAway` and stops the
+/// server successfully.
+///
+/// HOW:
+/// - Start a server with `NotReadyFactory` and acknowledge its control error using
+///   `Reason::ENHANCE_YOUR_CALM`.
+/// - Send the preface and settings, then assert the received `GoAway` uses that reason.
+/// - Wait for the server result and assert it is successful.
 #[ntex::test]
 async fn publish_service_not_ready_ack() {
     let (cli, srv) = IoTest::create();
@@ -644,8 +732,15 @@ async fn publish_service_not_ready_ack() {
     assert!(res.is_ok(), "{res:?}");
 }
 
-/// Errors after the control service is notified of a disconnect are
-/// handled with the default response.
+/// STATEMENT: Errors after disconnect notification use the default response without notifying
+/// control again.
+///
+/// HOW:
+/// - Keep stream 1 open, send graceful `GoAway`, and assert a control event plus a
+///   `Reason::NO_ERROR` reply with last stream ID 1.
+/// - Repeat `GoAway` and confirm a ping still succeeds.
+/// - Send a stream-zero reset and assert `Reason::PROTOCOL_ERROR` rather than the configured
+///   override, no further control event, and server shutdown.
 #[ntex::test]
 async fn error_after_goaway() {
     let peer = start(SharedCfg::new("SRV").build(), Some(Reason::ENHANCE_YOUR_CALM)).await;
@@ -675,7 +770,13 @@ async fn error_after_goaway() {
     peer.stopped().await;
 }
 
-/// Both services failing readiness stops the server with the control error.
+/// STATEMENT: When publish and control readiness both fail, the server returns the
+/// control-service error.
+///
+/// HOW:
+/// - Start a server using `NotReadyFactory` and `NotReadyControl`.
+/// - Send the connection preface and settings, then assert the server returns
+///   `ServerError::Service("control not ready")`.
 #[ntex::test]
 async fn publish_and_control_not_ready() {
     let (cli, srv) = IoTest::create();

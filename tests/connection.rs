@@ -99,6 +99,13 @@ fn goaway(frm: frame::Frame) -> frame::GoAway {
     }
 }
 
+/// STATEMENT: Cloning each `ClientError` variant preserves its diagnostic signature and display
+/// text.
+///
+/// HOW:
+/// - Construct protocol, operation, frame, handshake timeout, connector, and I/O errors.
+/// - Clone each error and compare its signature with the expected value and its display text
+///   with the original.
 #[test]
 fn test_client_error_clone_and_diagnostic() {
     let errors = [
@@ -132,6 +139,14 @@ fn test_client_error_clone_and_diagnostic() {
     }
 }
 
+/// STATEMENT: A new `SimpleClient` exposes its connection metadata and notifies listeners on
+/// forced closure.
+///
+/// HOW:
+/// - Create a tagged in-memory client with authority `example.com` and check its 16-character
+///   base32 identifier, tag, service, authority, creation time, and initial ping count.
+/// - Verify the I/O is open, register `on_disconnect`, and call `force_close`.
+/// - Await the notification and assert that the client is closed.
 #[ntex::test]
 async fn test_simple_client_metadata_and_disconnect() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -162,6 +177,16 @@ async fn test_simple_client_metadata_and_disconnect() {
     assert!(client.is_closed());
 }
 
+/// STATEMENT: Timed-out, dropped, and unreserved disconnect futures close the client and wake
+/// disconnect listeners.
+///
+/// HOW:
+/// - Hold a stream reservation, await a disconnect with a short timeout, and check
+///   `OperationError::Disconnected`, listener completion, and closure.
+/// - On a second client, hold a reservation and drop the disconnect future after checking the
+///   disconnecting state; verify the listener wakes and the client closes.
+/// - Disconnect a third client without reservations and verify it returns
+///   `OperationError::Disconnected` and closes within the outer timeout.
 #[ntex::test]
 async fn test_client_disconnect_future() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -216,6 +241,16 @@ async fn test_client_disconnect_future() {
     assert!(client.is_closed());
 }
 
+/// STATEMENT: Pool connection timeouts and connector errors leave no connections and increment
+/// the error count.
+///
+/// HOW:
+/// - Use a connector slower than the configured connection timeout and assert
+///   `ClientError::HandshakeTimeout` and pool readiness.
+/// - Use an immediately failing connector and assert `ClientError::Connect` with
+///   `ConnectError::InvalidInput`.
+/// - For both failures, verify zero active and total connections and exactly one connection
+///   error.
 #[ntex::test]
 async fn test_client_pool_connect_failures() {
     let client = Client::builder("localhost")
@@ -255,6 +290,16 @@ async fn test_client_pool_connect_failures() {
     assert_eq!(client.stat_connect_errors(), 1);
 }
 
+/// STATEMENT: A `SimpleClient` honors the peer stream limit and opens a waiting request when
+/// capacity returns.
+///
+/// HOW:
+/// - Connect to a server allowing one concurrent stream, wait for its settings, and check the
+///   client authority and debug output.
+/// - Open a request and verify the client is not ready, has one active stream, and exposes
+///   matching send/receive stream identities and debug output.
+/// - Spawn another request, finish the first request body, and verify the waiting request opens
+///   and readiness returns.
 #[ntex::test]
 async fn test_max_concurrent_streams() {
     let srv = start_server().await;
@@ -306,6 +351,16 @@ async fn test_max_concurrent_streams() {
     assert!(opened.get());
 }
 
+/// STATEMENT: A single-connection pool regains readiness and serves a waiter after its stream
+/// slot is released.
+///
+/// HOW:
+/// - Build a secure pool limited to one connection and check builder/client debug output and
+///   initial readiness.
+/// - Open a request against a server allowing one concurrent stream and assert that the pool
+///   becomes unready.
+/// - Spawn another request, finish the first request body, await pool readiness, and verify the
+///   waiting request opens.
 #[ntex::test]
 async fn test_max_concurrent_streams_pool() {
     let srv = start_server().await;
@@ -346,6 +401,16 @@ async fn test_max_concurrent_streams_pool() {
     assert!(opened.get());
 }
 
+/// STATEMENT: A pool with a two-connection limit can open another connection when a peer stream
+/// slot is occupied.
+///
+/// HOW:
+/// - Count connector calls in a pool limited to two connections, using a server allowing one
+///   stream per connection.
+/// - Open the first request and verify the pool remains ready, then spawn another request and
+///   finish the first request body.
+/// - Assert that the second request opens, the pool remains ready, and exactly two connections
+///   were created.
 #[ntex::test]
 async fn test_max_concurrent_streams_pool2() {
     let srv = start_server().await;
@@ -387,6 +452,15 @@ async fn test_max_concurrent_streams_pool2() {
     assert!(cnt.get() == 2);
 }
 
+/// STATEMENT: Resetting and dropping streams successively release capacity for queued client
+/// requests.
+///
+/// HOW:
+/// - Fill a one-stream client and queue three requests, arranging for the first waiter to reset
+///   its stream and the second to drop its stream handles.
+/// - Send a partial body on the original stream and reset it with `Reason::NO_ERROR`.
+/// - Wait for the final queued request and assert all three requests opened and the client is
+///   ready.
 #[ntex::test]
 async fn test_max_concurrent_streams_reset() {
     let srv = start_server().await;
@@ -443,6 +517,15 @@ async fn test_max_concurrent_streams_reset() {
     assert_eq!(opened.get(), 3);
 }
 
+/// STATEMENT: Capacity callbacks report peer settings, released stream slots, and connection
+/// closure.
+///
+/// HOW:
+/// - Register an `on_capacity` counter and verify the peer one-stream setting invokes it once
+///   while opening a request does not.
+/// - Finish the request body and drain its response, then assert zero active streams and a
+///   second callback.
+/// - Force-close the connection and verify closure and further callback activity.
 #[ntex::test]
 async fn test_on_capacity() {
     let srv = start_server().await;
@@ -477,6 +560,16 @@ async fn test_on_capacity() {
     assert!(cnt.get() > 2);
 }
 
+/// STATEMENT: A stream reservation consumes one slot and releases it on drop, request
+/// completion, or send failure.
+///
+/// HOW:
+/// - Reserve the only stream slot and check its debug output, active count, lack of readiness,
+///   and refusal of another reservation.
+/// - Drop the reservation and verify capacity and its callback return; use another reservation
+///   to send a request and verify completion releases its slot with one additional callback.
+/// - Reserve again, force-close the client, and verify the reserved send fails, the active
+///   count is zero, and no new reservation is available.
 #[ntex::test]
 async fn test_stream_reservation() {
     let srv = start_server().await;
@@ -528,6 +621,13 @@ async fn test_stream_reservation() {
     assert!(client.reserve().is_none());
 }
 
+/// STATEMENT: Forced disconnection clears active stream accounting without a second decrement
+/// on handle drop.
+///
+/// HOW:
+/// - Wait for a one-stream limit, open a request, and assert one active stream.
+/// - Force-close the client and verify it is closed with zero active streams.
+/// - Drop both stream handles and assert the active count remains zero.
 #[ntex::test]
 async fn test_disconnect_resets_active_streams() {
     let srv = start_server().await;
@@ -551,6 +651,15 @@ async fn test_disconnect_resets_active_streams() {
     assert_eq!(client.active_streams(), 0);
 }
 
+/// STATEMENT: Graceful disconnection honors existing reservations and waits until all reserved
+/// work is released.
+///
+/// HOW:
+/// - Reserve a stream and call `close`; verify new reservations are refused but the existing
+///   one can send and receive a response before closure.
+/// - On another client, verify a held reservation delays closure until it is dropped.
+/// - With two slots, complete an active request during graceful shutdown and verify the
+///   remaining reservation keeps the client open until its own request completes.
 #[ntex::test]
 async fn test_stream_reservation_graceful_disconnect() {
     let srv = start_server().await;
@@ -621,6 +730,14 @@ async fn test_stream_reservation_graceful_disconnect() {
     assert!(client.is_closed());
 }
 
+/// STATEMENT: A payload send blocked by the peer stream window fails with
+/// `StreamError::CapacityTimeout`.
+///
+/// HOW:
+/// - Configure a one-second capacity timeout and an in-memory peer advertising a one-byte
+///   stream window without updates.
+/// - Send a four-byte POST body and verify it completes within the outer timeout with
+///   `OperationError::Stream(StreamError::CapacityTimeout)`.
 #[ntex::test]
 async fn test_client_send_capacity_timeout() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -647,6 +764,14 @@ async fn test_client_send_capacity_timeout() {
     ));
 }
 
+/// STATEMENT: Waiting for send capacity on a zero-window stream fails with
+/// `StreamError::CapacityTimeout`.
+///
+/// HOW:
+/// - Configure a one-second capacity timeout and an in-memory peer advertising a zero stream
+///   window without updates.
+/// - Open a POST stream, await `send_capacity` within an outer timeout, and assert
+///   `OperationError::Stream(StreamError::CapacityTimeout)`.
 #[ntex::test]
 async fn test_client_send_capacity_wait_timeout() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -673,6 +798,14 @@ async fn test_client_send_capacity_wait_timeout() {
     ));
 }
 
+/// STATEMENT: Dropping an unfinished send stream wakes a pending receive and ends it without a
+/// message.
+///
+/// HOW:
+/// - Open a POST request to a server waiting for its body and spawn a task blocked in
+///   `RecvStream::recv`.
+/// - Drop the unfinished send stream to reset it locally and verify the receive returns `None`
+///   within the timeout.
 #[ntex::test]
 async fn test_recv_woken_by_local_reset() {
     let srv = start_server().await;
@@ -692,6 +825,13 @@ async fn test_recv_woken_by_local_reset() {
     assert!(res.unwrap().unwrap());
 }
 
+/// STATEMENT: A send-capacity timeout wakes a pending receive and ends it without a message.
+///
+/// HOW:
+/// - Create an in-memory client with a one-second capacity timeout and a peer advertising a
+///   zero stream window.
+/// - Open a POST stream and spawn a pending receive, then verify sending its body fails.
+/// - Assert the receive task returns `None` within the timeout.
 #[ntex::test]
 async fn test_recv_woken_by_capacity_timeout() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -716,6 +856,15 @@ async fn test_recv_woken_by_capacity_timeout() {
     assert!(res.unwrap().unwrap());
 }
 
+/// STATEMENT: An expired capacity timer does not replace a closed stream reset or close the
+/// connection.
+///
+/// HOW:
+/// - Open a POST stream against a zero-window peer with a one-second capacity timeout.
+/// - Poll `send_capacity` until an outer timeout expires, then reset the stream with
+///   `Reason::CANCEL`.
+/// - Wait beyond the capacity timeout and assert `send_capacity` still returns
+///   `OperationError::LocalReset(Reason::CANCEL)` while the client remains open.
 #[ntex::test]
 async fn test_stale_capacity_timeout_ignored() {
     let (io, srv) = ntex::testing::IoTest::create();
@@ -751,6 +900,16 @@ async fn test_stale_capacity_timeout_ignored() {
     assert!(!client.is_closed());
 }
 
+/// STATEMENT: A completed response does not cancel an unfinished request body or prematurely
+/// release its slot.
+///
+/// HOW:
+/// - Send a partial POST body and inject response `Headers` carrying status 200 and
+///   `END_STREAM`.
+/// - Drain and drop the receive stream, then verify the request still counts as one active
+///   stream.
+/// - Finish the request body successfully, verify zero active streams, and confirm the client
+///   remains open after dropping the send handle.
 #[ntex::test]
 async fn test_send_after_response() {
     let (client, srv) = limited_client(10);
@@ -779,7 +938,15 @@ async fn test_send_after_response() {
 
 const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
-/// The first frame after the preface must be SETTINGS.
+/// STATEMENT: The first frame after the client preface must be a non-acknowledgement `Settings`
+/// frame.
+///
+/// HOW:
+/// - Open raw connections and send either a `Ping` or a settings acknowledgement immediately
+///   after the preface.
+/// - Skip initial settings and window updates, then assert `GoAway` has
+///   `Reason::PROTOCOL_ERROR` and the expected first-frame diagnostic.
+/// - Verify each connection then reaches EOF.
 #[ntex::test]
 async fn test_first_frame_not_settings() {
     let srv = start_server().await;
@@ -805,7 +972,15 @@ async fn test_first_frame_not_settings() {
     }
 }
 
-/// Invalid SETTINGS frames close the connection with the RFC 9113 error code.
+/// STATEMENT: Invalid `Settings` frames close the connection with the appropriate RFC 9113
+/// error code.
+///
+/// HOW:
+/// - Send raw settings with an oversized initial window, non-multiple-of-six payload,
+///   acknowledgement payload, invalid push value, or nonzero stream identifier.
+/// - Assert `GoAway` carries the expected flow-control, frame-size, or protocol error and,
+///   where specified, the expected diagnostic text.
+/// - Verify each connection then reaches EOF.
 #[ntex::test]
 async fn test_invalid_settings_reason() {
     let srv = start_server().await;
@@ -872,8 +1047,15 @@ async fn test_invalid_settings_reason() {
     }
 }
 
-/// Streams over the concurrency limit are refused, the connection stays
-/// usable until the peer keeps opening streams over the limit.
+/// STATEMENT: Excess concurrent streams are refused without closing the connection until
+/// repeated overflow hits the reset limit.
+///
+/// HOW:
+/// - Keep one request open, open excess streams, and assert `Reason::REFUSED_STREAM` resets
+///   even when data follows a refused stream.
+/// - Send a `Ping` and verify its acknowledgement shows the connection remains usable.
+/// - Continue opening excess streams until `GoAway` reports `Reason::ENHANCE_YOUR_CALM` and the
+///   rapid-reset diagnostic, then verify EOF.
 #[ntex::test]
 async fn test_refuse_on_overflow() {
     let srv = start_server().await;
@@ -945,8 +1127,15 @@ async fn test_refuse_on_overflow() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
-/// Padding counts toward flow control, the peer gets its window back even
-/// though the padding is not delivered.
+/// STATEMENT: Discarded padding returns flow-control capacity even when delivered data stays
+/// below the update threshold.
+///
+/// HOW:
+/// - Open a POST stream against a server that does not read payloads.
+/// - Send 255 padded `Data` frames containing one application byte and 256 flow-controlled
+///   bytes each.
+/// - Wait for a stream `WindowUpdate` and assert its increment exceeds the 255 delivered data
+///   bytes.
 #[ntex::test]
 async fn test_padding_is_flow_controlled() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1048,8 +1237,15 @@ async fn open_raw_stream(srv: &test::TestServer) -> (IoBoxed, Codec) {
     (io, codec)
 }
 
-/// SETTINGS_INITIAL_WINDOW_SIZE that overflows a stream window is
-/// a connection error, the settings are not acknowledged.
+/// STATEMENT: A settings-induced stream-window overflow is a connection error and is not
+/// acknowledged.
+///
+/// HOW:
+/// - Open a raw stream and grow the server send window to `MAX_INITIAL_WINDOW_SIZE` with a
+///   `WindowUpdate`.
+/// - Increase the initial stream window by one byte via `Settings`.
+/// - Assert the next frame is `GoAway` with `Reason::FLOW_CONTROL_ERROR`, rather than a
+///   settings acknowledgement, and verify EOF.
 #[ntex::test]
 async fn test_settings_window_overflow() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1080,7 +1276,15 @@ async fn send_data(io: &IoBoxed, codec: &Codec, count: usize, size: usize) {
     io.flush(true).await.unwrap();
 }
 
-/// Data beyond the stream receive window resets the stream.
+/// STATEMENT: Receiving data beyond a stream receive window resets that stream with a
+/// flow-control error.
+///
+/// HOW:
+/// - Open a POST stream on a server that does not consume payloads.
+/// - Send five 16-KiB `Data` frames, exceeding the default stream window but not the connection
+///   window.
+/// - Await a `Reset` within the timeout and verify the client stream identifier and
+///   `Reason::FLOW_CONTROL_ERROR`.
 #[ntex::test]
 async fn test_stream_recv_window_exceeded() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1102,8 +1306,16 @@ async fn test_stream_recv_window_exceeded() {
     assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
 }
 
-/// The frame that exceeds the stream receive window does not update the
-/// stream window, the stream is reset.
+/// STATEMENT: A frame exceeding the stream receive window triggers a reset without returning
+/// stream capacity.
+///
+/// HOW:
+/// - Configure a 30,000-byte stream window on a server that does not consume payloads and open
+///   a raw POST stream.
+/// - Send two 16-KiB `Data` frames and reject any stream `WindowUpdate` received before the
+///   reset.
+/// - Verify the reset arrives within the timeout for the client stream with
+///   `Reason::FLOW_CONTROL_ERROR`.
 #[ntex::test]
 async fn test_stream_recv_window_exceeded_no_window_update() {
     // the window update threshold is a third of the window
@@ -1129,7 +1341,16 @@ async fn test_stream_recv_window_exceeded_no_window_update() {
     assert_eq!(rst.reason(), Reason::FLOW_CONTROL_ERROR);
 }
 
-/// Data beyond the connection receive window closes the connection.
+/// STATEMENT: A frame exceeding the connection receive window causes a connection-level
+/// flow-control error.
+///
+/// HOW:
+/// - Configure a 65,535-byte connection window, a 1-MiB stream window, and a 1-MiB maximum
+///   frame size.
+/// - Open a raw POST stream and send one 80-KiB `Data` frame, exceeding only the connection
+///   window.
+/// - Await `GoAway` within the timeout, reject any stream reset, and assert
+///   `Reason::FLOW_CONTROL_ERROR`.
 #[ntex::test]
 async fn test_connection_recv_window_exceeded() {
     let srv = start_idle_server(
@@ -1160,6 +1381,14 @@ async fn test_connection_recv_window_exceeded() {
     assert_eq!(res.reason(), Reason::FLOW_CONTROL_ERROR);
 }
 
+/// STATEMENT: A received stream cancellation is not answered with another reset, as required by
+/// RFC 9113 §5.4.2.
+///
+/// HOW:
+/// - Complete the raw connection setup, open a GET stream, and immediately send a `Reset` with
+///   `Reason::CANCEL`.
+/// - Send a `Ping` and assert the next received frame is its acknowledgement rather than a
+///   reset.
 #[ntex::test]
 async fn test_stream_cancel() {
     let srv = start_server().await;
@@ -1200,6 +1429,15 @@ async fn test_stream_cancel() {
     }
 }
 
+/// STATEMENT: Repeated resets of unfinished requests close the connection and report the last
+/// peer stream.
+///
+/// HOW:
+/// - Complete five raw GET requests and consume their response bodies.
+/// - Open and immediately reset five more requests with `Reason::NO_ERROR` before sending their
+///   bodies.
+/// - Assert `GoAway` carries `Reason::ENHANCE_YOUR_CALM` and the last opened stream identifier,
+///   then verify EOF.
 #[ntex::test]
 async fn test_goaway_on_reset() {
     let srv = start_server().await;
@@ -1251,6 +1489,14 @@ async fn test_goaway_on_reset() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
+/// STATEMENT: Repeated resets count toward the rapid-reset limit even for requests whose bodies
+/// are already ended.
+///
+/// HOW:
+/// - Complete five raw GET requests and consume their response bodies.
+/// - Send five more GET requests with `END_STREAM`, immediately follow each with a
+///   `Reason::NO_ERROR` reset, and consume their responses.
+/// - Assert `GoAway` carries `Reason::ENHANCE_YOUR_CALM` and the connection reaches EOF.
 #[ntex::test]
 async fn test_goaway_on_reset2() {
     let srv = start_server().await;
@@ -1305,6 +1551,13 @@ async fn test_goaway_on_reset2() {
     assert!(io.recv(&codec).await.unwrap().is_none());
 }
 
+/// STATEMENT: An idle connection closes when the peer does not acknowledge the keep-alive ping.
+///
+/// HOW:
+/// - Configure a one-second ping timeout and complete the raw connection setup without opening
+///   a stream.
+/// - Leave the subsequent ping unanswered, receive a `GoAway`, and assert the I/O closes after
+///   a delay.
 #[ntex::test]
 async fn test_ping_timeout_on_idle() {
     let srv = test::server_with_config(
@@ -1347,7 +1600,15 @@ async fn test_ping_timeout_on_idle() {
     assert!(io.is_closed());
 }
 
-/// Only the ack for the keep-alive ping counts as a pong.
+/// STATEMENT: Only an acknowledgement matching the keep-alive ping payload prevents its
+/// timeout.
+///
+/// HOW:
+/// - Configure a one-second ping timeout and, on separate connections, receive a
+///   non-acknowledgement `Ping`.
+/// - Reply with either its actual payload or an unrelated payload of eight `0xff` bytes.
+/// - Verify a matching reply permits another non-acknowledgement `Ping`, while the unrelated
+///   reply is followed by `GoAway`.
 #[ntex::test]
 async fn test_ping_timeout_unexpected_ack() {
     let srv = test::server_with_config(
@@ -1389,6 +1650,14 @@ async fn test_ping_timeout_unexpected_ack() {
     }
 }
 
+/// STATEMENT: Exceeding the server request-header limit refuses only that stream and leaves the
+/// connection usable.
+///
+/// HOW:
+/// - Configure a five-header server limit and send a GET request containing six custom headers.
+/// - Assert the receive stream ends with `StreamError::Reset(Reason::REFUSED_STREAM)`.
+/// - Send a request without custom headers and verify response headers arrive within the
+///   timeout.
 #[ntex::test]
 async fn test_max_headers() {
     let srv = test::server_with_config(
@@ -1439,7 +1708,13 @@ async fn test_max_headers() {
     assert!(matches!(r.kind, MessageKind::Headers { .. }), "{r:?}");
 }
 
-/// A malformed request resets the stream, the connection stays usable.
+/// STATEMENT: A malformed request resets only its stream and leaves the connection usable.
+///
+/// HOW:
+/// - Open a raw connection and send another request containing the forbidden `CONNECTION`
+///   header.
+/// - Assert the exact `Reset` identifies that stream and carries `Reason::PROTOCOL_ERROR`.
+/// - Send a `Ping` and verify its acknowledgement.
 #[ntex::test]
 async fn test_malformed_headers_reset_stream() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1470,8 +1745,15 @@ async fn test_malformed_headers_reset_stream() {
     }
 }
 
-/// A request with missing or unexpected pseudo headers resets the stream,
-/// the connection stays usable.
+/// STATEMENT: Missing or unexpected request pseudo-headers reset the stream without making the
+/// connection unusable.
+///
+/// HOW:
+/// - Send requests missing `:path`, `:method`, or `:scheme`, or containing unexpected `:status`
+///   or `:protocol` pseudo-headers.
+/// - Assert a `Reason::PROTOCOL_ERROR` reset for each stream and send trailing data to exercise
+///   handling of frames arriving after reset.
+/// - Send a `Ping` and verify its acknowledgement rather than another error frame.
 #[ntex::test]
 async fn test_invalid_pseudo_reset_stream() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1534,8 +1816,16 @@ async fn test_invalid_pseudo_reset_stream() {
     }
 }
 
-/// A response with too many headers fails the client stream, instead of
-/// closing the connection.
+/// STATEMENT: A response exceeding the client header limit fails only its stream and preserves
+/// the connection.
+///
+/// HOW:
+/// - Configure the client to accept five headers and have the server send six custom headers
+///   for `/large`.
+/// - Assert the receive stream ends with
+///   `StreamError::InvalidFrame(FrameError::TooManyHeaders)` carrying the message stream
+///   identifier.
+/// - Request `/` on the same client and verify response headers arrive within the timeout.
 #[ntex::test]
 async fn test_client_max_headers() {
     let srv = test::server(async move |_| {
@@ -1588,6 +1878,16 @@ async fn test_client_max_headers() {
     assert!(matches!(r.kind, MessageKind::Headers { .. }), "{r:?}");
 }
 
+/// STATEMENT: A stalled server response is cancelled on capacity timeout while later responses
+/// can resume on window updates.
+///
+/// HOW:
+/// - Advertise a one-byte initial stream window, request a response, and verify a
+///   `Reason::CANCEL` reset follows its initial headers and data when no update arrives.
+/// - Open another request and assert its first `Data` payload is `t`, then send a stream
+///   `WindowUpdate`.
+/// - Verify the remaining payload is `est body` on the same stream and accept either an ending
+///   data frame or a following empty `END_STREAM` frame.
 #[ntex::test]
 async fn test_capacity_timeout() {
     let srv = start_server().await;
@@ -1657,6 +1957,14 @@ async fn test_capacity_timeout() {
     }
 }
 
+/// STATEMENT: A connection pool reuses a live connection but replaces it after its configured
+/// lifetime expires.
+///
+/// HOW:
+/// - Build a ready pool with a one-second connection lifetime and acquire and drop two client
+///   handles.
+/// - Assert both handles have the same connection identifier.
+/// - Wait two seconds, acquire another handle, and assert its identifier differs.
 #[ntex::test]
 async fn test_con_lifetime() {
     let srv = test::server_with_config(
@@ -1694,7 +2002,13 @@ async fn test_con_lifetime() {
     assert_ne!(id1, id3);
 }
 
-/// PRIORITY with an invalid length is a stream error of type `FRAME_SIZE_ERROR`.
+/// STATEMENT: An invalid-length `Priority` frame on an open stream is a stream-level frame-size
+/// error.
+///
+/// HOW:
+/// - Open a raw stream and write a `Priority` frame with a four-byte payload instead of five.
+/// - Assert a `Reset` for that stream carries `Reason::FRAME_SIZE_ERROR`.
+/// - Send a `Ping` and verify its acknowledgement to confirm the connection remains usable.
 #[ntex::test]
 async fn test_priority_invalid_length() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -1744,7 +2058,15 @@ async fn start_echo_server() -> test::TestServer {
     )
 }
 
-/// CONNECT omits `:scheme` and `:path` (RFC 9113 §8.5).
+/// STATEMENT: A basic CONNECT requires only `:authority`, omits `:scheme` and `:path`, and
+/// rejects unsupported extended CONNECT.
+///
+/// HOW:
+/// - Use an echo server and send CONNECT requests with valid authority-only pseudo-headers,
+///   missing authority, unexpected scheme/path, and an extended CONNECT protocol.
+/// - Verify the valid request returns `CONNECT //example.com:443`, matching RFC 9113 §8.5.
+/// - Verify every invalid variant resets its stream with `Reason::PROTOCOL_ERROR`, including
+///   extended CONNECT because RFC 8441 §4 support is not enabled.
 #[ntex::test]
 async fn test_connect_request() {
     let srv = start_echo_server().await;
@@ -1803,7 +2125,13 @@ async fn test_connect_request() {
     }
 }
 
-/// The client omits `:scheme` and `:path` for CONNECT.
+/// STATEMENT: The client omits `:scheme` and `:path` when encoding a CONNECT request.
+///
+/// HOW:
+/// - Connect to an echo server with client authority `localhost:8080` and send CONNECT using
+///   the otherwise ignored path `/ignored`.
+/// - Verify response headers arrive and the response body is `CONNECT //localhost:8080`,
+///   accepting either data or ending-data delivery.
 #[ntex::test]
 async fn test_client_connect_request() {
     let srv = start_echo_server().await;
@@ -1834,7 +2162,15 @@ async fn test_client_connect_request() {
     }
 }
 
-/// A control service failure must release the open streams (F9).
+/// STATEMENT: A control service failure releases open streams and allows the dispatcher to
+/// complete (F9).
+///
+/// HOW:
+/// - Run an in-memory server whose publish service fails on the second stream and whose control
+///   service also fails.
+/// - Keep stream 1 open, trigger the failure with stream 3, and assert stream 1 receives
+///   `MessageKind::Disconnect` within the timeout.
+/// - Verify the server dispatcher completes within the timeout.
 #[ntex::test]
 async fn test_control_error_releases_streams() {
     use ntex::io::{Io, testing::IoTest};
@@ -1910,7 +2246,12 @@ fn limited_client(max: u8) -> (Rc<SimpleClient>, ntex::io::testing::IoTest) {
     (Rc::new(client), srv)
 }
 
-/// A request waiting for a stream slot fails when the connection is closed (N1).
+/// STATEMENT: A request waiting for a stream slot fails when the connection is closed (N1).
+///
+/// HOW:
+/// - Fill a one-stream client and spawn another request waiting for capacity.
+/// - Close the in-memory peer and verify the waiter completes within the timeout with
+///   `OperationError::Disconnected`.
 #[ntex::test]
 async fn test_stream_waiter_fails_on_disconnect() {
     let (client, srv) = limited_client(1);
@@ -1939,7 +2280,13 @@ async fn test_stream_waiter_fails_on_disconnect() {
     ));
 }
 
-/// A request waiting for a stream slot fails on graceful disconnect (N1).
+/// STATEMENT: A request waiting for a stream slot fails when graceful disconnection begins
+/// (N1).
+///
+/// HOW:
+/// - Fill a one-stream client and spawn another request waiting for capacity.
+/// - Call `close` and verify the waiter completes within the timeout with
+///   `OperationError::Disconnecting`.
 #[ntex::test]
 async fn test_stream_waiter_fails_on_graceful_disconnect() {
     let (client, _srv) = limited_client(1);
@@ -1968,7 +2315,13 @@ async fn test_stream_waiter_fails_on_graceful_disconnect() {
     ));
 }
 
-/// Released stream slots wake the waiters, back to back releases included (N2).
+/// STATEMENT: Released stream slots wake waiting requests even when releases occur back to back
+/// (N2).
+///
+/// HOW:
+/// - Fill a two-stream client and spawn two requests waiting for stream slots.
+/// - Reset both active streams before either waiter runs.
+/// - Verify both waiting requests successfully open streams within their timeouts.
 #[ntex::test]
 async fn test_stream_waiters_woken_on_release() {
     let (client, _srv) = limited_client(2);
@@ -2009,7 +2362,14 @@ async fn test_stream_waiters_woken_on_release() {
         .unwrap();
 }
 
-/// A woken waiter that is dropped passes the wake up to the next waiter (N2).
+/// STATEMENT: Dropping a woken stream waiter passes its capacity notification to the next
+/// waiter (N2).
+///
+/// HOW:
+/// - Fill a one-stream client, manually poll the first waiting send to `Poll::Pending`, and
+///   spawn a second waiting send.
+/// - Reset the active stream, then drop the first waiter without polling it again.
+/// - Verify the second waiting request opens a stream within the timeout.
 #[ntex::test]
 async fn test_dropped_stream_waiter_passes_wakeup() {
     use std::{future::Future, task::Poll};
@@ -2046,8 +2406,16 @@ async fn test_dropped_stream_waiter_passes_wakeup() {
         .unwrap();
 }
 
-/// `RST_STREAM(NO_ERROR)` after a complete response stops the request body,
-/// the response is not failed (N4).
+/// STATEMENT: A `Reason::NO_ERROR` reset after a completed response stops the request body
+/// without failing the response (N4).
+///
+/// HOW:
+/// - Open a POST request and inject status-200 `Headers`, ending `Data` containing `ok`, and a
+///   `Reason::NO_ERROR` reset.
+/// - Verify normal response headers and ending data are delivered, followed by receive EOF
+///   rather than an error.
+/// - Assert the active stream count is zero, further request-body sending fails, and the
+///   connection stays open.
 #[ntex::test]
 async fn test_no_error_reset_after_complete_response() {
     let (client, srv) = limited_client(10);
@@ -2079,7 +2447,16 @@ async fn test_no_error_reset_after_complete_response() {
     assert!(!client.is_closed());
 }
 
-/// Request body sent after a complete response reaches the application.
+/// STATEMENT: Request-body data sent after a complete response still reaches the server
+/// application.
+///
+/// HOW:
+/// - Run an in-memory server that sends a complete response as soon as request headers arrive
+///   and forwards published messages to a channel.
+/// - Verify response headers carry EOF, then send `chunk` and an empty ending request-body
+///   frame.
+/// - Collect three server messages within the timeout and verify the latter two contain the
+///   request data and EOF.
 #[ntex::test]
 async fn test_request_body_after_response_is_published() {
     use ntex::io::{Io, testing::IoTest};
@@ -2130,8 +2507,16 @@ async fn test_request_body_after_response_is_published() {
     assert!(matches!(msgs[2], MessageKind::Eof(_)));
 }
 
-/// Informational responses are sent before the final response and keep the
-/// stream idle.
+/// STATEMENT: Informational responses leave the stream awaiting a final response and cannot
+/// follow final headers.
+///
+/// HOW:
+/// - Have an in-memory server send statuses 103 and 100 before final status 200 and an ending
+///   `ok` body.
+/// - Assert attempting another informational response after final headers fails with
+///   `OperationError::Payload`.
+/// - Verify the client receives statuses 103, 100, and 200 in order without EOF on their
+///   headers, then ending data `ok`, and remains connected.
 #[ntex::test]
 async fn test_server_informational_responses() {
     use ntex::io::{Io, testing::IoTest};
@@ -2187,7 +2572,13 @@ async fn test_server_informational_responses() {
     assert!(!client.is_closed());
 }
 
-/// Remote reset of a server stream publishes the final error message.
+/// STATEMENT: A remote reset of a server stream publishes a final error message.
+///
+/// HOW:
+/// - Forward in-memory server messages to a channel and verify an open POST request publishes
+///   headers.
+/// - Reset the client send stream with `Reason::CANCEL`.
+/// - Assert the server publishes `MessageKind::Eof(StreamEof::Error)` within the timeout.
 #[ntex::test]
 async fn test_remote_reset_is_published() {
     use ntex::io::{Io, testing::IoTest};
@@ -2226,8 +2617,15 @@ async fn test_remote_reset_is_published() {
     );
 }
 
-/// Remote reset cancels the in-flight HEADERS publish call after DATA
-/// frames are published for the stream.
+/// STATEMENT: A remote reset cancels its pending request-header handler even after data has
+/// been published.
+///
+/// HOW:
+/// - Keep two server header handlers pending with drop guards recording their stream
+///   identifiers; the second runs in a spawned task.
+/// - Send data on the second stream, wait for publication, and verify neither handler guard has
+///   dropped.
+/// - Reset the second stream with `Reason::CANCEL` and verify only its handler guard drops.
 #[ntex::test]
 async fn test_remote_reset_cancels_handler_after_data() {
     use ntex::io::{Io, testing::IoTest};
@@ -2287,8 +2685,15 @@ async fn test_remote_reset_cancels_handler_after_data() {
     assert_eq!(&*dropped.borrow(), &[snd.id()], "handler is not cancelled");
 }
 
-/// Remote reset cancels all in-flight publish calls of the stream,
-/// including DATA publish calls.
+/// STATEMENT: A remote reset cancels all pending publish calls for the stream, including data
+/// handlers.
+///
+/// HOW:
+/// - Run an in-memory server whose `MessageKind::Data` handlers stay pending with counted drop
+///   guards.
+/// - Send two data chunks on one POST stream and verify both handlers have started without
+///   dropping their guards.
+/// - Reset the stream with `Reason::CANCEL` and assert both data-handler guards drop.
 #[ntex::test]
 async fn test_remote_reset_cancels_data_publish() {
     use ntex::io::{Io, testing::IoTest};
@@ -2342,8 +2747,15 @@ async fn test_remote_reset_cancels_data_publish() {
     assert_eq!(dropped.get(), 2, "DATA publish calls are not cancelled");
 }
 
-/// The connection stops processing frames once the in-flight publish
-/// calls limit is reached.
+/// STATEMENT: The connection stops processing frames at the in-flight publish-call limit and
+/// resumes when a call completes.
+///
+/// HOW:
+/// - Configure a two-message in-flight limit and block server data handlers on a completion
+///   channel.
+/// - Send three data frames and observe two handler notifications; verify the third
+///   notification times out while both calls remain pending.
+/// - Unblock one handler and verify the third frame is then published.
 #[ntex::test]
 async fn test_max_inflight_messages() {
     use ntex::io::{Io, testing::IoTest};
@@ -2397,8 +2809,15 @@ async fn test_max_inflight_messages() {
     rx.recv().await.unwrap();
 }
 
-/// Late HEADERS for closed client streams do not affect the connection,
-/// HEADERS for an idle client stream is a connection error (N5).
+/// STATEMENT: Late headers for closed client streams are harmless, but headers for an idle
+/// stream close the connection (N5).
+///
+/// HOW:
+/// - Complete streams 1 and 3 with ending response headers, drop their handles, and verify zero
+///   active streams.
+/// - Inject late headers for streams 3 and 1, verify the client stays open, and successfully
+///   complete a request on stream 5.
+/// - Inject headers for never-opened stream 101 and assert the client closes.
 #[ntex::test]
 async fn test_client_late_headers_for_closed_streams() {
     let (client, srv) = limited_client(10);
@@ -2443,8 +2862,15 @@ async fn test_client_late_headers_for_closed_streams() {
     assert!(client.is_closed());
 }
 
-/// Interim responses are delivered before the final response, an interim
-/// response with `END_STREAM` and `101` are malformed.
+/// STATEMENT: The client delivers interim responses before final headers but rejects status 101
+/// and interim EOF.
+///
+/// HOW:
+/// - Inject statuses 103, 100, and 200 followed by an ending `ok` body, then verify their
+///   ordered headers without EOF and the ending data.
+/// - On separate streams, inject status 103 with `END_STREAM` and status 101 without it.
+/// - Assert both streams fail with `StreamError::InvalidInformational` while the connection
+///   stays open.
 #[ntex::test]
 async fn test_client_interim_responses() {
     let (client, srv) = limited_client(10);
@@ -2489,8 +2915,15 @@ async fn test_client_interim_responses() {
     assert!(!client.is_closed());
 }
 
-/// A response to a HEAD request has no content, its `content-length`
-/// describes the content of a GET response.
+/// STATEMENT: A HEAD response accepts the GET representation `content-length` without content
+/// and rejects a nonempty payload.
+///
+/// HOW:
+/// - Reply to HEAD with status 200, `content-length: 10`, and empty ending data; verify the
+///   headers retain that length and the body ends empty.
+/// - Reply to another HEAD request with status 200 and nonempty ending data.
+/// - Verify the second stream fails with `StreamError::NonEmptyPayload` while the connection
+///   remains open.
 #[ntex::test]
 async fn test_client_head_response() {
     let (client, srv) = limited_client(10);
@@ -2533,8 +2966,16 @@ async fn test_client_head_response() {
     assert!(!client.is_closed());
 }
 
-/// A peer that does not acknowledge the local settings in time gets
-/// `GOAWAY(SETTINGS_TIMEOUT)` (RFC 9113 §6.5.3).
+/// STATEMENT: Unacknowledged settings trigger `Reason::SETTINGS_TIMEOUT`, while acknowledged
+/// settings keep the connection usable (RFC 9113 §6.5.3).
+///
+/// HOW:
+/// - Disable keep-alive pings, configure a one-second settings timeout, and test peers that
+///   acknowledge or ignore the server settings.
+/// - For the acknowledging peer, wait beyond the timeout and verify a `Ping` is acknowledged
+///   without `GoAway`.
+/// - For the non-acknowledging peer, assert `GoAway` carries `Reason::SETTINGS_TIMEOUT` and the
+///   I/O closes.
 #[ntex::test]
 async fn test_settings_timeout() {
     for ack in [false, true] {
@@ -2588,8 +3029,15 @@ async fn test_settings_timeout() {
     }
 }
 
-/// A pool waiter continues when a stream is cancelled without a
-/// final response.
+/// STATEMENT: A pooled request waiting for capacity continues when another stream is cancelled
+/// without a final response.
+///
+/// HOW:
+/// - Limit a pool to one connection, wait for the peer one-stream limit, and open a POST
+///   request without sending its body.
+/// - Spawn a GET request and verify the pool is not ready while its stream slot remains
+///   occupied.
+/// - Drop both POST stream handles and verify the waiting GET send succeeds within the timeout.
 #[ntex::test]
 async fn test_pool_waiter_woken_on_stream_cancel() {
     let srv = start_server().await;
@@ -2629,8 +3077,12 @@ async fn test_pool_waiter_woken_on_stream_cancel() {
     assert_eq!(res, Ok(Ok(true)));
 }
 
-/// An invalid PRIORITY frame for an idle stream is ignored, an idle
-/// stream must not be reset (RFC 9113 §5.1).
+/// STATEMENT: An invalid-length `Priority` frame on an idle stream is ignored without resetting
+/// it (RFC 9113 §5.1).
+///
+/// HOW:
+/// - Open a raw stream, then write a four-byte `Priority` payload for never-opened stream 5.
+/// - Send a `Ping` and assert the next frame is its acknowledgement rather than a stream reset.
 #[ntex::test]
 async fn test_invalid_priority_for_idle_stream_ignored() {
     let srv = start_idle_server(ServiceConfig::new()).await;
@@ -2645,8 +3097,14 @@ async fn test_invalid_priority_for_idle_stream_ignored() {
     }
 }
 
-/// GOAWAY with a stream identifier is a connection error (RFC 9113 §6.8),
-/// our GOAWAY reports the last stream opened by the peer.
+/// STATEMENT: A `GoAway` with a nonzero frame stream identifier is a connection error reporting
+/// the last peer stream (RFC 9113 §6.8).
+///
+/// HOW:
+/// - Open client stream 1 and write a raw `GoAway` whose frame header incorrectly uses stream
+///   identifier 1.
+/// - Send a `Ping` to flush the frame and assert the server replies with `GoAway` carrying
+///   `Reason::PROTOCOL_ERROR` and last stream identifier 1.
 #[ntex::test]
 async fn test_goaway_with_stream_id() {
     let srv = start_idle_server(ServiceConfig::new()).await;

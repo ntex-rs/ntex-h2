@@ -9,6 +9,13 @@ use crate::hpack::{Decoder, Encoder, Header};
 
 const MAX_CHUNK: usize = 2 * 1024;
 
+/// STATEMENT: Randomized header sequences round-trip through HPACK across dynamic-table size
+/// changes.
+///
+/// HOW:
+/// - Run 100 `QuickCheck` cases with generated header frames and optional table resizes.
+/// - Resolve nameless fields against their preceding names and encode/decode each frame.
+/// - Assert every decoded header matches in order and no expected headers remain.
 #[test]
 fn hpack_fuzz() {
     fn prop(fuzz: FuzzHpack) -> TestResult {
@@ -24,7 +31,12 @@ fn hpack_fuzz() {
 }
 
 /*
-// If wanting to test with a specific feed, uncomment and fill in the seed.
+/// STATEMENT: A manually enabled seed-based fuzz case checks HPACK header round-tripping.
+///
+/// HOW:
+/// - To test with a specific feed, uncomment this template and fill in the seed.
+/// - Run `FuzzHpack::new(seed).run()` to encode/decode generated frames with table resizes.
+/// - Check ordered header equality and that no expected headers remain.
 #[test]
 fn hpack_fuzz_seeded() {
     let _ = env_logger::try_init();

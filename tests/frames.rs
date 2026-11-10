@@ -31,6 +31,14 @@ fn encode(codec: &Codec, frm: Frame) -> BytesMut {
     BytesMut::copy_from_slice(buf.freeze())
 }
 
+/// STATEMENT: Malformed frame encodings produce their expected connection-level decoding
+/// errors.
+///
+/// HOW:
+/// - Build cases covering invalid settings, stream identifiers, payload lengths, padding,
+///   continuation ordering, and HPACK encodings.
+/// - Decode each case with a fresh codec and assert its exact `FrameError`, rejecting any
+///   successful decode.
 #[test]
 fn malformed_frames_are_connection_errors() {
     let cases = [
@@ -130,6 +138,15 @@ fn malformed_frames_are_connection_errors() {
     }
 }
 
+/// STATEMENT: Header continuations enforce frame ordering and stream identity while accepting
+/// partial input.
+///
+/// HOW:
+/// - Interrupt an unfinished header block with `Ping` and assert
+///   `FrameContinuationError::Expected`.
+/// - Continue a block on another stream and assert `FrameContinuationError::UnknownStreamId`.
+/// - Decode an unfinished block to `None`, supply its final continuation, and assert stream 1
+///   has completed headers.
 #[test]
 fn continuation_sequence_errors() {
     // a non CONTINUATION frame interrupts the header block
@@ -162,6 +179,15 @@ fn continuation_sequence_errors() {
     assert!(hdrs.is_end_headers());
 }
 
+/// STATEMENT: Priority frames decode without being encoded, and malformed priorities become
+/// stream errors.
+///
+/// HOW:
+/// - Decode a valid `Priority` frame and check its debug label, then assert encoding it
+///   produces no bytes.
+/// - Decode self-dependent and incorrectly sized priorities and assert their invalid-frame
+///   kind, stream identifier, and exact error.
+/// - Assert encoding either invalid frame also produces no bytes.
 #[test]
 fn priority_frames() {
     let frm = decode(raw_frame(2, 0, 3, &[0x80, 0, 0, 1, 16])).unwrap().unwrap();
@@ -191,6 +217,14 @@ fn priority_frames() {
     }
 }
 
+/// STATEMENT: The decoder consumes unknown frame types without preventing subsequent known-
+/// frame decoding.
+///
+/// HOW:
+/// - Prefix a `Ping` frame with an unknown frame and assert its payload is decoded and the
+///   buffer is exhausted.
+/// - Decode a buffer containing only an unknown frame and assert it is consumed with no decoded
+///   frame.
 #[test]
 fn unknown_frames_are_skipped() {
     let mut buf = raw_frame(0xfa, 0xff, 5, b"ignored");
@@ -208,6 +242,15 @@ fn unknown_frames_are_skipped() {
     assert!(buf.is_empty());
 }
 
+/// STATEMENT: Settings values and acknowledgments survive encoding while unknown settings are
+/// ignored.
+///
+/// HOW:
+/// - Configure supported settings, check their debug field names, and assert the encoded and
+///   decoded values match with no acknowledgment flag.
+/// - Decode an unknown setting alongside explicit connect-protocol and header-table settings,
+///   asserting the recognized values and debug field.
+/// - Round-trip `Settings::ack` and assert both its acknowledgment accessor and debug marker.
 #[test]
 fn settings_roundtrip() {
     let mut settings = frame::Settings::default();
@@ -263,6 +306,15 @@ fn settings_roundtrip() {
     assert!(format!("{decoded:?}").contains("ACK"));
 }
 
+/// STATEMENT: Control frames preserve payloads and reasons while ignoring the reserved window-
+/// update bit.
+///
+/// HOW:
+/// - Round-trip a non-acknowledgment `Ping` and assert its eight payload bytes.
+/// - Decode `WindowUpdate` with its reserved bit set, assert stream 3 and increment 256, then
+///   verify re-encoding clears that bit.
+/// - Change a `Reset` reason before encoding and assert stream 5 and `Reason::REFUSED_STREAM`
+///   after decoding.
 #[test]
 fn control_frames_roundtrip() {
     let codec = Codec::default();
@@ -292,6 +344,14 @@ fn control_frames_roundtrip() {
     assert_eq!(rst.reason(), Reason::REFUSED_STREAM);
 }
 
+/// STATEMENT: Encoding rejects oversized data without writing bytes and accepts it after
+/// increasing the limit.
+///
+/// HOW:
+/// - Encode `Data` at the current send frame-size limit and assert output is produced.
+/// - Exceed the limit by one byte and assert `EncoderError::MaxSizeExceeded`, its display text,
+///   and an empty output buffer.
+/// - Increase the limit by one and assert the same payload size can be encoded.
 #[test]
 fn oversized_data_is_not_encoded() {
     let codec = Codec::default();
@@ -312,6 +372,13 @@ fn oversized_data_is_not_encoded() {
     assert!(!encode(&codec, data.into()).is_empty());
 }
 
+/// STATEMENT: Frame debug output identifies each tested frame variant, including invalid
+/// frames.
+///
+/// HOW:
+/// - Construct data, headers, settings, ping, go-away, window-update, and reset frames, plus an
+///   invalid self-dependent priority.
+/// - Format each as debug text and assert it contains the expected variant label.
 #[test]
 fn frame_debug() {
     let hdrs = frame::Headers::new(
@@ -339,6 +406,15 @@ fn frame_debug() {
     }
 }
 
+/// STATEMENT: Known reason codes have stable conversions and distinct descriptions, with an
+/// unknown fallback.
+///
+/// HOW:
+/// - Check all fourteen known `Reason` values against their numeric codes and debug names,
+///   round-trip conversions, and display descriptions.
+/// - Assert known descriptions are distinct and never use the unknown fallback.
+/// - Convert code `0x1f` and assert debug output is `Reason(1f)` and display output is "unknown
+///   reason".
 #[test]
 fn reason_codes() {
     let known = [
@@ -372,6 +448,13 @@ fn reason_codes() {
     assert_eq!(unknown.to_string(), "unknown reason");
 }
 
+/// STATEMENT: Frame decoding errors map to the expected protocol reasons and have nonempty
+/// display text.
+///
+/// HOW:
+/// - Enumerate frame-size, flow-control, header-limit, HPACK, and protocol errors with their
+///   expected `Reason` values.
+/// - Assert `FrameError::reason` matches each mapping and its display text is nonempty.
 #[test]
 fn frame_error_reasons() {
     let cases = [
@@ -418,6 +501,14 @@ fn frame_error_reasons() {
     }
 }
 
+/// STATEMENT: Protocol identifiers preserve their value through string, byte, and owned-string
+/// conversions.
+///
+/// HOW:
+/// - Create a `Protocol` for `websocket` and assert its string, byte, and debug representations
+///   and string conversion equality.
+/// - Convert a clone into `ByteString`, assert its value, and convert it back to the original
+///   protocol.
 #[test]
 fn protocol_conversions() {
     let proto = Protocol::from_static("websocket");
@@ -431,6 +522,16 @@ fn protocol_conversions() {
     assert_eq!(Protocol::from(s), proto);
 }
 
+/// STATEMENT: Stream identifiers preserve initiator parity, boundary handling, and reserved-bit
+/// parsing.
+///
+/// HOW:
+/// - Check client stream 1, server stream 2, and connection stream zero against their initiator
+///   predicates, and assert the next client identifier is 3.
+/// - Assert advancing `StreamId::MAX` fails while the preceding same-parity identifier advances
+///   to the maximum.
+/// - Parse stream 5 with and without the reserved bit and assert both the identifier and
+///   reported bit state.
 #[test]
 fn stream_ids() {
     let id = StreamId::from(1);
@@ -459,6 +560,13 @@ fn stream_ids() {
     assert_eq!(StreamId::parse(&[0, 0, 0, 5]), (StreamId::from(5), false));
 }
 
+/// STATEMENT: Frame-type bytes map to their defined kinds, with unsupported types classified as
+/// unknown.
+///
+/// HOW:
+/// - Enumerate the expected `Kind` for type bytes zero through nine and assert `Kind::new`
+///   matches each.
+/// - Assert type byte `0xff` also maps to `Kind::Unknown`.
 #[test]
 fn frame_kinds() {
     let kinds = [

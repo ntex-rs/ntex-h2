@@ -647,6 +647,15 @@ mod test {
     use super::*;
     use crate::hpack::{Encoder, huffman};
 
+    /// STATEMENT: Repeated-name header encoding with a small frame limit emits a continuation
+    /// frame.
+    ///
+    /// HOW:
+    /// - Encode three values for `hello` using an eight-byte frame payload limit.
+    /// - Check the total output length, initial frame header, literal name `hello`, and value-
+    ///   length prefix.
+    /// - Check the following frame header identifies an eight-byte `Kind::Continuation`
+    ///   payload.
     #[test]
     fn test_nameless_header_at_resume() {
         let mut encoder = Encoder::default();
@@ -708,6 +717,14 @@ mod tests {
         dst
     }
 
+    /// STATEMENT: Header encoding does not retain a thread-local scratch buffer above its
+    /// capacity limit.
+    ///
+    /// HOW:
+    /// - Encode a 100-byte value and check `HDRS_BUF` capacity stays within
+    ///   `HDRS_BUF_MAX_RETAINED`.
+    /// - Encode a 256 KiB value and verify the encoded output exceeds the retention limit.
+    /// - Confirm the retained scratch-buffer capacity is still within the limit.
     #[test]
     fn large_header_buffer_is_released() {
         encode(100);
@@ -720,6 +737,15 @@ mod tests {
         assert!(cap <= HDRS_BUF_MAX_RETAINED, "retained {cap} bytes");
     }
 
+    /// STATEMENT: Borrowed and owned header encoding produce identical frames without consuming
+    /// the input map.
+    ///
+    /// HOW:
+    /// - Encode short and large response headers, with both end-stream settings, through each
+    ///   path twice.
+    /// - Compare all output bytes, exercising repeated use of each stateful HPACK encoder.
+    /// - Check large outputs include `Kind::Continuation`, `END_STREAM` matches, and two input
+    ///   fields remain.
     #[test]
     fn encode_headers_ref_matches_owned() {
         for (value_len, eof) in [(5, false), (5, true), (40_000, false), (40_000, true)] {
@@ -804,6 +830,13 @@ mod tests {
         hdrs
     }
 
+    /// STATEMENT: Header decoding reuses a recycled map allocation after clearing stale fields.
+    ///
+    /// HOW:
+    /// - Recycle a preallocated map containing `x-stale` and assert one pooled map.
+    /// - Decode a header block containing `x-new` and assert the pool is emptied and capacity
+    ///   is reused.
+    /// - Check only `x-new: 2` remains and `x-stale` is absent.
     #[test]
     fn recycled_header_map_is_reused() {
         let mut stale = HeaderMap::with_capacity(32);
@@ -824,6 +857,12 @@ mod tests {
         assert_eq!(fields.get("x-new").unwrap(), "2");
     }
 
+    /// STATEMENT: Header-map recycling rejects unsuitable allocations and bounds the pool size.
+    ///
+    /// HOW:
+    /// - Recycle an unallocated map and an oversized map and check the pool remains empty.
+    /// - Offer twice the pool limit in small allocated maps and check only `HDRS_MAP_POOL_SIZE`
+    ///   are retained.
     #[test]
     fn recycle_header_map_limits() {
         // maps without allocation or with a large capacity are dropped
@@ -837,6 +876,12 @@ mod tests {
         assert_eq!(pool_len(), HDRS_MAP_POOL_SIZE);
     }
 
+    /// STATEMENT: `HeadersFlag` debug output describes known flags and discards unknown bits.
+    ///
+    /// HOW:
+    /// - Compare exact debug strings for empty, default, and all known flags.
+    /// - Set `END_STREAM` on empty flags and verify its representation.
+    /// - Confirm loading all bits formats identically to loading only known bits.
     #[test]
     fn headers_flag_debug() {
         assert_eq!(format!("{:?}", HeadersFlag::empty()), "(0x0)");
@@ -855,6 +900,14 @@ mod tests {
         );
     }
 
+    /// STATEMENT: `Headers` debug output includes pseudo-headers and flags but omits regular
+    /// header values.
+    ///
+    /// HOW:
+    /// - Format an end-of-stream response containing `x-secret: value` and status 200.
+    /// - Format a `CONNECT` request with the `websocket` protocol.
+    /// - Compare exact stream IDs, flag names, and pseudo-header fields without regular header
+    ///   contents.
     #[test]
     fn headers_debug() {
         let mut fields = HeaderMap::new();
