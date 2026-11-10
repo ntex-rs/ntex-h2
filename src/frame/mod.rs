@@ -26,6 +26,11 @@ macro_rules! unpack_octets_4 {
 
 #[cfg(test)]
 mod tests {
+    /// STATEMENT: `unpack_octets_4!` interprets four bytes in network byte order.
+    ///
+    /// HOW:
+    /// - Provide the byte array `[0, 0, 0, 1]` at offset zero.
+    /// - Expand the macro with output type `u32` and assert the result is 1.
     #[test]
     fn test_unpack_octets_4() {
         let buf: [u8; 4] = [0, 0, 0, 1];

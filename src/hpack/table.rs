@@ -745,6 +745,14 @@ mod tests {
 
     use super::*;
 
+    /// STATEMENT: Inserted dynamic-table values do not retain a larger shared source
+    /// allocation.
+    ///
+    /// HOW:
+    /// - Create a custom field value and an authority from slices after a 16 KiB source prefix.
+    /// - Assert `Table::index` inserts both entries, then drop the source buffer.
+    /// - Check two slots exist and each stored value pointer lies outside the original
+    ///   allocation range.
     #[test]
     fn test_entries_do_not_reference_source() {
         let mut data = vec![0; 16 * 1024];

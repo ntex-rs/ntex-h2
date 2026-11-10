@@ -76,6 +76,14 @@ fn client_frames(peer: &IoTest) -> Vec<Frame> {
     frames
 }
 
+/// STATEMENT: Client error conversions preserve protocol failures and classify canceled
+/// channels as disconnects.
+///
+/// HOW:
+/// - Convert `ConnectionError::MissingSettings` and assert it remains the payload of
+///   `ClientError::Protocol`.
+/// - Convert `Canceled` and assert `ClientError::Disconnected`; also construct the default
+///   `Connector`.
 #[test]
 fn client_error_conversions() {
     let err = ClientError::from(ConnectionError::MissingSettings);
@@ -90,7 +98,15 @@ fn client_error_conversions() {
     let _ = ntex_h2::client::Connector::<&'static str, _>::default();
 }
 
-/// A disconnecting connection is replaced by a new one.
+/// STATEMENT: A disconnecting connection is replaced and then closed gracefully despite an open
+/// stream.
+///
+/// HOW:
+/// - Acquire a client, open a request, and send `GoAway` while keeping the stream open; assert
+///   the client is disconnecting.
+/// - Acquire another client and assert its ID differs, only it remains active, and two total
+///   connections have been created.
+/// - Wait for the replaced client to close gracefully.
 #[ntex::test]
 async fn disconnecting_connection_is_replaced() {
     let peers = Peers::default();
@@ -134,8 +150,13 @@ async fn disconnecting_connection_is_replaced() {
     .expect("connection is not closed");
 }
 
-/// Connections over half of their stream capacity are used once the
-/// connection limit is reached.
+/// STATEMENT: Connections over half their stream capacity are shared once the connection limit
+/// is reached.
+///
+/// HOW:
+/// - Configure a pool limit of two connections and peer limits of four streams each.
+/// - Acquire clients and keep seven requests open; assert exactly two connections were created
+///   and seven streams are active across them.
 #[ntex::test]
 async fn busy_connections_are_shared() {
     let peers = Peers::default();
@@ -161,6 +182,16 @@ async fn busy_connections_are_shared() {
     assert_eq!(active, 7);
 }
 
+/// STATEMENT: Pool selection skips zero-capacity connections in both preferred and fallback
+/// selection paths.
+///
+/// HOW:
+/// - Create two connections with three-stream limits, then lower the first connection's limit
+///   to zero and assert it is not ready.
+/// - With zero and then two reservations on the second connection, assert pool acquisition
+///   selects only that connection without creating another.
+/// - Check reservation counts and assert dropping reservations restores the second connection
+///   to zero active streams.
 #[ntex::test]
 async fn zero_capacity_connection_is_skipped() {
     let peers = Peers::default();
@@ -194,6 +225,14 @@ async fn zero_capacity_connection_is_skipped() {
     assert_eq!(client2.active_streams(), 0);
 }
 
+/// STATEMENT: A zero-capacity connection causes the pool to open another connection when the
+/// limit allows it.
+///
+/// HOW:
+/// - Acquire a connection from a pool limited to two, then lower that connection's advertised
+///   stream limit to zero.
+/// - Acquire again and assert a different client ID, two active and total connections, and a
+///   ready replacement with a one-stream limit.
 #[ntex::test]
 async fn zero_capacity_connection_opens_another() {
     let peers = Peers::default();
@@ -215,6 +254,15 @@ async fn zero_capacity_connection_opens_another() {
     assert!(client2.is_ready());
 }
 
+/// STATEMENT: A pool at its connection limit waits for settings to restore stream capacity.
+///
+/// HOW:
+/// - Use a single-connection pool, lower its stream limit to zero, and assert the pool is not
+///   ready and acquisition remains pending.
+/// - Restore a one-stream limit and assert the pending acquisition returns the original client
+///   without opening another connection.
+/// - Reserve its capacity and assert the pool becomes unready, then drop the reservation and
+///   assert readiness returns.
 #[ntex::test]
 async fn zero_capacity_connection_waits_for_settings() {
     let peers = Peers::default();
@@ -249,6 +297,16 @@ async fn zero_capacity_connection_waits_for_settings() {
     assert!(pool.is_ready());
 }
 
+/// STATEMENT: Canceling a pool waiter transfers its notification to the next waiter without
+/// waking later waiters.
+///
+/// HOW:
+/// - Exhaust a one-stream connection and queue three waiters, varying whether the first uses
+///   `ready` or `client` and whether it is notified before cancellation.
+/// - Cancel the first waiter and release capacity; assert only the second waiter wakes and it
+///   receives the original client.
+/// - Reserve the second waiter's capacity and assert acquisition does not wake the third;
+///   release it and assert the third wakes and reuses the sole connection.
 #[ntex::test]
 async fn cancelled_waiter_passes_notification() {
     for ready in [false, true] {
@@ -322,6 +380,14 @@ async fn cancelled_waiter_passes_notification() {
     }
 }
 
+/// STATEMENT: Completing a pool readiness waiter passes the available-capacity notification to
+/// an acquisition waiter.
+///
+/// HOW:
+/// - Exhaust a single-connection pool, then poll `ready` and `client` waiters to pending.
+/// - Release the reservation and assert the acquisition waiter has not yet woken.
+/// - Complete the readiness waiter, assert acquisition wakes, and verify it returns the
+///   original client.
 #[ntex::test]
 async fn ready_waiter_passes_notification_on_completion() {
     let peers = Peers::default();
@@ -358,8 +424,16 @@ async fn ready_waiter_passes_notification_on_completion() {
     assert_eq!(selected.id(), client.id());
 }
 
-/// Without the peer's limit the pool stream limit decides which
-/// connection is less loaded.
+/// STATEMENT: Without a peer stream limit, the configured pool stream limit determines
+/// connection selection.
+///
+/// HOW:
+/// - Create two connections whose peer settings omit the stream limit, with either no pool
+///   override or `max_streams(2)`.
+/// - Open two requests on the first client and assert two connections exist and its peer limit
+///   remains unset.
+/// - Acquire again and assert the first client is reused without an override but a different
+///   client is chosen with the override.
 #[ntex::test]
 async fn pool_max_streams() {
     for (limit, same) in [(None, true), (Some(2), false)] {
@@ -393,7 +467,16 @@ async fn pool_max_streams() {
     }
 }
 
-/// Frames for unknown streams are not a connection error.
+/// STATEMENT: Skipping unknown streams turns invalid stream frames into stream resets instead
+/// of connection errors.
+///
+/// HOW:
+/// - Run pools with and without `skip_unknown_streams`, then send `WindowUpdate` for unknown
+///   stream 11.
+/// - With skipping enabled, assert the client stays open and sends `Reset` for stream 11 with
+///   `Reason::STREAM_CLOSED`.
+/// - Without skipping, assert the client closes and sends `GoAway` with
+///   `Reason::PROTOCOL_ERROR`.
 #[ntex::test]
 async fn skip_unknown_streams() {
     for skip in [false, true] {

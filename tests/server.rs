@@ -10,6 +10,14 @@ use ntex_h2::{Control, ControlAck, Message, ServiceConfig, frame};
 
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+/// STATEMENT: Server errors expose the expected display messages and preserve converted I/O
+/// errors.
+///
+/// HOW:
+/// - Format frame, publish-init, control-init, handshake-timeout, control-service, and
+///   disconnected errors and compare their exact messages.
+/// - Convert a connection-reset I/O error into `ServerError` and assert it remains the source
+///   of `ServerError::Disconnected`.
 #[test]
 fn server_error_display_and_conversion() {
     let err = ServerError::<()>::Frame(frame::FrameError::InvalidPreface);
@@ -38,6 +46,14 @@ fn server_error_display_and_conversion() {
     ));
 }
 
+/// STATEMENT: The server distinguishes invalid prefaces, peer disconnection, and handshake
+/// timeout failures.
+///
+/// HOW:
+/// - Feed an invalid preface through a server pipeline and assert `FrameError::InvalidPreface`.
+/// - Close a peer before running the server and assert `ServerError::Disconnected`.
+/// - Keep a peer open without sending a preface, configure a one-second handshake timeout, and
+///   assert `ServerError::HandshakeTimeout`.
 #[ntex::test]
 async fn server_handshake_failures() {
     let (io, peer) = IoTest::create();
@@ -95,6 +111,12 @@ impl ServiceFactory<(), Message> for FailingPublishFactory {
     }
 }
 
+/// STATEMENT: A publish-service initialization failure is returned with its original source
+/// error.
+///
+/// HOW:
+/// - Send a valid connection preface and run a server using `FailingPublishFactory`.
+/// - Assert the result is `ServerError::PublishService` whose source displays "publish init".
 #[ntex::test]
 async fn server_publish_service_init_error() {
     let (io, peer) = IoTest::create();
@@ -152,6 +174,12 @@ impl ServiceFactory<(), Control<()>> for ControlFactory {
     }
 }
 
+/// STATEMENT: A control-service initialization failure is returned with its original source
+/// error.
+///
+/// HOW:
+/// - Send a valid connection preface and configure `ControlFactory` to fail during creation.
+/// - Assert the result is `ServerError::ControlService` whose source displays "control init".
 #[ntex::test]
 async fn server_control_service_init_error() {
     let (io, peer) = IoTest::create();
@@ -169,6 +197,14 @@ async fn server_control_service_init_error() {
     assert_eq!(source.to_string(), "control init");
 }
 
+/// STATEMENT: Each server connection creates its own control service and shuts it down on
+/// disconnect.
+///
+/// HOW:
+/// - Run two connections through a shared server with control-service creation and shutdown
+///   counters.
+/// - After sending both prefaces, assert two services were created and neither was shut down.
+/// - Close both peers and assert both control services were shut down.
 #[ntex::test]
 async fn server_control_service_per_connection() {
     let counters = Rc::new(ControlCounters::default());
@@ -200,6 +236,13 @@ async fn server_control_service_per_connection() {
     assert_eq!(counters.shutdown.get(), 2);
 }
 
+/// STATEMENT: A failing control service stops the server and returns its error to the caller.
+///
+/// HOW:
+/// - Run a server whose publish handler fails and whose control handler returns "control
+///   failed".
+/// - Send a client request and wait for the server result with a one-second timeout.
+/// - Assert the returned error is `ServerError::Service("control failed")`.
 #[ntex::test]
 async fn server_control_error_is_returned() {
     let (client_io, server_io) = IoTest::create();
@@ -229,6 +272,13 @@ async fn server_control_error_is_returned() {
     assert!(matches!(err, ServerError::Service("control failed")));
 }
 
+/// STATEMENT: `handle_one` rejects an invalid connection preface before processing requests.
+///
+/// HOW:
+/// - Write 24 zero bytes to an in-memory peer and create publish and acknowledging control
+///   pipelines.
+/// - Call `handle_one` with boxed I/O and assert it returns `ServerError::Frame` containing
+///   `FrameError::InvalidPreface`.
 #[ntex::test]
 async fn handle_one_rejects_invalid_preface() {
     let (io, peer) = IoTest::create();

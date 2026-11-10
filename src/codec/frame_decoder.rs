@@ -63,6 +63,15 @@ impl FrameDecoder {
 mod tests {
     use super::*;
 
+    /// STATEMENT: `FrameDecoder` waits for complete frames and splits consecutive frames
+    /// including their headers.
+    ///
+    /// HOW:
+    /// - Supply an empty buffer, partial length field, and incomplete payload, checking `None`
+    ///   each time.
+    /// - Append the remaining payload and another frame and compare both complete decoded byte
+    ///   sequences.
+    /// - Check the buffer is empty and another decode returns `None`.
     #[test]
     fn decode_frames() {
         let dec = FrameDecoder::new(16_384);
@@ -88,6 +97,15 @@ mod tests {
         assert_eq!(dec.decode(&mut buf).unwrap(), None);
     }
 
+    /// STATEMENT: Frame-length limits reject oversized payloads without changing a frame
+    /// already in progress.
+    ///
+    /// HOW:
+    /// - Start a maximum-sized frame, lower the limit to 100, and complete the accepted
+    ///   16,384-byte payload.
+    /// - Check a subsequent length of 101 returns `FrameError::MaxFrameSize`.
+    /// - Use a fresh decoder to reject 16,385 bytes and confirm its configured limit is still
+    ///   16,384.
     #[test]
     fn max_frame_length() {
         let dec = FrameDecoder::new(16_384);

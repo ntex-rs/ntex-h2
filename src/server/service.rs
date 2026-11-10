@@ -392,6 +392,15 @@ mod tests {
         .expect("cancelled server retained open streams");
     }
 
+    /// STATEMENT: Canceling server execution releases open streams, including streams retained
+    /// by pending publish calls.
+    ///
+    /// HOW:
+    /// - Exercise both `Server::run` and `handle_one`, with publish calls either completing or
+    ///   blocking.
+    /// - Drive two requests until their stream states are observed, covering dispatcher-held
+    ///   and detached call futures.
+    /// - Drop the server future and wait until neither weak stream reference can be upgraded.
     #[ntex::test]
     async fn cancellation_releases_open_streams() {
         for use_server in [false, true] {
@@ -422,6 +431,16 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Canceling server execution fails streams and releases pending capacity and
+    /// reset waiters.
+    ///
+    /// HOW:
+    /// - For both `Server::run` and `handle_one`, open a stream with zero peer send capacity
+    ///   and poll capacity and reset waiters to pending.
+    /// - Drop the server future and assert the capacity waker fires, capacity fails with
+    ///   `OperationError::Disconnected`, and the stream is failed.
+    /// - Assert the reset waiter is ready, then drop retained handles and check the stream
+    ///   state is released.
     #[ntex::test]
     async fn cancellation_fails_and_wakes_stream_waiters() {
         for use_server in [false, true] {
@@ -462,6 +481,16 @@ mod tests {
         }
     }
 
+    /// STATEMENT: Canceling a server during blocked service shutdown still fails and releases
+    /// its streams.
+    ///
+    /// HOW:
+    /// - For both `Server::run` and `handle_one`, open a stream with publish-service shutdown
+    ///   configured to remain pending.
+    /// - Close the peer, drive execution until service shutdown starts, and drop the server
+    ///   future.
+    /// - Assert the retained stream is failed, send capacity returns
+    ///   `OperationError::Disconnected`, and dropping the handle releases the state.
     #[ntex::test]
     async fn cancellation_during_service_shutdown() {
         for use_server in [false, true] {

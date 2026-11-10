@@ -122,6 +122,14 @@ impl fmt::Debug for GoAway {
 mod tests {
     use super::*;
 
+    /// STATEMENT: `GoAway::load` shares debug data with its input and validates the fixed
+    /// payload length.
+    ///
+    /// HOW:
+    /// - Load a payload for stream 5 with `Reason::INTERNAL_ERROR` and 1024 debug bytes.
+    /// - Check decoded fields, debug bytes, and pointer equality with the input after the fixed
+    ///   header.
+    /// - Confirm eight bytes allow empty debug data while seven bytes produce an error.
     #[test]
     fn load_does_not_copy_data() {
         let mut buf = b"\x00\x00\x00\x05\x00\x00\x00\x02".to_vec();

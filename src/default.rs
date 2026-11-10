@@ -37,6 +37,15 @@ mod tests {
     use super::*;
     use crate::frame::{Frame, Reason, StreamId};
 
+    /// STATEMENT: The default control service acknowledges errors with `GoAway` and peer loss
+    /// without a frame.
+    ///
+    /// HOW:
+    /// - Create `DefaultControlService` through its factory and call it with an error on stream
+    ///   3.
+    /// - Assert the acknowledgment contains `GoAway` with `Reason::INTERNAL_ERROR` and last
+    ///   stream ID 3.
+    /// - Call it with `Control::peer_gone(None)` and assert the acknowledgment has no frame.
     #[ntex::test]
     async fn default_control_service() {
         let srv = Pipeline::new(

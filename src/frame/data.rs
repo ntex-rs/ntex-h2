@@ -215,6 +215,12 @@ impl std::fmt::Debug for DataFlags {
 mod tests {
     use super::*;
 
+    /// STATEMENT: `Data` flow-control length includes padding bytes and the pad-length byte.
+    ///
+    /// HOW:
+    /// - Load four payload bytes with a pad-length byte and three padding bytes.
+    /// - Check the exposed payload is `data` and the flow-controlled length is eight.
+    /// - Compare an unpadded frame carrying `data`, whose flow-controlled length is four.
     #[test]
     fn padding_is_flow_controlled() {
         let head = Head::new(Kind::Data, PADDED, StreamId::from(1));
@@ -226,6 +232,13 @@ mod tests {
         assert_eq!(frm.flow_controlled_len(), 4);
     }
 
+    /// STATEMENT: Setting padding repeatedly adds only one pad-length byte to encoded `Data`.
+    ///
+    /// HOW:
+    /// - Call `set_padded` twice on a four-byte payload and assert a flow-controlled length of
+    ///   five.
+    /// - Encode and compare all wire bytes, including the zero pad-length byte.
+    /// - Reload the payload and check the original data and five-byte flow-controlled length.
     #[test]
     fn padded_frame_encodes_pad_length() {
         let mut frm = Data::new(StreamId::from(1), Bytes::from_static(b"data"));
@@ -244,6 +257,14 @@ mod tests {
         assert_eq!(frm.flow_controlled_len(), 5);
     }
 
+    /// STATEMENT: `Data` debug output shows stream, payload length, and flags without exposing
+    /// payload bytes.
+    ///
+    /// HOW:
+    /// - Format a frame containing `secret` before and after setting `END_STREAM`.
+    /// - Load a padded, end-of-stream frame and compare its debug output too.
+    /// - Assert exact representations containing stream IDs, unpadded lengths, and applicable
+    ///   flags.
     #[test]
     fn data_debug() {
         let mut frm = Data::new(StreamId::from(1), Bytes::from_static(b"secret"));
@@ -263,6 +284,12 @@ mod tests {
         );
     }
 
+    /// STATEMENT: `DataFlags` debug output names known flags and excludes unknown bits.
+    ///
+    /// HOW:
+    /// - Format empty, individual, combined, and all-bits-set loaded flags and compare exact
+    ///   strings.
+    /// - Set padding on empty flags and check the resulting `PADDED` representation.
     #[test]
     fn data_flags_debug() {
         assert_eq!(format!("{:?}", DataFlags::load(0)), "(0x0)");

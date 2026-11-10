@@ -159,6 +159,16 @@ macro_rules! fixture_mod {
     }) => {
         mod $module {
             $(
+                /// STATEMENT: HPACK fixture stories decode as specified and their headers
+                /// round-trip through the encoder.
+                ///
+                /// HOW:
+                /// - Load the fixture JSON and process its cases in sequence-number order,
+                ///   applying table-size changes.
+                /// - Decode fixture wire bytes and check every expected header name/value in
+                ///   order.
+                /// - Encode the expected headers, decode them, and verify exact ordered
+                ///   equality with none missing.
                 #[test]
                 fn $fn() {
                     let path = ::std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

@@ -34,6 +34,12 @@ macro_rules! decode_err {
     }};
 }
 
+/// STATEMENT: An unpadded `Data` frame preserves its payload and stream identifier without
+/// ending the stream.
+///
+/// HOW:
+/// - Decode raw bytes for stream 1 containing `hello` with no flags.
+/// - Assert the stream identifier, unchanged payload, and unset end-of-stream flag.
 #[test]
 fn read_data_no_padding() {
     let mut buf = BytesMut::new();
@@ -46,6 +52,11 @@ fn read_data_no_padding() {
     assert!(!data.is_end_stream());
 }
 
+/// STATEMENT: A `Data` frame may carry an empty payload without ending its stream.
+///
+/// HOW:
+/// - Decode a zero-length `Data` frame for stream 1 with no flags.
+/// - Assert the stream identifier, empty payload, and unset end-of-stream flag.
 #[test]
 fn read_data_empty_payload() {
     let mut buf = BytesMut::new();
@@ -57,6 +68,11 @@ fn read_data_empty_payload() {
     assert!(!data.is_end_stream());
 }
 
+/// STATEMENT: Decoding a `Data` frame preserves its end-of-stream flag alongside its payload.
+///
+/// HOW:
+/// - Decode raw bytes for stream 1 containing `hello` with the end-of-stream flag set.
+/// - Assert the stream identifier, payload, and set end-of-stream flag.
 #[test]
 fn read_data_end_stream() {
     let mut buf = BytesMut::new();
@@ -69,6 +85,12 @@ fn read_data_end_stream() {
     assert!(data.is_end_stream());
 }
 
+/// STATEMENT: Decoding padded `Data` excludes the padding length and trailing padding from the
+/// payload.
+///
+/// HOW:
+/// - Build a padded frame for stream 1 containing `helloworld` and five padding bytes.
+/// - Assert the decoded payload contains only the data and the stream remains open.
 #[test]
 fn read_data_padding() {
     let mut buf = BytesMut::new();
@@ -83,6 +105,12 @@ fn read_data_padding() {
     assert!(!data.is_end_stream());
 }
 
+/// STATEMENT: The codec rejects an incoming push promise with
+/// `FrameError::UnexpectedPushPromise`.
+///
+/// HOW:
+/// - Build raw push-promise bytes for stream 1 promising stream 2 with an HPACK method field.
+/// - Decode the frame and assert the exact rejection error.
 #[test]
 fn read_push_promise() {
     let mut buf = BytesMut::new();
@@ -95,6 +123,11 @@ fn read_push_promise() {
     decode_err!(buf, FrameError::UnexpectedPushPromise);
 }
 
+/// STATEMENT: A `Data` frame cannot use connection-level stream identifier zero.
+///
+/// HOW:
+/// - Build a frame carrying `hello` on stream zero.
+/// - Assert decoding returns `FrameError::InvalidStreamId`.
 #[test]
 fn read_data_stream_id_zero() {
     let mut buf = BytesMut::new();
@@ -106,6 +139,14 @@ fn read_data_stream_id_zero() {
 
 // ===== HEADERS =====
 
+/// STATEMENT: A client reconstructs a large response header block carried across continuation
+/// frames.
+///
+/// HOW:
+/// - Connect an in-memory client and server, then send a `GET` request for `/index.html`.
+/// - Have the server send a large header set with status `StatusCode::OK` and verify the
+///   request path and end-of-stream flag.
+/// - Assert the client receives the expected status and the complete header map.
 #[ntex::test]
 async fn read_continuation_frames() {
     let (cli, srv) = IoTest::create();
@@ -154,6 +195,12 @@ async fn read_continuation_frames() {
     join(srv_fut, client_fut).await;
 }
 
+/// STATEMENT: The configured receive frame-size limit rejects a frame larger than the limit.
+///
+/// HOW:
+/// - Buffer a five-byte `Data` frame followed by a 16,385-byte frame and decode `hello` first.
+/// - Set a codec receive limit of 16,384, assert the accessor reports it, and verify decoding
+///   the remaining frame reports "Frame size exceeded".
 #[test]
 fn update_max_frame_len_at_rest() {
     let mut buf = BytesMut::new();
@@ -173,6 +220,13 @@ fn update_max_frame_len_at_rest() {
     );
 }
 
+/// STATEMENT: Decoding `GoAway` preserves its reason, last stream identifier, and debug data.
+///
+/// HOW:
+/// - Build raw `GoAway` bytes with last stream 1, error code 11, and `too_many_pings` debug
+///   data.
+/// - Assert the decoded reason is `Reason::ENHANCE_YOUR_CALM` and the identifier and debug
+///   bytes match.
 #[test]
 fn read_goaway_with_debug_data() {
     let mut buf = BytesMut::new();
@@ -191,6 +245,14 @@ fn read_goaway_with_debug_data() {
     assert_eq!(&**data.data(), b"too_many_pings");
 }
 
+/// STATEMENT: A large request header set survives encoding and decoding across continuation
+/// frames.
+///
+/// HOW:
+/// - Send a `GET` request for `/index.html` with a large header map over paired in-memory I/O.
+/// - Assert the server receives the full map, request path, and end-of-stream flag before
+///   sending a response.
+/// - Assert the client receives `StatusCode::NO_CONTENT` with its end-of-stream flag set.
 #[ntex::test]
 async fn write_continuation_frames() {
     let (cli, srv) = IoTest::create();
@@ -252,6 +314,13 @@ fn frame_payload(buf: &[u8], kind: u8, stream_id: u32) -> &[u8] {
     panic!("frame type {kind} for stream {stream_id} not found");
 }
 
+/// STATEMENT: A client honors a peer setting that disables the HPACK dynamic table.
+///
+/// HOW:
+/// - Send `SETTINGS_HEADER_TABLE_SIZE = 0` to an in-memory client and allow it to process the
+///   setting.
+/// - Send a request and inspect the stream-1 header payload for the leading zero-size update
+///   byte `0x20`.
 #[ntex::test]
 async fn client_settings_header_table_size() {
     let (cli, srv) = IoTest::create();
@@ -274,6 +343,12 @@ async fn client_settings_header_table_size() {
     assert_eq!(payload.first(), Some(&0x20));
 }
 
+/// STATEMENT: A server honors a peer setting that disables the HPACK dynamic table.
+///
+/// HOW:
+/// - Send the connection preface and `SETTINGS_HEADER_TABLE_SIZE = 0` to an in-memory server.
+/// - Acknowledge its settings, send a request, and respond with an `a: b` header.
+/// - Inspect the response header payload for the leading zero-size update byte `0x20`.
 #[ntex::test]
 async fn server_settings_header_table_size() {
     let (srv, cli) = IoTest::create();
@@ -307,18 +382,34 @@ async fn server_settings_header_table_size() {
 
 // ===== SETTINGS =====
 
+/// STATEMENT: A zero send frame-size limit is rejected with a bounds-check panic.
+///
+/// HOW:
+/// - Call `Codec::set_send_frame_size` with zero.
+/// - Require a panic stating that frame size must be between 16384 and 16777215.
 #[test]
 #[should_panic(expected = "frame size must be between 16384 and 16777215")]
 fn send_frame_size_zero_is_rejected() {
     Codec::default().set_send_frame_size(0);
 }
 
+/// STATEMENT: A send frame-size limit below the protocol minimum is rejected with a bounds-
+/// check panic.
+///
+/// HOW:
+/// - Call `Codec::set_send_frame_size` with one less than `DEFAULT_MAX_FRAME_SIZE`.
+/// - Require a panic stating that frame size must be between 16384 and 16777215.
 #[test]
 #[should_panic(expected = "frame size must be between 16384 and 16777215")]
 fn send_frame_size_below_minimum_is_rejected() {
     Codec::default().set_send_frame_size(frame::DEFAULT_MAX_FRAME_SIZE as usize - 1);
 }
 
+/// STATEMENT: Both endpoints of the permitted send frame-size range are accepted.
+///
+/// HOW:
+/// - Set the send frame size to `DEFAULT_MAX_FRAME_SIZE`, then to `MAX_MAX_FRAME_SIZE`.
+/// - Assert `Codec::send_frame_size` returns each configured endpoint.
 #[test]
 fn send_frame_size_bounds_are_accepted() {
     let codec = Codec::default();
@@ -370,6 +461,12 @@ fn assert_invalid(
     }
 }
 
+/// STATEMENT: Repeated header fields each count toward the configured header-count limit.
+///
+/// HOW:
+/// - Set `Codec::set_max_headers` to three and decode a request with three `x: a` fields.
+/// - Assert all three values survive, then decode four fields and require an invalid stream-1
+///   `Headers` frame with `FrameError::TooManyHeaders`.
 #[test]
 fn repeated_header_names_count_toward_max_headers() {
     let block = |n| {
@@ -396,6 +493,15 @@ fn repeated_header_names_count_toward_max_headers() {
     );
 }
 
+/// STATEMENT: An oversized decoded header list is rejected while preserving HPACK dynamic-table
+/// updates.
+///
+/// HOW:
+/// - Insert a 4000-byte value into the dynamic table and reference it twenty times, expanding
+///   roughly 4 KB of compressed data to 84 KB.
+/// - Assert the first stream yields `FrameError::TooManyHeaders` in an invalid `Headers` frame.
+/// - Decode a later stream referencing that entry and assert its `x` value still contains all
+///   4000 bytes.
 #[test]
 fn decoded_header_list_size_is_limited() {
     // add a 4000 byte value to the dynamic table, then reference it repeatedly;
@@ -426,6 +532,15 @@ fn decoded_header_list_size_is_limited() {
     }
 }
 
+/// STATEMENT: Disabling the continuation-count limit allows a header block split into single-
+/// byte frames.
+///
+/// HOW:
+/// - Build a request with 90 headers, placing its first byte in `Headers` and every remaining
+///   byte in a separate `Continuation` frame.
+/// - Set `Codec::set_max_header_continuations` to zero and decode the entire sequence.
+/// - Assert the method is `Method::GET`, all 90 headers are present, `x89` is `a`, and the
+///   input buffer is empty.
 #[test]
 fn many_small_continuation_frames() {
     let mut block = REQUEST_PSEUDO.to_vec();
@@ -453,6 +568,11 @@ fn many_small_continuation_frames() {
     assert!(buf.is_empty());
 }
 
+/// STATEMENT: Unknown header-frame flag bits do not appear in the decoded flags.
+///
+/// HOW:
+/// - Decode request pseudo-headers with flag bits `0xc0` alongside `END_HEADERS`.
+/// - Assert the decoded header debug output reports only the `END_HEADERS` flag.
 #[test]
 fn headers_unknown_flags_are_ignored() {
     let mut buf = BytesMut::from(&raw_frame(1, 0xc0 | END_HEADERS, 1, &REQUEST_PSEUDO)[..]);
@@ -464,6 +584,14 @@ fn headers_unknown_flags_are_ignored() {
     }
 }
 
+/// STATEMENT: The `te` header accepts case-insensitive `trailers` values but rejects other
+/// values.
+///
+/// HOW:
+/// - Decode requests containing lowercase, title-case, and uppercase `trailers` values and
+///   assert each original value is preserved.
+/// - Decode `te: gzip` and require an invalid stream-1 `Headers` frame with
+///   `FrameError::MalformedMessage`.
 #[test]
 fn te_trailers_is_case_insensitive() {
     let block = |value: &[u8]| {
@@ -488,6 +616,14 @@ fn te_trailers_is_case_insensitive() {
     );
 }
 
+/// STATEMENT: Completing a header block with a continuation preserves the original end-of-
+/// stream flag.
+///
+/// HOW:
+/// - Split request pseudo-headers between a `Headers` frame with the end-of-stream flag and a
+///   final `Continuation` frame.
+/// - Assert the result belongs to stream 1, has both completion flags set, and retains the `/`
+///   path.
 #[test]
 fn continuation_frames_keep_headers_flags() {
     let block = REQUEST_PSEUDO;
@@ -506,6 +642,15 @@ fn continuation_frames_keep_headers_flags() {
     }
 }
 
+/// STATEMENT: Stream-level header and priority errors leave the HPACK dynamic table
+/// synchronized.
+///
+/// HOW:
+/// - Insert `x: a` while sending a forbidden `connection` header, then repeat the malformed
+///   request across continuation frames using that dynamic entry.
+/// - Assert both header blocks are invalid, and self-dependent `Headers` and `Priority` frames
+///   report `FrameError::InvalidDependencyId`.
+/// - Decode a valid later request referencing the same entry and assert its `x` value is `a`.
 #[test]
 fn stream_level_header_errors_keep_hpack_state() {
     // `connection` header is not allowed, the block also adds `x: a` to the
@@ -569,6 +714,14 @@ fn stream_level_header_errors_keep_hpack_state() {
     }
 }
 
+/// STATEMENT: The send-side HPACK table size remains capped at 4096 even when the peer allows
+/// more.
+///
+/// HOW:
+/// - Set the table size to `1 << 30`, encode a response, and assert only the indexed status
+///   byte is emitted.
+/// - Shrink the table to 100 and request a large increase, then assert the next block emits
+///   size updates for 100 and 4096 before the status byte.
 #[test]
 fn send_header_table_size_is_capped() {
     fn encode(codec: &Codec) -> ntex_bytes::Bytes {

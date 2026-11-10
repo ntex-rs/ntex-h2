@@ -124,7 +124,13 @@ fn content_length(val: &'static str) -> HeaderMap {
     hdrs
 }
 
-/// Responses must not contain request pseudo-headers.
+/// STATEMENT: Responses reject request pseudo-headers without closing the connection.
+///
+/// HOW:
+/// - For each of method, scheme, authority, path, and protocol, inject that pseudo-header into
+///   a response on a fresh client.
+/// - Assert `StreamError::UnexpectedPseudo` names the header, stream 1 receives
+///   `Reason::PROTOCOL_ERROR`, and the client stays open.
 #[ntex::test]
 async fn response_with_request_pseudo_headers() {
     type SetPseudo = fn(&mut frame::PseudoHeaders);
@@ -152,7 +158,16 @@ async fn response_with_request_pseudo_headers() {
     }
 }
 
-/// Response body length is checked against `content-length`.
+/// STATEMENT: Response bodies are validated against `content-length` while valid lengths
+/// preserve the connection.
+///
+/// HOW:
+/// - Send nonnumeric and overlong lengths and assert `StreamError::InvalidContentLength`, plus
+///   a protocol reset for the nonnumeric case.
+/// - Send excess data, early end-of-stream, and early trailers; assert
+///   `StreamError::WrongPayloadLength` for each.
+/// - Send exactly three bytes over two data frames and assert headers, body data, final data,
+///   and an open client connection.
 #[ntex::test]
 async fn response_content_length() {
     // not a number
@@ -200,7 +215,12 @@ async fn response_content_length() {
     assert!(!client.is_closed());
 }
 
-/// A response to HEAD must not have a body.
+/// STATEMENT: A response to `HEAD` must not contain body data.
+///
+/// HOW:
+/// - Send a `HEAD` request, response headers declaring five bytes, and a five-byte final data
+///   frame.
+/// - Assert `StreamError::NonEmptyPayload` and a stream reset with `Reason::PROTOCOL_ERROR`.
 #[ntex::test]
 async fn head_response_with_body() {
     let (client, srv) = client().await;
@@ -211,7 +231,15 @@ async fn head_response_with_body() {
     assert_eq!(srv.reset(1).await, Reason::PROTOCOL_ERROR);
 }
 
-/// Frames received in the wrong stream state.
+/// STATEMENT: Frames received in invalid stream states reset the stream without closing the
+/// connection.
+///
+/// HOW:
+/// - Send data before response headers and assert `StreamError::Idle` with a
+///   `Reason::PROTOCOL_ERROR` reset.
+/// - Finish response headers while keeping each request open, then send additional headers or
+///   data and assert `Reason::STREAM_CLOSED` resets.
+/// - Assert the client connection remains open.
 #[ntex::test]
 async fn frames_in_wrong_state() {
     let (client, srv) = client().await;
@@ -237,7 +265,14 @@ async fn frames_in_wrong_state() {
     assert!(!client.is_closed());
 }
 
-/// Trailers must end the stream and must not contain pseudo-headers.
+/// STATEMENT: Response trailers must end the stream and must not contain pseudo-headers.
+///
+/// HOW:
+/// - Send trailers containing the status pseudo-header and assert
+///   `StreamError::UnexpectedPseudo("status")` with a protocol reset.
+/// - Send trailers without end-of-stream and assert `StreamError::TrailersWithoutEos`.
+/// - Send valid final trailers and assert headers, body data, and `StreamEof::Trailers`
+///   containing `grpc-status: 0`, with the client still open.
 #[ntex::test]
 async fn response_trailers() {
     let (client, srv) = client().await;
@@ -272,7 +307,14 @@ async fn response_trailers() {
     assert!(!client.is_closed());
 }
 
-/// Stream level WINDOW_UPDATE errors reset the stream only.
+/// STATEMENT: Invalid stream-level `WindowUpdate` frames reset only the affected stream.
+///
+/// HOW:
+/// - Send a zero increment and assert `StreamError::WindowZeroUpdateValue` with
+///   `Reason::PROTOCOL_ERROR`.
+/// - Overflow another stream window and assert `StreamError::WindowOverflowed` with
+///   `Reason::FLOW_CONTROL_ERROR`.
+/// - Assert the client connection stays open.
 #[ntex::test]
 async fn stream_window_update_errors() {
     let (client, srv) = client().await;
@@ -289,7 +331,14 @@ async fn stream_window_update_errors() {
     assert!(!client.is_closed());
 }
 
-/// Paged payloads are split on frame and page boundaries.
+/// STATEMENT: Paged payloads are split at frame and page boundaries without changing their
+/// contents.
+///
+/// HOW:
+/// - Send three 10,000-byte pages through `send_pages` with end-of-stream enabled.
+/// - Decode data frames and assert stream ID 1, payload lengths at most 16,384 bytes, and no
+///   data after end-of-stream.
+/// - Assert an end-of-stream frame was seen and concatenated payloads equal the original pages.
 #[ntex::test]
 async fn send_pages_are_split() {
     let (client, srv) = client().await;
@@ -319,7 +368,15 @@ async fn send_pages_are_split() {
     assert_eq!(received, expected);
 }
 
-/// Client stream accessors and polling through `Stream`.
+/// STATEMENT: Client stream accessors, `Stream` polling, and reset notifications expose the
+/// stream state.
+///
+/// HOW:
+/// - Open a request and check matching send/receive IDs and tags, local nonfailed state, and
+///   initial send capacity.
+/// - Send response headers and final body data, then poll the receive stream for headers, EOF
+///   data, and termination.
+/// - Reset the stream from the peer, await `on_reset`, and assert reset and failure state.
 #[ntex::test]
 async fn client_stream_api() {
     let (client, srv) = client().await;
@@ -359,7 +416,12 @@ async fn client_stream_api() {
     assert!(snd.stream().is_failed());
 }
 
-/// Capacity from different streams cannot be combined.
+/// STATEMENT: Capacity values from different streams cannot be combined.
+///
+/// HOW:
+/// - Open two request streams and obtain an empty capacity value from each.
+/// - Use `catch_unwind` to assert both addition and add-assignment panic when combining those
+///   values.
 #[ntex::test]
 async fn capacity_from_different_streams() {
     let (client, _srv) = client().await;
@@ -377,8 +439,13 @@ async fn capacity_from_different_streams() {
     assert!(res.is_err());
 }
 
-/// Dropping a stream configured with `disconnect_on_drop` closes the
-/// connection once all streams are done.
+/// STATEMENT: Dropping a stream marked with `disconnect_on_drop` closes the connection when all
+/// streams finish.
+///
+/// HOW:
+/// - Mark either the send or receive half with `disconnect_on_drop` in separate runs, then drop
+///   both halves.
+/// - Wait for the client to close and assert the peer receives a reset with `Reason::CANCEL`.
 #[ntex::test]
 async fn disconnect_on_drop() {
     for recv_side in [false, true] {
@@ -411,7 +478,14 @@ async fn disconnect_on_drop() {
     }
 }
 
-/// Response methods fail once the send side moved on.
+/// STATEMENT: Server response methods reject calls after the send side has advanced beyond
+/// response headers.
+///
+/// HOW:
+/// - Send response headers and assert a second response fails with `OperationError::Payload`.
+/// - Send final body data and assert subsequent response and informational calls fail with
+///   `OperationError::Closed(None)`.
+/// - Assert the client receives the original headers and final body `done`.
 #[ntex::test]
 async fn server_response_state_errors() {
     let (cli, srv) = IoTest::create();
@@ -459,7 +533,13 @@ async fn server_response_state_errors() {
     ));
 }
 
-/// Response headers can be sent from a borrowed map, which is left intact.
+/// STATEMENT: Response headers can be sent from a borrowed map without modifying it.
+///
+/// HOW:
+/// - Build an `x-test: borrowed` header map and send a final `StatusCode::ACCEPTED` response
+///   using a reference to it.
+/// - Assert the original map retains its value and the client receives that status, header, and
+///   end-of-stream.
 #[ntex::test]
 async fn server_response_borrowed_headers() {
     let (cli, srv) = IoTest::create();
@@ -500,8 +580,17 @@ async fn server_response_borrowed_headers() {
         kind => panic!("unexpected message: {kind:?}"),
     }
 }
-/// configured window once the ack is received. The peer applies the new
-/// initial window itself, so no WINDOW_UPDATE frames are sent.
+/// STATEMENT: Acknowledging local settings applies the configured initial window to existing
+/// streams.
+///
+/// HOW:
+/// - Open a stream before the settings acknowledgment with a configured window of 1,000,000 or
+///   1,000 bytes.
+/// - Acknowledge settings and send 80,000 or 2,000 bytes respectively; assert no stream
+///   `WindowUpdate` is emitted because the peer applies the new initial window itself.
+/// - Assert only the smaller window produces `Reason::FLOW_CONTROL_ERROR`; otherwise receive
+///   all data and consume its capacity.
+/// - Assert the client remains open in both cases.
 #[ntex::test]
 async fn settings_ack_updates_stream_windows() {
     for (window, sent, reset) in [
@@ -562,8 +651,15 @@ async fn settings_ack_updates_stream_windows() {
     }
 }
 
-/// A stream window that was already raised before the local SETTINGS are
-/// acknowledged overflows once the new initial window applies.
+/// STATEMENT: Applying acknowledged settings resets a stream whose previously increased window
+/// would overflow.
+///
+/// HOW:
+/// - Configure an initial window of `i32::MAX`, open a stream before acknowledgment, and
+///   consume received data to trigger a stream `WindowUpdate`.
+/// - Acknowledge settings and assert a reset with `Reason::FLOW_CONTROL_ERROR` and
+///   `StreamError::WindowOverflowed`.
+/// - Assert the client connection stays open.
 #[ntex::test]
 async fn settings_ack_overflows_stream_window() {
     let (cli, srv) = IoTest::create();
