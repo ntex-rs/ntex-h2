@@ -1,5 +1,15 @@
 # Changes
 
+## [4.5.0] - 2026-11-12
+
+* Recycle the header map of an encoded owned `Headers` frame, such as trailers
+
+* Add `get_header_map()`, takes a header map from the per-thread pool
+
+* Rename `recycle_header_map()` to `release_header_map()`, the old name is deprecated
+
+* Allocate new header maps with capacity 8, and do not pool smaller maps
+
 ## [4.4.3] - 2026-11-12
 
 * Look up HPACK encoder dynamic-table values newest first, so headers with a
