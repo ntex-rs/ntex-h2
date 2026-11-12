@@ -66,24 +66,33 @@ const HDRS_MAP_POOL_SIZE: usize = 64;
 /// A header map with a larger capacity is not reused.
 const HDRS_MAP_MAX_CAPACITY: usize = 64;
 
+/// Capacity of a new header map, a header map with a smaller capacity is not
+/// reused. Typical request headers fit without growing the map.
+const HDRS_MAP_CAPACITY: usize = 8;
+
 thread_local! {
     static HDRS_MAP_POOL: RefCell<Vec<HeaderMap>> = const { RefCell::new(Vec::new()) };
 }
 
-fn take_header_map() -> HeaderMap {
+/// Takes an empty header map from the per-thread pool, or allocates a new one.
+///
+/// Return the map with [`release_header_map`], or send it as owned headers or
+/// trailers, encoding recycles it.
+pub fn get_header_map() -> HeaderMap {
     HDRS_MAP_POOL
         .try_with(|pool| pool.borrow_mut().pop())
         .ok()
         .flatten()
-        .unwrap_or_default()
+        .unwrap_or_else(|| HeaderMap::with_capacity(HDRS_MAP_CAPACITY))
 }
 
 /// Returns an unused header map, decoding of the next header block reuses its allocation.
 ///
-/// The map is cleared. Maps without allocation or with a large capacity are dropped.
-pub fn recycle_header_map(mut map: HeaderMap) {
+/// The map is cleared. Maps with a small or large capacity are dropped.
+/// Encoding an owned [`Headers`] frame recycles its map.
+pub fn release_header_map(mut map: HeaderMap) {
     let cap = map.capacity();
-    if cap == 0 || cap > HDRS_MAP_MAX_CAPACITY {
+    if !(HDRS_MAP_CAPACITY..=HDRS_MAP_MAX_CAPACITY).contains(&cap) {
         return;
     }
     map.clear();
@@ -93,6 +102,13 @@ pub fn recycle_header_map(mut map: HeaderMap) {
             pool.push(map);
         }
     });
+}
+
+/// Returns an unused header map, use [`release_header_map`].
+#[deprecated(since = "4.4.4", note = "use `release_header_map`")]
+#[doc(hidden)]
+pub fn recycle_header_map(map: HeaderMap) {
+    release_header_map(map);
 }
 
 // ===== impl Headers =====
@@ -186,7 +202,7 @@ impl Headers {
             flags,
             stream_id: head.stream_id(),
             header_block: HeaderBlock {
-                fields: take_header_map(),
+                fields: get_header_map(),
                 pseudo: PseudoHeaders::default(),
             },
         };
@@ -196,7 +212,7 @@ impl Headers {
     /// Returns the stream id and flags of a frame whose header block continues
     /// in CONTINUATION frames.
     pub(crate) fn into_head(self) -> (StreamId, HeadersFlag) {
-        recycle_header_map(self.header_block.fields);
+        release_header_map(self.header_block.fields);
         (self.stream_id, self.flags)
     }
 
@@ -207,7 +223,7 @@ impl Headers {
             flags,
             stream_id,
             header_block: HeaderBlock {
-                fields: take_header_map(),
+                fields: get_header_map(),
                 pseudo: PseudoHeaders::default(),
             },
         }
@@ -521,6 +537,7 @@ impl HeaderBlock {
 
     fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytePages, max_size: usize) {
         encode_block(&self.pseudo, &self.fields, encoder, head, dst, max_size);
+        release_header_map(self.fields);
     }
 }
 
@@ -821,7 +838,7 @@ mod tests {
         let mut stale = HeaderMap::with_capacity(32);
         stale.insert(HeaderName::from_static("x-stale"), HeaderValue::from_static("1"));
         let cap = stale.capacity();
-        recycle_header_map(stale);
+        release_header_map(stale);
         assert_eq!(pool_len(), 1);
 
         let mut fields = HeaderMap::new();
@@ -839,20 +856,52 @@ mod tests {
     /// STATEMENT: Header-map recycling rejects unsuitable allocations and bounds the pool size.
     ///
     /// HOW:
-    /// - Recycle an unallocated map and an oversized map and check the pool remains empty.
-    /// - Offer twice the pool limit in small allocated maps and check only `HDRS_MAP_POOL_SIZE`
+    /// - Recycle an unallocated map, an undersized map, and an oversized map and check the pool
+    ///   remains empty.
+    /// - Offer twice the pool limit in minimum-capacity maps and check only `HDRS_MAP_POOL_SIZE`
     ///   are retained.
     #[test]
     fn recycle_header_map_limits() {
-        // maps without allocation or with a large capacity are dropped
-        recycle_header_map(HeaderMap::new());
-        recycle_header_map(HeaderMap::with_capacity(HDRS_MAP_MAX_CAPACITY * 2));
+        // maps without allocation or with a small or large capacity are dropped
+        release_header_map(HeaderMap::new());
+        release_header_map(HeaderMap::with_capacity(2));
+        release_header_map(HeaderMap::with_capacity(HDRS_MAP_MAX_CAPACITY * 2));
         assert_eq!(pool_len(), 0);
 
         for _ in 0..HDRS_MAP_POOL_SIZE * 2 {
-            recycle_header_map(HeaderMap::with_capacity(4));
+            release_header_map(HeaderMap::with_capacity(HDRS_MAP_CAPACITY));
         }
         assert_eq!(pool_len(), HDRS_MAP_POOL_SIZE);
+    }
+
+    /// STATEMENT: Encoding an owned header frame recycles its map, and decoding without a pooled
+    /// map allocates room for typical request headers.
+    ///
+    /// HOW:
+    /// - Decode a block with an empty pool and check the decoded map has at least
+    ///   `HDRS_MAP_CAPACITY` capacity.
+    /// - Encode an owned trailers frame built on that map and check the pool holds one map.
+    /// - Decode another block and check it reuses the pooled allocation and empties the pool.
+    #[test]
+    fn encoded_header_map_is_recycled() {
+        let hdrs = decode(HeaderMap::new());
+        assert_eq!(pool_len(), 0);
+        let mut fields = hdrs.into_fields();
+        let cap = fields.capacity();
+        assert!(cap >= HDRS_MAP_CAPACITY, "capacity {cap}");
+
+        fields.insert(
+            HeaderName::from_static("grpc-status"),
+            HeaderValue::from_static("0"),
+        );
+        let mut trailers = Headers::trailers(StreamId::from(1), fields);
+        trailers.set_end_headers();
+        trailers.encode(&mut hpack::Encoder::default(), &mut BytePages::default(), 16_384);
+        assert_eq!(pool_len(), 1);
+
+        let fields = decode(HeaderMap::new()).into_fields();
+        assert_eq!(pool_len(), 0);
+        assert_eq!(fields.capacity(), cap);
     }
 
     /// STATEMENT: `HeadersFlag` debug output describes known flags and discards unknown bits.
