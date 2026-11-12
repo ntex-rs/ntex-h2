@@ -2,7 +2,7 @@ use std::{cmp, collections::VecDeque, hash::BuildHasher, mem};
 
 use ntex_http::{Method, header};
 
-use super::Header;
+use super::{Header, header::HeaderRef};
 
 /// HPACK encoder table
 #[derive(Debug)]
@@ -16,13 +16,13 @@ pub(super) struct Table {
     max_size: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub(super) enum Index {
     // The header is already fully indexed
-    Indexed(usize, Header),
+    Indexed(usize),
 
     // The name is indexed, but not the value
-    Name(usize, Header),
+    Name(usize),
 
     // The full header has been inserted into the table.
     Inserted(usize),
@@ -31,7 +31,7 @@ pub(super) enum Index {
     InsertedValue(usize, usize),
 
     // The header is not indexed by this table
-    NotIndexed(Header),
+    NotIndexed,
 }
 
 #[derive(Debug)]
@@ -100,27 +100,20 @@ impl Table {
         self.max_size
     }
 
-    /// Gets the header stored in the table
-    pub(super) fn resolve<'a>(&'a self, index: &'a Index) -> &'a Header {
-        match *index {
-            Index::Indexed(_, ref h) | Index::Name(_, ref h) | Index::NotIndexed(ref h) => h,
-            Index::Inserted(idx) | Index::InsertedValue(_, idx) => &self.slots[idx].header,
-        }
-    }
-
-    pub(super) fn resolve_idx(index: &Index) -> usize {
-        match *index {
-            Index::Indexed(idx, ..) | Index::Name(idx, ..) => idx,
-            Index::Inserted(idx) => idx + DYN_OFFSET,
-            Index::InsertedValue(_name_idx, slot_idx) => slot_idx + DYN_OFFSET,
-            Index::NotIndexed(_) => panic!("cannot resolve index"),
+    /// Returns the table index of an indexed header, `None` for `NotIndexed`.
+    pub(super) fn resolve_idx(index: Index) -> Option<usize> {
+        match index {
+            Index::Indexed(idx) | Index::Name(idx) => Some(idx),
+            Index::Inserted(idx) => Some(idx + DYN_OFFSET),
+            Index::InsertedValue(_name_idx, slot_idx) => Some(slot_idx + DYN_OFFSET),
+            Index::NotIndexed => None,
         }
     }
 
     /// Index the header in the HPACK table.
-    pub(super) fn index(&mut self, header: Header) -> Index {
+    pub(super) fn index(&mut self, header: HeaderRef<'_>) -> Index {
         // Check the static table
-        let statik = index_static(&header);
+        let statik = index_static(header);
 
         // Don't index certain headers. This logic is borrowed from nghttp2.
         if header.skip_value_index() {
@@ -128,26 +121,32 @@ impl Table {
             // static table. At some point in the future, this might not be true
             // and this logic will need to be updated.
             debug_assert!(statik.is_some(), "skip_value_index requires a static name");
-            return Index::new(statik, header);
+            return Index::new(statik);
         }
 
         // If the header is already indexed by the static table, return that
         if let Some((n, true)) = statik {
-            return Index::Indexed(n, header);
+            return Index::Indexed(n);
         }
 
         // Don't index large headers
-        if header.len() * 4 > self.max_size * 3 {
-            return Index::new(statik, header);
+        let len = header.len();
+        if len * 4 > self.max_size * 3 {
+            return Index::new(statik);
         }
 
-        self.index_dynamic(header, statik)
+        self.index_dynamic(header, len, statik)
     }
 
-    fn index_dynamic(&mut self, header: Header, statik: Option<(usize, bool)>) -> Index {
+    fn index_dynamic(
+        &mut self,
+        header: HeaderRef<'_>,
+        len: usize,
+        statik: Option<(usize, bool)>,
+    ) -> Index {
         debug_assert!(Self::assert_valid_state("one"));
 
-        if header.len() + self.size < self.max_size || !header.is_sensitive() {
+        if len + self.size < self.max_size || !header.is_sensitive() {
             // Only grow internal storage if needed
             self.reserve_one();
         }
@@ -156,10 +155,10 @@ impl Table {
             // If `indices` is not empty, then it is impossible for all
             // `indices` entries to be `Some`. So, we only need to check for the
             // empty case.
-            return Index::new(statik, header);
+            return Index::new(statik);
         }
 
-        let hash = hash_header(&header);
+        let hash = hash_header(header);
 
         let desired_pos = desired_pos(self.mask, hash);
         let mut probe = desired_pos;
@@ -176,98 +175,94 @@ impl Table {
 
                 if their_dist < dist {
                     // Index robinhood
-                    return self.index_vacant(header, hash, dist, probe, statik);
+                    return self.index_vacant(header, len, hash, dist, probe, statik);
                 } else if pos.hash == hash && self.slots[slot_idx].header.name() == header.name() {
                     // Matching name, check values
-                    return self.index_occupied(header, hash, pos.index, statik.map(|(n, _)| n));
+                    return self.index_occupied(header, len, hash, probe, statik.map(|(n, _)| n));
                 }
             } else {
-                return self.index_vacant(header, hash, dist, probe, statik);
+                return self.index_vacant(header, len, hash, dist, probe, statik);
             }
 
             dist += 1;
         });
     }
 
+    /// Looks up a header whose name is already in the table.
+    ///
+    /// `indices[probe]` references the newest entry with this name. Entries
+    /// with the same name are linked from newest to oldest, so recently
+    /// inserted values (for example a changing `date`) are found first.
+    /// Eviction removes the oldest entries, so a link to an evicted slot ends
+    /// the chain.
     fn index_occupied(
         &mut self,
-        header: Header,
+        header: HeaderRef<'_>,
+        len: usize,
         hash: HashValue,
-        mut index: usize,
+        probe: usize,
         statik: Option<usize>,
     ) -> Index {
         debug_assert!(Self::assert_valid_state("top"));
 
-        // There already is a match for the given header name. Check if a value
-        // matches. The header will also only be inserted if the table is not at
-        // capacity.
+        let head = self.indices[probe].unwrap().index;
+        let head_real = head.wrapping_add(self.inserted);
+        let mut real_idx = head_real;
+
         loop {
-            // Compute the real index into the VecDeque
-            let real_idx = index.wrapping_add(self.inserted);
-
-            if self.slots[real_idx].header.value_eq(&header) {
+            if header.value_eq(&self.slots[real_idx].header) {
                 // We have a full match!
-                return Index::Indexed(real_idx + DYN_OFFSET, header);
+                return Index::Indexed(real_idx + DYN_OFFSET);
             }
 
-            if let Some(next) = self.slots[real_idx].next {
-                index = next;
-                continue;
+            match self.slots[real_idx].next {
+                Some(next) if next.wrapping_add(self.inserted) < self.slots.len() => {
+                    real_idx = next.wrapping_add(self.inserted);
+                }
+                _ => break,
             }
-
-            if header.is_sensitive() {
-                // Should we assert this?
-                // debug_assert!(statik.is_none());
-                return Index::Name(real_idx + DYN_OFFSET, header);
-            }
-
-            self.update_size(header.len(), Some(index));
-
-            // Insert the new header
-            self.insert(header, hash);
-
-            // Recompute real_idx as it just changed.
-            let new_real_idx = index.wrapping_add(self.inserted);
-
-            // The previous node in the linked list may have gotten evicted
-            // while making room for this header.
-            if new_real_idx < self.slots.len() {
-                let idx = 0usize.wrapping_sub(self.inserted);
-
-                self.slots[new_real_idx].next = Some(idx);
-            }
-
-            debug_assert!(Self::assert_valid_state("bottom"));
-
-            // Even if the previous header was evicted, we can still reference
-            // it when inserting the new one...
-            return if let Some(n) = statik {
-                // If name is in static table, use it instead
-                Index::InsertedValue(n, 0)
-            } else {
-                Index::InsertedValue(real_idx + DYN_OFFSET, 0)
-            };
         }
+
+        if header.is_sensitive() {
+            return Index::Name(head_real + DYN_OFFSET);
+        }
+
+        // The name reference is resolved against the table before eviction,
+        // so it stays valid even if the head is evicted below.
+        let name_idx = statik.unwrap_or(head_real + DYN_OFFSET);
+
+        // Point the name at the slot inserted below before evicting, so the
+        // name keeps its position in `indices` even if all older entries with
+        // this name are evicted.
+        self.indices[probe] = Some(Pos {
+            index: 0usize.wrapping_sub(self.inserted.wrapping_add(1)),
+            hash,
+        });
+        self.update_size(len);
+        self.insert(header.to_owned(), hash, Some(head));
+
+        debug_assert!(Self::assert_valid_state("bottom"));
+
+        Index::InsertedValue(name_idx, 0)
     }
 
     fn index_vacant(
         &mut self,
-        header: Header,
+        header: HeaderRef<'_>,
+        len: usize,
         hash: HashValue,
         mut dist: usize,
         mut probe: usize,
         statik: Option<(usize, bool)>,
     ) -> Index {
         if header.is_sensitive() {
-            return Index::new(statik, header);
+            return Index::new(statik);
         }
 
         debug_assert!(Self::assert_valid_state("top"));
         debug_assert!(dist == 0 || self.indices[probe.wrapping_sub(1) & self.mask].is_some());
 
-        // Passing in `usize::MAX` for prev_idx since there is no previous
-        // header in this case.
-        if self.update_size(header.len(), None) {
+        if self.update_size(len) {
             while dist != 0 {
                 let back = probe.wrapping_sub(1) & self.mask;
 
@@ -289,7 +284,7 @@ impl Table {
 
         debug_assert!(Self::assert_valid_state("after update"));
 
-        self.insert(header, hash);
+        self.insert(header.to_owned(), hash, None);
 
         let pos_idx = 0usize.wrapping_sub(self.inserted);
 
@@ -318,14 +313,14 @@ impl Table {
         }
     }
 
-    fn insert(&mut self, header: Header, hash: HashValue) {
+    fn insert(&mut self, header: Header, hash: HashValue, next: Option<usize>) {
         self.inserted = self.inserted.wrapping_add(1);
 
         // compact the entry, it does not retain a larger source buffer
         self.slots.push_front(Slot {
             hash,
             header: header.detach(),
-            next: None,
+            next,
         });
     }
 
@@ -338,27 +333,27 @@ impl Table {
             self.slots.clear();
             self.inserted = 0;
         } else {
-            self.converge(None);
+            self.converge();
         }
     }
 
-    fn update_size(&mut self, len: usize, prev_idx: Option<usize>) -> bool {
+    fn update_size(&mut self, len: usize) -> bool {
         self.size += len;
-        self.converge(prev_idx)
+        self.converge()
     }
 
-    fn converge(&mut self, prev_idx: Option<usize>) -> bool {
+    fn converge(&mut self) -> bool {
         let mut ret = false;
 
         while self.size > self.max_size {
             ret = true;
-            self.evict(prev_idx);
+            self.evict();
         }
 
         ret
     }
 
-    fn evict(&mut self, prev_idx: Option<usize>) {
+    fn evict(&mut self) {
         let pos_idx = (self.slots.len() - 1).wrapping_sub(self.inserted);
 
         debug_assert!(!self.slots.is_empty());
@@ -367,39 +362,38 @@ impl Table {
         // Remove the header
         let slot = self.slots.pop_back().unwrap();
         let mut probe = desired_pos(self.mask, slot.hash);
+        let mut dist = 0;
 
         // Update the size
         self.size -= slot.header.len();
 
-        debug_assert_eq!(
-            self.indices
-                .iter()
-                .filter_map(|p| *p)
-                .filter(|p| p.index == pos_idx)
-                .count(),
-            1
-        );
-
-        // Find the associated position
+        // `indices` references only the newest entry of each name. The evicted
+        // slot is the oldest one, so it is referenced only if no newer entry
+        // with its name exists; otherwise it is just the stale tail of that
+        // name's chain.
         probe_loop!(probe < self.indices.len(), {
-            debug_assert!(self.indices[probe].is_some());
-
-            let mut pos = self.indices[probe].unwrap();
+            let Some(pos) = self.indices[probe] else { break };
 
             if pos.index == pos_idx {
-                if let Some(idx) = slot.next {
-                    pos.index = idx;
-                    self.indices[probe] = Some(pos);
-                } else if Some(pos.index) == prev_idx {
-                    pos.index = 0usize.wrapping_sub(self.inserted + 1);
-                    self.indices[probe] = Some(pos);
-                } else {
-                    self.indices[probe] = None;
-                    self.remove_phase_two(probe);
-                }
-
+                self.indices[probe] = None;
+                self.remove_phase_two(probe);
                 break;
             }
+
+            if probe_distance(self.mask, pos.hash, probe) < dist {
+                break;
+            }
+
+            if pos.hash == slot.hash
+                && self
+                    .slots
+                    .get(pos.index.wrapping_add(self.inserted))
+                    .is_some_and(|s| s.header.name() == slot.header.name())
+            {
+                break;
+            }
+
+            dist += 1;
         });
 
         debug_assert!(Self::assert_valid_state("two"));
@@ -613,11 +607,11 @@ impl Table {
 }
 
 impl Index {
-    fn new(v: Option<(usize, bool)>, e: Header) -> Index {
+    fn new(v: Option<(usize, bool)>) -> Index {
         match v {
-            None => Index::NotIndexed(e),
-            Some((n, true)) => Index::Indexed(n, e),
-            Some((n, false)) => Index::Name(n, e),
+            None => Index::NotIndexed,
+            Some((n, true)) => Index::Indexed(n),
+            Some((n, false)) => Index::Name(n),
         }
     }
 }
@@ -642,7 +636,7 @@ fn probe_distance(mask: usize, hash: HashValue, current: usize) -> usize {
     current.wrapping_sub(desired_pos(mask, hash)) & mask
 }
 
-fn hash_header(header: &Header) -> HashValue {
+fn hash_header(header: HeaderRef<'_>) -> HashValue {
     const MASK: u64 = (MAX_SIZE as u64) - 1;
 
     HashValue((foldhash::fast::FixedState::default().hash_one(header.name()) & MASK) as usize)
@@ -650,9 +644,9 @@ fn hash_header(header: &Header) -> HashValue {
 
 /// Checks the static table for the header. If found, returns the index and a
 /// boolean representing if the value matched as well.
-fn index_static(header: &Header) -> Option<(usize, bool)> {
-    match *header {
-        Header::Field { ref name, ref value } => match *name {
+fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
+    match header {
+        HeaderRef::Field { name, value } => match *name {
             header::ACCEPT_CHARSET => Some((15, false)),
             header::ACCEPT_ENCODING => {
                 if value == "gzip, deflate" {
@@ -708,24 +702,24 @@ fn index_static(header: &Header) -> Option<(usize, bool)> {
             header::WWW_AUTHENTICATE => Some((61, false)),
             _ => None,
         },
-        Header::Authority(_) => Some((1, false)),
-        Header::Method(ref v) => match *v {
+        HeaderRef::Authority(_) => Some((1, false)),
+        HeaderRef::Method(v) => match *v {
             Method::GET => Some((2, true)),
             Method::POST => Some((3, true)),
             _ => Some((2, false)),
         },
-        Header::Scheme(ref v) => match &**v {
+        HeaderRef::Scheme(v) => match &**v {
             "http" => Some((6, true)),
             "https" => Some((7, true)),
             _ => Some((6, false)),
         },
-        Header::Path(ref v) => match &**v {
+        HeaderRef::Path(v) => match &**v {
             "/" => Some((4, true)),
             "/index.html" => Some((5, true)),
             _ => Some((4, false)),
         },
-        Header::Protocol(..) => None,
-        Header::Status(ref v) => match u16::from(*v) {
+        HeaderRef::Protocol(..) => None,
+        HeaderRef::Status(v) => match u16::from(*v) {
             200 => Some((8, true)),
             204 => Some((9, true)),
             206 => Some((10, true)),
@@ -765,12 +759,15 @@ mod tests {
         let value = HeaderValue::from_shared(src.slice(16 * 1024..16 * 1024 + 40)).unwrap();
         let name = HeaderName::from_static("x-custom");
         assert!(matches!(
-            table.index(Header::Field { name, value }),
+            table.index(HeaderRef::Field {
+                name: &name,
+                value: &value
+            }),
             Index::Inserted(_)
         ));
         let authority = ByteString::try_from(src.slice(16 * 1024 + 40..)).unwrap();
         assert!(matches!(
-            table.index(Header::Authority(authority)),
+            table.index(HeaderRef::Authority(&authority)),
             Index::InsertedValue(..)
         ));
         drop(src);

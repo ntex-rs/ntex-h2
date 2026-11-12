@@ -1,7 +1,7 @@
 use ntex_bytes::{BufMut, BytesMut};
-use ntex_http::header::{HeaderName, HeaderValue};
+use ntex_http::header::HeaderName;
 
-use super::{Header, huffman, table::Index, table::Table};
+use super::{Header, header::HeaderRef, huffman, table::Index, table::Table};
 
 /// Stateful HPACK header encoder.
 #[derive(Debug)]
@@ -81,36 +81,51 @@ impl Encoder {
     {
         self.encode_size_updates(dst);
 
-        let mut last_index = None;
+        let mut last = None;
 
         for header in headers {
             match header.reify() {
                 // The header has an associated name. In which case, try to
                 // index it in the table.
                 Ok(header) => {
-                    let index = self.table.index(header);
-                    self.encode_header(&index, dst);
+                    let index = self.encode_indexed(header.as_ref(), dst);
 
-                    last_index = Some(index);
+                    // The table does not change until the next named header,
+                    // so the index stays valid for the nameless values.
+                    last = Some(match Table::resolve_idx(index) {
+                        Some(idx) => LastName::Index(idx),
+                        None => LastName::Literal(header),
+                    });
                 }
                 // The header does not have an associated name. This means that
                 // the name is the same as the previously yielded header. In
                 // which case, we skip table lookup and just use the same index
                 // as the previous entry.
-                Err(value) => {
-                    self.encode_header_without_name(
-                        last_index.as_ref().unwrap_or_else(|| {
-                            panic!("encoding header without name, but no previous index to use for name");
-                        }),
-                        &value,
-                        dst,
-                    );
-                }
+                Err(value) => match last.as_ref() {
+                    Some(LastName::Index(idx)) => {
+                        encode_not_indexed(*idx, value.as_ref(), value.is_sensitive(), dst);
+                    }
+                    Some(LastName::Literal(header)) => {
+                        encode_not_indexed2(
+                            header.name().as_slice(),
+                            value.as_ref(),
+                            value.is_sensitive(),
+                            dst,
+                        );
+                    }
+                    None => {
+                        panic!("encoding header without name, but no previous index to use for name")
+                    }
+                },
             }
         }
     }
 
-    fn encode_size_updates(&mut self, dst: &mut BytesMut) {
+    /// Encodes pending dynamic table size updates.
+    ///
+    /// Must be called once at the start of each header block encoded
+    /// with `encode_ref`.
+    pub(crate) fn encode_size_updates(&mut self, dst: &mut BytesMut) {
         match self.size_update.take() {
             Some(SizeUpdate::One(val)) => {
                 self.table.resize(val);
@@ -126,59 +141,56 @@ impl Encoder {
         }
     }
 
-    fn encode_header(&mut self, index: &Index, dst: &mut BytesMut) {
-        match *index {
-            Index::Indexed(idx, _) => {
-                encode_int(idx, 7, 0x80, dst);
-            }
-            Index::Name(idx, _) => {
-                let header = self.table.resolve(index);
-
-                encode_not_indexed(idx, header.value_slice(), header.is_sensitive(), dst);
-            }
-            Index::Inserted(_) => {
-                let header = self.table.resolve(index);
-
-                assert!(!header.is_sensitive());
-
-                dst.put_u8(0b0100_0000);
-
-                encode_str(header.name().as_slice(), dst);
-                encode_str(header.value_slice(), dst);
-            }
-            Index::InsertedValue(idx, _) => {
-                let header = self.table.resolve(index);
-
-                assert!(!header.is_sensitive());
-
-                encode_int(idx, 6, 0b0100_0000, dst);
-                encode_str(header.value_slice(), dst);
-            }
-            Index::NotIndexed(_) => {
-                let header = self.table.resolve(index);
-
-                encode_not_indexed2(
-                    header.name().as_slice(),
-                    header.value_slice(),
-                    header.is_sensitive(),
-                    dst,
-                );
-            }
-        }
+    /// Encodes a borrowed header into `dst`.
+    #[inline]
+    pub(crate) fn encode_ref(&mut self, header: HeaderRef<'_>, dst: &mut BytesMut) {
+        self.encode_indexed(header, dst);
     }
 
-    fn encode_header_without_name(&mut self, last: &Index, value: &HeaderValue, dst: &mut BytesMut) {
-        match *last {
-            Index::Indexed(..) | Index::Name(..) | Index::Inserted(..) | Index::InsertedValue(..) => {
-                let idx = Table::resolve_idx(last);
+    #[inline]
+    fn encode_indexed(&mut self, header: HeaderRef<'_>, dst: &mut BytesMut) -> Index {
+        let index = self.table.index(header);
+        encode_header(index, header, dst);
+        index
+    }
+}
 
-                encode_not_indexed(idx, value.as_ref(), value.is_sensitive(), dst);
-            }
-            Index::NotIndexed(_) => {
-                let last = self.table.resolve(last);
+/// Name of the previous header, used for nameless values.
+enum LastName {
+    Index(usize),
+    Literal(Header),
+}
 
-                encode_not_indexed2(last.name().as_slice(), value.as_ref(), value.is_sensitive(), dst);
-            }
+#[inline]
+fn encode_header(index: Index, header: HeaderRef<'_>, dst: &mut BytesMut) {
+    match index {
+        Index::Indexed(idx) => {
+            encode_int(idx, 7, 0x80, dst);
+        }
+        Index::Name(idx) => {
+            encode_not_indexed(idx, header.value_slice(), header.is_sensitive(), dst);
+        }
+        Index::Inserted(_) => {
+            assert!(!header.is_sensitive());
+
+            dst.put_u8(0b0100_0000);
+
+            encode_str(header.name().as_slice(), dst);
+            encode_str(header.value_slice(), dst);
+        }
+        Index::InsertedValue(idx, _) => {
+            assert!(!header.is_sensitive());
+
+            encode_int(idx, 6, 0b0100_0000, dst);
+            encode_str(header.value_slice(), dst);
+        }
+        Index::NotIndexed => {
+            encode_not_indexed2(
+                header.name().as_slice(),
+                header.value_slice(),
+                header.is_sensitive(),
+                dst,
+            );
         }
     }
 }
@@ -193,6 +205,7 @@ fn encode_size_update(val: usize, dst: &mut BytesMut) {
     encode_int(val, 5, 0b0010_0000, dst);
 }
 
+#[inline]
 fn encode_not_indexed(name: usize, value: &[u8], sensitive: bool, dst: &mut BytesMut) {
     if sensitive {
         encode_int(name, 4, 0b10000, dst);
@@ -262,17 +275,23 @@ fn encode_str(val: &[u8], dst: &mut BytesMut) {
 }
 
 /// Encode an integer into the given destination buffer
+#[inline]
 fn encode_int<B: BufMut>(
-    mut value: usize,   // The integer to encode
+    value: usize,       // The integer to encode
     prefix_bits: usize, // The number of bits in the prefix
     first_byte: u8,     // The base upon which to start encoding the int
     dst: &mut B,
 ) {
     if encode_int_one_byte(value, prefix_bits) {
         dst.put_u8(first_byte | value as u8);
-        return;
+    } else {
+        encode_int_multi(value, prefix_bits, first_byte, dst);
     }
+}
 
+#[cold]
+#[inline(never)]
+fn encode_int_multi<B: BufMut>(mut value: usize, prefix_bits: usize, first_byte: u8, dst: &mut B) {
     let low = (1 << prefix_bits) - 1;
 
     value -= low;
@@ -289,6 +308,7 @@ fn encode_int<B: BufMut>(
 }
 
 /// Returns true if the in the int can be fully encoded in the first byte.
+#[inline]
 fn encode_int_one_byte(value: usize, prefix_bits: usize) -> bool {
     value < (1 << prefix_bits) - 1
 }
@@ -300,7 +320,7 @@ fn position(buf: &BytesMut) -> usize {
 #[cfg(test)]
 #[allow(clippy::decimal_bitwise_operands)]
 mod test {
-    use ntex_bytes::Bytes;
+    use ntex_bytes::{ByteString, Bytes};
     use ntex_http::*;
 
     use super::*;
@@ -628,6 +648,42 @@ mod test {
         assert_eq!(2, encoder.table.len());
     }
 
+    /// STATEMENT: A header whose value keeps changing references its newest entry and still
+    /// finds retained older values after the oldest ones are evicted.
+    ///
+    /// HOW:
+    /// - Encode ten values of `x-d` into a table that holds three of them.
+    /// - Check every new value after the first is inserted with the newest entry's name, index
+    ///   62, and that the table keeps three entries.
+    /// - Encode the three retained values and check indexes 62, 63 and 64, then an evicted
+    ///   value and check it is inserted again with name index 62.
+    #[test]
+    fn test_rotating_value_uses_newest_entry() {
+        // 32 + "x-d" + "vN" = 37 bytes per entry
+        let mut encoder = Encoder::new(3 * 37, 0);
+
+        let res = encode(&mut encoder, vec![header("x-d", "v0")]);
+        assert_eq!(0x40, res[0]);
+
+        for i in 1..10 {
+            let res = encode(&mut encoder, vec![header("x-d", &format!("v{i}"))]);
+            assert_eq!(0x40 | 62, res[0], "value {i}");
+            assert_eq!(encoder.table.len(), (i + 1).min(3));
+        }
+
+        for (value, idx) in [("v9", 62), ("v8", 63), ("v7", 64)] {
+            let res = encode(&mut encoder, vec![header("x-d", value)]);
+            assert_eq!(&[0x80 | idx], &res[..], "{value}");
+        }
+
+        let res = encode(&mut encoder, vec![header("x-d", "v6")]);
+        assert_eq!(0x40 | 62, res[0]);
+        assert_eq!(3, encoder.table.len());
+
+        let res = encode(&mut encoder, vec![header("x-d", "v6")]);
+        assert_eq!(&[0x80 | 62], &res[..]);
+    }
+
     /// STATEMENT: A zero-capacity dynamic table still permits static indexes and non-indexed
     /// literals.
     ///
@@ -805,6 +861,116 @@ mod test {
         let mut dst = BytesMut::with_capacity(6);
         encoder.encode_size_updates(&mut dst);
         assert_eq!([63, 225, 129, 148, 144, 7], &dst[..]);
+    }
+
+    /// STATEMENT: Borrowed encoding produces the same block and table state as owned encoding.
+    ///
+    /// HOW:
+    /// - Encode the same pseudo-headers and fields twice, once through `Encoder::encode` and
+    ///   once through `encode_size_updates` plus `encode_ref`, after the same size update.
+    /// - Repeat on the same encoders so the second block uses dynamic-table indexes.
+    /// - Compare the encoded bytes of both rounds and the final table sizes.
+    #[test]
+    fn test_encode_ref_matches_owned_encode() {
+        let status = StatusCode::NOT_FOUND;
+        let scheme = ByteString::from_static("https");
+        let authority = ByteString::from_static("example.com");
+        let path = ByteString::from_static("/index.html");
+        let name = HeaderName::from_static("x-custom");
+        let value = HeaderValue::from_static("abc");
+        let auth = header::AUTHORIZATION;
+        let secret = HeaderValue::from_static("token");
+
+        let mut owned = Encoder::default();
+        let mut borrowed = Encoder::default();
+        owned.update_max_size(1024);
+        borrowed.update_max_size(1024);
+
+        for round in 0..2 {
+            let hdrs = vec![
+                method("GET"),
+                Header::Scheme(scheme.clone()),
+                Header::Authority(authority.clone()),
+                Header::Path(path.clone()),
+                Header::Status(status),
+                Header::Field {
+                    name: Some(name.clone()),
+                    value: value.clone(),
+                },
+                Header::Field {
+                    name: Some(auth.clone()),
+                    value: secret.clone(),
+                },
+            ];
+            let expected = encode(&mut owned, hdrs);
+
+            let mut dst = BytesMut::new();
+            borrowed.encode_size_updates(&mut dst);
+            borrowed.encode_ref(HeaderRef::Method(&Method::GET), &mut dst);
+            borrowed.encode_ref(HeaderRef::Scheme(&scheme), &mut dst);
+            borrowed.encode_ref(HeaderRef::Authority(&authority), &mut dst);
+            borrowed.encode_ref(HeaderRef::Path(&path), &mut dst);
+            borrowed.encode_ref(HeaderRef::Status(&status), &mut dst);
+            borrowed.encode_ref(
+                HeaderRef::Field {
+                    name: &name,
+                    value: &value,
+                },
+                &mut dst,
+            );
+            borrowed.encode_ref(
+                HeaderRef::Field {
+                    name: &auth,
+                    value: &secret,
+                },
+                &mut dst,
+            );
+
+            assert_eq!(expected, dst, "round={round}");
+        }
+        assert_eq!(owned.table.size(), borrowed.table.size());
+    }
+
+    /// STATEMENT: A nameless value after a non-indexed header reuses that header's literal
+    /// name.
+    ///
+    /// HOW:
+    /// - Use a 64-byte table, encode a field whose entry does not fit, then a nameless value.
+    /// - Decode the block and check both fields carry the first name with their own values.
+    /// - Check that nothing was inserted into the encoder table.
+    #[test]
+    fn test_nameless_header_after_not_indexed() {
+        let mut encoder = Encoder::default();
+        encoder.update_max_size(64);
+        let long = "v".repeat(64);
+
+        let mut res = encode(
+            &mut encoder,
+            vec![
+                header("x-big", &long),
+                Header::Field {
+                    name: None,
+                    value: HeaderValue::from_static("small"),
+                },
+            ],
+        )
+        .freeze();
+        assert_eq!(encoder.table.size(), 0);
+
+        let mut decoder = crate::hpack::Decoder::new(64);
+        let mut out = vec![];
+        decoder
+            .decode(&mut std::io::Cursor::new(&mut res), |h| out.push(h))
+            .unwrap();
+
+        let fields: Vec<_> = out
+            .iter()
+            .map(|h| match h {
+                Header::Field { name, value } => (name.as_str(), value.to_str().unwrap()),
+                _ => panic!("unexpected header {h:?}"),
+            })
+            .collect();
+        assert_eq!(fields, vec![("x-big", long.as_str()), ("x-big", "small")]);
     }
 
     fn encode(e: &mut Encoder, hdrs: Vec<Header<Option<HeaderName>>>) -> BytesMut {

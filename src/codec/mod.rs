@@ -193,7 +193,7 @@ impl Codec {
     pub(crate) fn encode_headers_ref(
         &self,
         id: frame::StreamId,
-        pseudo: frame::PseudoHeaders,
+        pseudo: &frame::PseudoHeaders,
         fields: &ntex_http::HeaderMap,
         eof: bool,
         buf: &mut BytePages,

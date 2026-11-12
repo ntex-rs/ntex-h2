@@ -129,60 +129,131 @@ impl Header {
     }
 
     /// Returns the HPACK table size of this header.
+    #[inline]
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
+        self.as_ref().len()
+    }
+
+    /// Returns the header name.
+    #[inline]
+    pub fn name(&self) -> Name<'_> {
+        self.as_ref().name()
+    }
+
+    /// Returns the encoded header value.
+    #[inline]
+    pub fn value_slice(&self) -> &[u8] {
+        self.as_ref().value_slice()
+    }
+
+    /// Returns whether both headers have the same kind and value.
+    #[inline]
+    pub fn value_eq(&self, other: &Header) -> bool {
+        self.as_ref().value_eq(other)
+    }
+
+    /// Returns whether the header value is marked sensitive.
+    pub fn is_sensitive(&self) -> bool {
+        self.as_ref().is_sensitive()
+    }
+
+    /// Returns whether the value should be omitted from the dynamic table.
+    pub fn skip_value_index(&self) -> bool {
+        self.as_ref().skip_value_index()
+    }
+
+    /// Borrows the header.
+    #[inline]
+    pub(crate) fn as_ref(&self) -> HeaderRef<'_> {
         match self {
-            Header::Field { name, value } => len(name, value),
-            Header::Authority(v) => 32 + 10 + v.len(),
-            Header::Method(v) => 32 + 7 + v.as_ref().len(),
-            Header::Scheme(v) => 32 + 7 + v.len(),
-            Header::Path(v) => 32 + 5 + v.len(),
-            Header::Protocol(v) => 32 + 9 + v.len(),
-            Header::Status(_) => 32 + 7 + 3,
+            Header::Field { name, value } => HeaderRef::Field { name, value },
+            Header::Authority(v) => HeaderRef::Authority(v),
+            Header::Method(v) => HeaderRef::Method(v),
+            Header::Scheme(v) => HeaderRef::Scheme(v),
+            Header::Path(v) => HeaderRef::Path(v),
+            Header::Protocol(v) => HeaderRef::Protocol(v),
+            Header::Status(v) => HeaderRef::Status(v),
+        }
+    }
+}
+
+/// Borrowed header field, encoded without cloning the name or value.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum HeaderRef<'a> {
+    Field {
+        name: &'a HeaderName,
+        value: &'a HeaderValue,
+    },
+    Authority(&'a ByteString),
+    Method(&'a Method),
+    Scheme(&'a ByteString),
+    Path(&'a ByteString),
+    Protocol(&'a ByteString),
+    Status(&'a StatusCode),
+}
+
+impl<'a> HeaderRef<'a> {
+    /// Returns the HPACK table size of this header.
+    #[inline]
+    pub(crate) fn len(self) -> usize {
+        match self {
+            HeaderRef::Field { name, value } => len(name, value),
+            HeaderRef::Authority(v) => 32 + 10 + v.len(),
+            HeaderRef::Method(v) => 32 + 7 + v.as_ref().len(),
+            HeaderRef::Scheme(v) => 32 + 7 + v.len(),
+            HeaderRef::Path(v) => 32 + 5 + v.len(),
+            HeaderRef::Protocol(v) => 32 + 9 + v.len(),
+            HeaderRef::Status(_) => 32 + 7 + 3,
         }
     }
 
     /// Returns the header name.
-    pub fn name(&self) -> Name<'_> {
+    #[inline]
+    pub(crate) fn name(self) -> Name<'a> {
         match self {
-            Header::Field { name, .. } => Name::Field(name),
-            Header::Authority(..) => Name::Authority,
-            Header::Method(..) => Name::Method,
-            Header::Scheme(..) => Name::Scheme,
-            Header::Path(..) => Name::Path,
-            Header::Protocol(..) => Name::Protocol,
-            Header::Status(..) => Name::Status,
+            HeaderRef::Field { name, .. } => Name::Field(name),
+            HeaderRef::Authority(..) => Name::Authority,
+            HeaderRef::Method(..) => Name::Method,
+            HeaderRef::Scheme(..) => Name::Scheme,
+            HeaderRef::Path(..) => Name::Path,
+            HeaderRef::Protocol(..) => Name::Protocol,
+            HeaderRef::Status(..) => Name::Status,
         }
     }
 
     /// Returns the encoded header value.
-    pub fn value_slice(&self) -> &[u8] {
+    #[inline]
+    pub(crate) fn value_slice(self) -> &'a [u8] {
         match self {
-            Header::Field { value, .. } => value.as_ref(),
-            Header::Authority(v) | Header::Scheme(v) | Header::Path(v) | Header::Protocol(v) => {
-                v.as_bytes()
-            }
-            Header::Method(v) => v.as_ref().as_ref(),
-            Header::Status(v) => v.as_str().as_ref(),
+            HeaderRef::Field { value, .. } => value.as_ref(),
+            HeaderRef::Authority(v)
+            | HeaderRef::Scheme(v)
+            | HeaderRef::Path(v)
+            | HeaderRef::Protocol(v) => v.as_bytes(),
+            HeaderRef::Method(v) => v.as_str().as_bytes(),
+            HeaderRef::Status(v) => v.as_str().as_bytes(),
         }
     }
 
     /// Returns whether both headers have the same kind and value.
-    pub fn value_eq(&self, other: &Header) -> bool {
+    #[inline]
+    pub(crate) fn value_eq(self, other: &Header) -> bool {
         match (self, other) {
-            (Header::Field { value: a, .. }, Header::Field { value: b, .. }) => a == b,
-            (Header::Authority(a), Header::Authority(b))
-            | (Header::Scheme(a), Header::Scheme(b))
-            | (Header::Path(a), Header::Path(b))
-            | (Header::Protocol(a), Header::Protocol(b)) => a == b,
-            (Header::Method(a), Header::Method(b)) => a == b,
+            (HeaderRef::Field { value: a, .. }, Header::Field { value: b, .. }) => a == b,
+            (HeaderRef::Authority(a), Header::Authority(b))
+            | (HeaderRef::Scheme(a), Header::Scheme(b))
+            | (HeaderRef::Path(a), Header::Path(b))
+            | (HeaderRef::Protocol(a), Header::Protocol(b)) => a == b,
+            (HeaderRef::Method(a), Header::Method(b)) => a == b,
             _ => false,
         }
     }
 
     /// Returns whether the header value is marked sensitive.
-    pub fn is_sensitive(&self) -> bool {
-        if let Header::Field { value, .. } = self {
+    #[inline]
+    pub(crate) fn is_sensitive(self) -> bool {
+        if let HeaderRef::Field { value, .. } = self {
             value.is_sensitive()
         } else {
             // TODO: Technically these other header values can be sensitive too.
@@ -191,11 +262,11 @@ impl Header {
     }
 
     /// Returns whether the value should be omitted from the dynamic table.
-    pub fn skip_value_index(&self) -> bool {
+    pub(crate) fn skip_value_index(self) -> bool {
         use ntex_http::header;
 
         match self {
-            Header::Field { name, .. } => matches!(
+            HeaderRef::Field { name, .. } => matches!(
                 *name,
                 header::AGE
                     | header::AUTHORIZATION
@@ -207,8 +278,24 @@ impl Header {
                     | header::COOKIE
                     | header::SET_COOKIE
             ),
-            Header::Path(..) => true,
+            HeaderRef::Path(..) => true,
             _ => false,
+        }
+    }
+
+    /// Clones the borrowed header.
+    pub(crate) fn to_owned(self) -> Header {
+        match self {
+            HeaderRef::Field { name, value } => Header::Field {
+                name: name.clone(),
+                value: value.clone(),
+            },
+            HeaderRef::Authority(v) => Header::Authority(v.clone()),
+            HeaderRef::Method(v) => Header::Method(v.clone()),
+            HeaderRef::Scheme(v) => Header::Scheme(v.clone()),
+            HeaderRef::Path(v) => Header::Path(v.clone()),
+            HeaderRef::Protocol(v) => Header::Protocol(v.clone()),
+            HeaderRef::Status(v) => Header::Status(*v),
         }
     }
 }

@@ -2,42 +2,163 @@ use ntex_bytes::{BufMut, Bytes, BytesMut};
 
 mod table;
 
-use self::table::{DECODE_TABLE, ENCODE_TABLE};
+use self::table::ENCODE_TABLE;
 use crate::hpack::DecoderError;
 
-// Constructed in the generated `table.rs` file
-struct Decoder {
-    state: usize,
-    maybe_eos: bool,
+/// Bits looked up at once. Every printable ASCII character except
+/// `#$<>@[\]^{}~` and the backtick has a code of at most this length.
+const PEEK_BITS: u32 = 11;
+/// Longest code in the HPACK Huffman table (EOS).
+const MAX_BITS: usize = 30;
+const EOS: u16 = 256;
+
+/// Short codes indexed by the next `PEEK_BITS` input bits.
+///
+/// Each entry is `symbol << 4 | code length`; zero means the code is longer
+/// than `PEEK_BITS`.
+static PEEK_TABLE: [u16; 1 << PEEK_BITS] = build_peek_table();
+
+/// Symbols ordered by `(code length, symbol)`. The HPACK code is canonical,
+/// so codes of each length are consecutive in this order.
+static CANONICAL: Canonical = build_canonical();
+
+struct Canonical {
+    symbols: [u16; 257],
+    /// First code of each length.
+    first: [u32; MAX_BITS + 1],
+    /// Number of codes of each length.
+    count: [u32; MAX_BITS + 1],
+    /// Index in `symbols` of the first code of each length.
+    offset: [u16; MAX_BITS + 1],
 }
 
-// These flags must match the ones in genhuff.rs
+const fn build_peek_table() -> [u16; 1 << PEEK_BITS] {
+    let mut table = [0; 1 << PEEK_BITS];
+    let mut sym = 0;
+    while sym < ENCODE_TABLE.len() {
+        let (len, code) = ENCODE_TABLE[sym];
+        if len <= PEEK_BITS as usize {
+            let shift = PEEK_BITS as usize - len;
+            let start = (code as usize) << shift;
+            let mut i = 0;
+            while i < 1 << shift {
+                table[start + i] = ((sym as u16) << 4) | len as u16;
+                i += 1;
+            }
+        }
+        sym += 1;
+    }
+    table
+}
 
-const MAYBE_EOS: u8 = 1;
-const DECODED: u8 = 2;
-const ERROR: u8 = 4;
+const fn build_canonical() -> Canonical {
+    let mut c = Canonical {
+        symbols: [0; 257],
+        first: [0; MAX_BITS + 1],
+        count: [0; MAX_BITS + 1],
+        offset: [0; MAX_BITS + 1],
+    };
+    let mut n = 0;
+    let mut len = 1;
+    while len <= MAX_BITS {
+        c.offset[len] = n as u16;
+        let mut sym = 0;
+        while sym < ENCODE_TABLE.len() {
+            let (l, code) = ENCODE_TABLE[sym];
+            if l == len {
+                if c.count[len] == 0 {
+                    c.first[len] = code as u32;
+                }
+                c.count[len] += 1;
+                c.symbols[n] = sym as u16;
+                n += 1;
+            }
+            sym += 1;
+        }
+        len += 1;
+    }
+    c
+}
 
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
-    let mut decoder = Decoder::new();
+    // The shortest code is 5 bits
+    let start = buf.len();
+    buf.resize(start + src.len() * 8 / 5, 0);
 
-    // Max compression ratio is >= 0.5
-    buf.reserve(src.len() << 1);
-
-    for b in src {
-        if let Some(b) = decoder.decode4(b >> 4)? {
-            buf.put_u8(b);
+    match decode_into(src, &mut buf[start..]) {
+        Ok(written) => {
+            buf.truncate(start + written);
+            Ok(buf.take())
         }
-
-        if let Some(b) = decoder.decode4(b & 0xf)? {
-            buf.put_u8(b);
+        Err(e) => {
+            buf.truncate(start);
+            Err(e)
         }
     }
+}
 
-    if !decoder.is_final() {
+/// Decodes `src` into `out`, which must hold `src.len() * 8 / 5` bytes, and
+/// returns the decoded length.
+fn decode_into(src: &[u8], out: &mut [u8]) -> Result<usize, DecoderError> {
+    let mut written = 0;
+
+    // Pending input bits, most significant first
+    let mut acc: u64 = 0;
+    let mut bits: u32 = 0;
+    let mut input = src.iter();
+
+    loop {
+        while bits <= 56 {
+            let Some(&b) = input.next() else { break };
+            acc |= u64::from(b) << (56 - bits);
+            bits += 8;
+        }
+
+        if bits == 0 {
+            break;
+        }
+
+        let entry = PEEK_TABLE[(acc >> (64 - PEEK_BITS)) as usize];
+        let (sym, len) = match u32::from(entry & 0xf) {
+            0 => match decode_long(acc, bits) {
+                Some((EOS, _)) => return Err(DecoderError::InvalidHuffmanCode),
+                Some(code) => code,
+                None => break,
+            },
+            len if len <= bits => (entry >> 4, len),
+            _ => break,
+        };
+
+        acc <<= len;
+        bits -= len;
+        out[written] = sym as u8;
+        written += 1;
+    }
+
+    // Remaining bits are padding: at most 7 bits of the EOS prefix (all ones)
+    if bits > 7 || (bits != 0 && acc >> (64 - bits) != (1 << bits) - 1) {
         return Err(DecoderError::InvalidHuffmanCode);
     }
 
-    Ok(buf.take())
+    Ok(written)
+}
+
+/// Decodes a code longer than `PEEK_BITS` from the top of `acc`.
+///
+/// Returns `None` if `bits` is too short to contain a complete code.
+#[cold]
+fn decode_long(acc: u64, bits: u32) -> Option<(u16, u32)> {
+    let c = &CANONICAL;
+    let mut len = PEEK_BITS + 1;
+    while len <= bits.min(MAX_BITS as u32) {
+        let code = (acc >> (64 - len)) as u32;
+        let i = code.wrapping_sub(c.first[len as usize]);
+        if i < c.count[len as usize] {
+            return Some((c.symbols[c.offset[len as usize] as usize + i as usize], len));
+        }
+        len += 1;
+    }
+    None
 }
 
 pub(super) fn encode(src: &[u8], dst: &mut BytesMut) {
@@ -62,41 +183,6 @@ pub(super) fn encode(src: &[u8], dst: &mut BytesMut) {
         // This writes the EOS token
         bits |= (1 << bits_left) - 1;
         dst.put_u8((bits >> 32) as u8);
-    }
-}
-
-impl Decoder {
-    fn new() -> Decoder {
-        Decoder {
-            state: 0,
-            maybe_eos: false,
-        }
-    }
-
-    // Decodes 4 bits
-    fn decode4(&mut self, input: u8) -> Result<Option<u8>, DecoderError> {
-        // (next-state, byte, flags)
-        let (next, byte, flags) = DECODE_TABLE[self.state][input as usize];
-
-        if flags & ERROR == ERROR {
-            // Data followed the EOS marker
-            return Err(DecoderError::InvalidHuffmanCode);
-        }
-
-        let mut ret = None;
-
-        if flags & DECODED == DECODED {
-            ret = Some(byte);
-        }
-
-        self.state = next;
-        self.maybe_eos = flags & MAYBE_EOS == MAYBE_EOS;
-
-        Ok(ret)
-    }
-
-    fn is_final(&self) -> bool {
-        self.state == 0 || self.maybe_eos
     }
 }
 
@@ -143,6 +229,45 @@ mod test {
     fn multi_char() {
         assert_eq!("!0", decode(&[254, 1]).unwrap());
         assert_eq!(" !", decode(&[0b0101_0011, 0b1111_1000]).unwrap());
+    }
+
+    /// STATEMENT: Every byte value round-trips, including codes longer than the lookup table.
+    ///
+    /// HOW:
+    /// - Encode all 256 byte values, forward and reversed, so codes of every length up to 30
+    ///   bits follow both short and long codes.
+    /// - Decode each output and assert it equals the input.
+    #[test]
+    fn encode_decode_all_bytes() {
+        let forward: Vec<u8> = (0..=255).collect();
+        let reversed: Vec<u8> = (0..=255).rev().collect();
+
+        for s in [forward, reversed] {
+            let mut dst = BytesMut::new();
+            encode(&s, &mut dst);
+            assert_eq!(&decode(&dst).unwrap()[..], &s[..]);
+        }
+    }
+
+    /// STATEMENT: An encoded EOS, padding longer than 7 bits, and padding that is not all
+    /// ones are rejected without leaving output in the buffer.
+    ///
+    /// HOW:
+    /// - Decode an encoded EOS, `o` followed by a full byte of ones, a lone byte of ones, and
+    ///   `o` padded with a zero bit, each into a buffer holding a prefix.
+    /// - Assert each fails with `InvalidHuffmanCode` and the buffer still holds only the prefix.
+    #[test]
+    fn decode_rejects_eos_and_bad_padding() {
+        let cases: &[&[u8]] = &[&[0xff, 0xff, 0xff, 0xfc], &[0x3f, 0xff], &[0xff], &[0b0011_1110]];
+
+        for src in cases {
+            let mut buf = BytesMut::from(&b"prefix"[..]);
+            assert!(matches!(
+                super::decode(src, &mut buf),
+                Err(DecoderError::InvalidHuffmanCode)
+            ));
+            assert_eq!(&buf[..], b"prefix");
+        }
     }
 
     /// STATEMENT: Short Huffman codes are padded into the expected single output byte.

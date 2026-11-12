@@ -25,6 +25,11 @@ impl Protocol {
     pub fn as_str(&self) -> &str {
         self.value.as_ref()
     }
+
+    #[inline]
+    pub(crate) fn as_bytestring(&self) -> &ByteString {
+        &self.value
+    }
 }
 
 impl<'a> From<&'a str> for Protocol {

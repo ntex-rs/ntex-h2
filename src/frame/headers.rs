@@ -1,12 +1,12 @@
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
-use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, header};
+use ntex_http::{HeaderMap, Method, StatusCode, header};
 
 use crate::hpack;
 
 use super::priority::StreamDependency;
-use super::{Frame, FrameError, Head, Kind, Protocol, StreamId, util};
+use super::{Frame, FrameError, HEADER_LEN, Head, Kind, Protocol, StreamId, util};
 
 /// HTTP/2 HEADERS frame.
 ///
@@ -42,14 +42,6 @@ pub struct PseudoHeaders {
     pub protocol: Option<Protocol>,
     /// Response `:status`.
     pub status: Option<StatusCode>,
-}
-
-pub(super) struct Iter<'a> {
-    /// Pseudo headers
-    pseudo: Option<PseudoHeaders>,
-
-    /// Header fields
-    fields: header::Iter<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -346,49 +338,6 @@ impl PseudoHeaders {
     }
 }
 
-// ===== impl Iter =====
-
-impl Iterator for Iter<'_> {
-    type Item = hpack::Header<Option<HeaderName>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        use crate::hpack::Header;
-
-        if let Some(ref mut pseudo) = self.pseudo {
-            if let Some(method) = pseudo.method.take() {
-                return Some(Header::Method(method));
-            }
-
-            if let Some(scheme) = pseudo.scheme.take() {
-                return Some(Header::Scheme(scheme));
-            }
-
-            if let Some(authority) = pseudo.authority.take() {
-                return Some(Header::Authority(authority));
-            }
-
-            if let Some(path) = pseudo.path.take() {
-                return Some(Header::Path(path));
-            }
-
-            if let Some(protocol) = pseudo.protocol.take() {
-                return Some(Header::Protocol(protocol.into()));
-            }
-
-            if let Some(status) = pseudo.status.take() {
-                return Some(Header::Status(status));
-            }
-        }
-
-        self.pseudo = None;
-
-        self.fields.next().map(|(name, value)| Header::Field {
-            name: Some(name.clone()),
-            value: value.clone(),
-        })
-    }
-}
-
 // ===== impl HeadersFlag =====
 
 impl HeadersFlag {
@@ -571,14 +520,14 @@ impl HeaderBlock {
     }
 
     fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytePages, max_size: usize) {
-        encode_block(self.pseudo, &self.fields, encoder, head, dst, max_size);
+        encode_block(&self.pseudo, &self.fields, encoder, head, dst, max_size);
     }
 }
 
 /// Encodes a HEADERS frame with `END_HEADERS` set from borrowed header fields.
 pub(crate) fn encode_headers_ref(
     stream_id: StreamId,
-    pseudo: PseudoHeaders,
+    pseudo: &PseudoHeaders,
     fields: &HeaderMap,
     eof: bool,
     encoder: &mut hpack::Encoder,
@@ -596,7 +545,7 @@ pub(crate) fn encode_headers_ref(
 /// Encodes the header block, split into `CONTINUATION` frames if it
 /// exceeds `max_size`.
 fn encode_block(
-    pseudo: PseudoHeaders,
+    pseudo: &PseudoHeaders,
     fields: &HeaderMap,
     encoder: &mut hpack::Encoder,
     head: Head,
@@ -604,32 +553,62 @@ fn encode_block(
     max_size: usize,
 ) {
     HDRS_BUF.with(|buf| {
+        use crate::hpack::header::HeaderRef;
+
         let mut b = buf.borrow_mut();
         let hpack = &mut b;
         hpack.clear();
 
+        // reserve space for the frame head, so a block that fits
+        // a single frame is copied to `dst` at once
+        hpack.extend_from_slice(&[0; HEADER_LEN]);
+
         // encode hpack
-        let headers = Iter {
-            pseudo: Some(pseudo),
-            fields: fields.into_iter(),
-        };
-        encoder.encode(headers, hpack);
+        encoder.encode_size_updates(hpack);
+        if let Some(ref v) = pseudo.method {
+            encoder.encode_ref(HeaderRef::Method(v), hpack);
+        }
+        if let Some(ref v) = pseudo.scheme {
+            encoder.encode_ref(HeaderRef::Scheme(v), hpack);
+        }
+        if let Some(ref v) = pseudo.authority {
+            encoder.encode_ref(HeaderRef::Authority(v), hpack);
+        }
+        if let Some(ref v) = pseudo.path {
+            encoder.encode_ref(HeaderRef::Path(v), hpack);
+        }
+        if let Some(ref v) = pseudo.protocol {
+            encoder.encode_ref(HeaderRef::Protocol(v.as_bytestring()), hpack);
+        }
+        if let Some(ref v) = pseudo.status {
+            encoder.encode_ref(HeaderRef::Status(v), hpack);
+        }
+        for (name, value) in fields {
+            encoder.encode_ref(HeaderRef::Field { name, value }, hpack);
+        }
 
-        let mut head = head;
-        let mut start = 0;
-        loop {
-            let end = cmp::min(start + max_size, hpack.len());
+        let block_len = hpack.len() - HEADER_LEN;
+        if block_len <= max_size {
+            hpack[..HEADER_LEN].copy_from_slice(&head.to_bytes(block_len));
+            dst.extend_from_slice(hpack);
+        } else {
+            let mut head = head;
+            let mut start = HEADER_LEN;
+            loop {
+                let end = cmp::min(start + max_size, hpack.len());
 
-            // encode the header payload
-            if hpack.len() > end {
-                Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id()).encode(max_size, dst);
-                dst.extend_from_slice(&hpack[start..end]);
-                head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
-                start = end;
-            } else {
-                head.encode(end - start, dst);
-                dst.extend_from_slice(&hpack[start..end]);
-                break;
+                // encode the header payload
+                if hpack.len() > end {
+                    Head::new(head.kind(), head.flag() ^ END_HEADERS, head.stream_id())
+                        .encode(max_size, dst);
+                    dst.extend_from_slice(&hpack[start..end]);
+                    head = Head::new(Kind::Continuation, END_HEADERS, head.stream_id());
+                    start = end;
+                } else {
+                    head.encode(end - start, dst);
+                    dst.extend_from_slice(&hpack[start..end]);
+                    break;
+                }
             }
         }
 
@@ -642,7 +621,7 @@ fn encode_block(
 
 #[cfg(test)]
 mod test {
-    use ntex_http::HeaderValue;
+    use ntex_http::{HeaderName, HeaderValue};
 
     use super::*;
     use crate::hpack::{Encoder, huffman};
@@ -701,7 +680,7 @@ mod test {
 
 #[cfg(test)]
 mod tests {
-    use ntex_http::HeaderValue;
+    use ntex_http::{HeaderName, HeaderValue};
 
     use super::*;
 
@@ -770,7 +749,7 @@ mod tests {
             for _ in 0..2 {
                 encode_headers_ref(
                     StreamId::from(3),
-                    pseudo.clone(),
+                    &pseudo,
                     &fields,
                     eof,
                     &mut enc2,
