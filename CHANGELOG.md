@@ -1,5 +1,20 @@
 # Changes
 
+## [4.4.3] - 2026-11-12
+
+* Look up HPACK encoder dynamic-table values newest first, so headers with a
+  changing value (such as `date`) no longer scan every stale entry
+
+* Decode HPACK Huffman strings with a bit-window lookup table instead of a
+  4-bit state machine, and drop the 64 KB decode table
+
+* Encode outgoing HEADERS from borrowed header names and values instead of
+  cloning each header, and write single-frame header blocks with one copy
+
+* Inline the common HPACK integer encode/decode paths, decode literals with an
+  indexed name without cloning the table value, and skip the header-list size
+  check when the peer did not set `SETTINGS_MAX_HEADER_LIST_SIZE`
+
 ## [4.4.2] - 2026-11-10
 
 * Skip reset-waiter registration for publish handlers that complete immediately,

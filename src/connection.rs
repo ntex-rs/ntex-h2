@@ -280,7 +280,7 @@ impl Connection {
     pub(crate) fn encode_headers_ref(
         &self,
         id: frame::StreamId,
-        pseudo: frame::PseudoHeaders,
+        pseudo: &frame::PseudoHeaders,
         fields: &HeaderMap,
         eof: bool,
     ) {
@@ -386,7 +386,12 @@ impl Connection {
         pseudo: &PseudoHeaders,
         headers: &HeaderMap,
     ) -> Result<(), Error<OperationError>> {
-        let max = self.0.remote_max_header_list_size.get() as usize;
+        let max = self.0.remote_max_header_list_size.get();
+        if max == u32::MAX {
+            // the peer did not set a limit
+            return Ok(());
+        }
+        let max = max as usize;
         let size = pseudo.header_list_size(headers);
         if size > max {
             Err(Error::new(

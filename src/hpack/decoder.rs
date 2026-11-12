@@ -320,10 +320,11 @@ impl Decoder {
             let value = value_marker.consume(buf);
             Header::new(&name, value)
         } else {
-            let e = self.table.get(table_idx)?;
+            // validate the index before reading the value
+            self.table.check_index(table_idx)?;
             let value = self.decode_string(buf)?;
 
-            e.name().into_entry(value)
+            self.table.get_with_value(table_idx, value)
         }
     }
 
@@ -412,14 +413,8 @@ impl Representation {
     }
 }
 
+#[inline]
 fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderError> {
-    // The octet limit is chosen such that the maximum allowed *value* can
-    // never overflow an unsigned 32-bit integer. The maximum value of any
-    // integer that can be encoded with 5 octets is ~2^28
-    const MAX_BYTES: usize = 5;
-    const VARINT_MASK: u8 = 0b0111_1111;
-    const VARINT_FLAG: u8 = 0b1000_0000;
-
     if !(1..=8).contains(&prefix_size) {
         return Err(DecoderError::InvalidIntegerPrefix);
     }
@@ -434,15 +429,28 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
         (1u8 << prefix_size).wrapping_sub(1)
     };
 
-    let mut ret = (buf.get_u8() & mask) as usize;
+    let ret = (buf.get_u8() & mask) as usize;
 
     if ret < mask as usize {
         // Value fits in the prefix bits
-        return Ok(ret);
+        Ok(ret)
+    } else {
+        decode_int_multi(buf, ret)
     }
+}
 
-    // The int did not fit in the prefix bits, so continue reading.
-    //
+/// Decodes the varint continuation of an integer that did not fit in the
+/// prefix bits.
+#[cold]
+#[inline(never)]
+fn decode_int_multi<B: Buf>(buf: &mut B, mut ret: usize) -> Result<usize, DecoderError> {
+    // The octet limit is chosen such that the maximum allowed *value* can
+    // never overflow an unsigned 32-bit integer. The maximum value of any
+    // integer that can be encoded with 5 octets is ~2^28
+    const MAX_BYTES: usize = 5;
+    const VARINT_MASK: u8 = 0b0111_1111;
+    const VARINT_FLAG: u8 = 0b1000_0000;
+
     // The total number of bytes used to represent the int. The first byte was
     // the prefix, so start at 1.
     let mut bytes = 1;
@@ -534,6 +542,7 @@ impl Table {
     /// This follows [HPACK section 2.3.3].
     ///
     /// [HPACK section 2.3.3]: https://www.rfc-editor.org/rfc/rfc7541#section-2.3.3
+    #[inline]
     pub(super) fn get(&self, index: usize) -> Result<Header, DecoderError> {
         if index == 0 {
             return Err(DecoderError::InvalidTableIndex);
@@ -546,6 +555,32 @@ impl Table {
         // Convert the index for lookup in the entries structure.
         match self.entries.get(index - 62) {
             Some(e) => Ok(e.clone()),
+            None => Err(DecoderError::InvalidTableIndex),
+        }
+    }
+
+    /// Checks that the index refers to an existing entry.
+    fn check_index(&self, index: usize) -> Result<(), DecoderError> {
+        if index == 0 || index > 61 + self.entries.len() {
+            Err(DecoderError::InvalidTableIndex)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Combines the name of the entry at `index` with `value`, without
+    /// cloning the stored value.
+    fn get_with_value(&self, index: usize, value: Bytes) -> Result<Header, DecoderError> {
+        if index == 0 {
+            return Err(DecoderError::InvalidTableIndex);
+        }
+
+        if index <= 61 {
+            return get_static(index).name().into_entry(value);
+        }
+
+        match self.entries.get(index - 62) {
+            Some(e) => e.name().into_entry(value),
             None => Err(DecoderError::InvalidTableIndex),
         }
     }
@@ -1030,6 +1065,55 @@ mod test {
             }
             _ => panic!(),
         }
+    }
+
+    /// STATEMENT: A literal with an indexed dynamic-table name takes the name from the table
+    /// and the value from the block.
+    ///
+    /// HOW:
+    /// - Insert `foo: bar` with an incremental-indexing literal.
+    /// - Decode a non-indexed literal that names dynamic index 62 with value `baz`.
+    /// - Check both decoded fields and that the table entry still holds `bar`.
+    #[test]
+    fn test_decode_literal_with_dynamic_name() {
+        let mut de = Decoder::default();
+        let mut buf = Bytes::from_static(b"\x40\x03foo\x03bar\x0f\x2f\x03baz");
+
+        let mut res = vec![];
+        de.decode(&mut Cursor::new(&mut buf), |h| res.push(h)).unwrap();
+
+        let foo = Bytes::from_static(b"foo");
+        assert_eq!(
+            res,
+            vec![
+                Header::new(&foo, Bytes::from_static(b"bar")).unwrap(),
+                Header::new(&foo, Bytes::from_static(b"baz")).unwrap(),
+            ]
+        );
+        assert_eq!(
+            de.table.get(62).unwrap(),
+            Header::new(&foo, Bytes::from_static(b"bar")).unwrap()
+        );
+    }
+
+    /// STATEMENT: A literal naming a missing table entry fails before its value is read.
+    ///
+    /// HOW:
+    /// - Decode a non-indexed literal naming index 62 against an empty dynamic table, with no
+    ///   value bytes following.
+    /// - Check the result is `InvalidTableIndex`, not `NeedMore`.
+    /// - Check that `Table::get_with_value` also rejects index 0.
+    #[test]
+    fn test_decode_literal_with_invalid_name_index() {
+        let mut de = Decoder::default();
+        let mut buf = Bytes::from_static(b"\x0f\x2f");
+
+        let res = de.decode(&mut Cursor::new(&mut buf), |_| {});
+        assert!(matches!(res, Err(DecoderError::InvalidTableIndex)), "{res:?}");
+        assert!(matches!(
+            de.table.get_with_value(0, Bytes::new()),
+            Err(DecoderError::InvalidTableIndex)
+        ));
     }
 
     fn huff_encode(src: &[u8]) -> BytesMut {

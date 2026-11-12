@@ -907,7 +907,7 @@ impl StreamRef {
                 } else {
                     self.0.state_send_payload();
                 }
-                self.0.con.encode_headers_ref(self.0.id, pseudo, headers, eof);
+                self.0.con.encode_headers_ref(self.0.id, &pseudo, headers, eof);
                 Ok(())
             }
             HalfState::Payload => Err(Error::new(OperationError::Payload, self.0.con.service())),

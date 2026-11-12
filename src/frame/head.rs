@@ -1,4 +1,4 @@
-use super::StreamId;
+use super::{HEADER_LEN, StreamId};
 
 use ntex_bytes::BufMut;
 
@@ -76,10 +76,25 @@ impl Head {
 
     /// Encodes the frame header for a payload of `payload_len` bytes.
     pub fn encode<T: BufMut>(&self, payload_len: usize, dst: &mut T) {
-        dst.put_uint(payload_len as u64, 3);
-        dst.put_u8(self.kind as u8);
-        dst.put_u8(self.flag);
-        dst.put_u32(self.stream_id.into());
+        dst.put_slice(&self.to_bytes(payload_len));
+    }
+
+    /// Returns the encoded frame header for a payload of `payload_len` bytes.
+    #[inline]
+    pub(crate) fn to_bytes(self, payload_len: usize) -> [u8; HEADER_LEN] {
+        let len = (payload_len as u32).to_be_bytes();
+        let id = u32::from(self.stream_id).to_be_bytes();
+        [
+            len[1],
+            len[2],
+            len[3],
+            self.kind as u8,
+            self.flag,
+            id[0],
+            id[1],
+            id[2],
+            id[3],
+        ]
     }
 }
 
@@ -100,5 +115,28 @@ impl Kind {
             9 => Kind::Continuation,
             _ => Kind::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ntex_bytes::BytesMut;
+
+    use super::*;
+
+    /// STATEMENT: A frame header encodes as a 24-bit length, type, flags and 31-bit stream id.
+    ///
+    /// HOW:
+    /// - Encode a HEADERS head with flag `0x5` on stream `0x0102_0304` for a `0x0A_0B0C` payload.
+    /// - Compare the nine bytes written by `Head::encode` and returned by `Head::to_bytes`.
+    #[test]
+    fn test_head_encode() {
+        let head = Head::new(Kind::Headers, 0x5, StreamId::from(0x0102_0304));
+        let expected = [0x0a, 0x0b, 0x0c, 0x01, 0x05, 0x01, 0x02, 0x03, 0x04];
+
+        let mut dst = BytesMut::new();
+        head.encode(0x0a_0b0c, &mut dst);
+        assert_eq!(&dst[..], &expected);
+        assert_eq!(head.to_bytes(0x0a_0b0c), expected);
     }
 }
