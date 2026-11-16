@@ -432,6 +432,12 @@ impl StreamRef {
         self.0.recv.get()
     }
 
+    /// Returns `true` if the local side reset or failed the stream, only
+    /// a local reset closes the receive side with a reason.
+    pub(crate) fn is_reset_locally(&self) -> bool {
+        matches!(self.0.recv.get(), HalfState::Closed(Some(_))) || self.is_failed()
+    }
+
     pub(crate) fn disconnect_on_drop(&self) {
         self.0.insert_flag(StreamFlags::DISCONNECT_ON_DROP);
     }

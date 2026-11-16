@@ -765,12 +765,14 @@ impl ConnectionState {
     fn drop_stream(&self, id: StreamId) {
         let mut released = false;
         let mut removed = false;
+        let mut reset = false;
         let mut claim = 0;
         let empty = {
             let mut streams = self.streams.borrow_mut();
             self.streams_peak.set(self.streams_peak.get().max(streams.len()));
             if let Some(stream) = streams.remove(&id) {
                 removed = true;
+                reset = stream.is_reset_locally();
                 claim = stream.take_claim();
                 stream.stop_capacity_timer();
                 #[cfg(feature = "trace")]
@@ -816,8 +818,9 @@ impl ConnectionState {
             return;
         }
 
-        // Add ids to pending queue
-        if flags.contains(ConnectionFlags::UNKNOWN_STREAMS) {
+        // Frames sent before the peer saw our reset are ignored, frames after
+        // the peer closed the stream itself are a stream error (RFC 9113 §5.1)
+        if reset && flags.contains(ConnectionFlags::UNKNOWN_STREAMS) {
             self.local_pending_reset.add(id, &self.local_config);
         }
     }
@@ -1010,10 +1013,14 @@ impl RecvHalfConnection {
             return Err(Either::Right(StreamErrorInner::new(stream, err)));
         }
 
-        // PRIORITY can be sent for any stream, resetting an idle
-        // stream is a connection error for the peer (RFC 9113 §5.1)
+        // PRIORITY can be sent for any stream, but RST_STREAM must not be
+        // sent for an idle stream (RFC 9113 §6.4), so an invalid PRIORITY
+        // for an untracked stream is a connection error
         if frm.kind() == frame::Kind::Priority {
-            return Ok(None);
+            return Err(Either::Left(Error::new(
+                ConnectionError::Decoder(frm.error()),
+                self.service(),
+            )));
         }
 
         // an invalid HEADERS frame still opens and closes the stream
@@ -1302,9 +1309,18 @@ impl RecvHalfConnection {
             )))
         } else if self.0.local_pending_reset.remove(id) {
             self.update_rst_count().map_err(Either::Left)
-        } else {
+        } else if !self.0.err_unknown_streams() {
             // late reset for a stream that is already forgotten
             Ok(())
+        } else if self.0.is_used_id(id) {
+            // late reset for a closed stream, it counts toward the reset limit
+            self.update_rst_count().map_err(Either::Left)
+        } else {
+            // RST_STREAM for an idle stream is a connection error (RFC 9113 §6.4)
+            Err(Either::Left(Error::new(
+                ConnectionError::UnknownStream("RST_STREAM-idle"),
+                self.service(),
+            )))
         }
     }
 
@@ -2189,6 +2205,94 @@ mod tests {
             assert!(con.check_error().is_ok());
             assert_eq!(con.0.recv_size.get(), 0);
         }
+        recv.disconnect();
+    }
+
+    /// STATEMENT: Only locally reset streams enter reset history, late frames on a stream
+    /// closed by both `END_STREAM` flags are stream errors (RFC 9113 §5.1).
+    ///
+    /// HOW:
+    /// - Create a server connection with default reset history and finish stream 1 normally
+    ///   and stream 3 with a local reset.
+    /// - Verify only stream 3 is pending, then send late `DATA` on both streams and check
+    ///   that only stream 1 gets a `Reset` with `Reason::STREAM_CLOSED`.
+    /// - Verify a late `RST_STREAM` on stream 1 counts toward the reset limit, and a late
+    ///   `HEADERS` on stream 1 is `ConnectionError::InvalidStreamId`.
+    #[ntex::test]
+    async fn test_late_frames_for_closed_stream() {
+        let (wire, peer) = ntex::io::testing::IoTest::create();
+        peer.remote_buffer_cap(1024 * 1024);
+        let cfg = SharedCfg::new("SRV")
+            .add(
+                ServiceConfig::new()
+                    .set_ping_timeout(Seconds::ZERO)
+                    .set_settings_timeout(Seconds::ZERO),
+            )
+            .build();
+        let io = Io::new(wire, cfg.clone());
+        let con = super::Connection::new(
+            true,
+            io.get_ref(),
+            Codec::default(),
+            cfg.get(),
+            false,
+            false,
+            ntex::channel::pool::new(),
+        );
+        let recv = con.recv_half();
+        let codec = Codec::default();
+        let headers = |id| {
+            frame::Headers::new(
+                id,
+                frame::PseudoHeaders {
+                    method: Some(Method::GET),
+                    scheme: Some("http".into()),
+                    path: Some("/".into()),
+                    ..Default::default()
+                },
+                HeaderMap::new(),
+                true,
+            )
+        };
+
+        let (closed, reset) = (frame::StreamId::CLIENT, frame::StreamId::from(3));
+        let (stream, _msg) = recv.recv_headers(headers(closed)).unwrap().unwrap();
+        stream
+            .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+            .unwrap();
+        let (stream, _msg) = recv.recv_headers(headers(reset)).unwrap().unwrap();
+        assert!(stream.reset(Reason::CANCEL));
+        assert!(con.0.streams.borrow().is_empty());
+        assert!(!con.0.local_pending_reset.is_pending(closed));
+        assert!(con.0.local_pending_reset.is_pending(reset));
+        io.flush(true).await.unwrap();
+        let _ = client_frames(&peer, &codec);
+
+        for id in [closed, reset] {
+            assert!(
+                recv.recv_data(frame::Data::new(id, Bytes::from_static(b"data")))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        io.flush(true).await.unwrap();
+        let frames = client_frames(&peer, &codec);
+        assert_eq!(frames.len(), 1);
+        let rst = get_reset(frames.into_iter().next().unwrap());
+        assert_eq!(rst.stream_id(), closed);
+        assert_eq!(rst.reason(), Reason::STREAM_CLOSED);
+        assert_eq!(con.0.recv_size.get(), 0);
+
+        let rst_count = con.0.rst_count.get();
+        recv.recv_rst_stream(frame::Reset::new(closed, Reason::CANCEL))
+            .unwrap();
+        assert_eq!(con.0.rst_count.get(), rst_count + 1);
+
+        assert!(matches!(
+            recv.recv_headers(headers(closed)),
+            Err(super::Either::Left(ref err))
+                if matches!(**err, super::ConnectionError::InvalidStreamId(_))
+        ));
         recv.disconnect();
     }
 
@@ -3347,14 +3451,14 @@ mod tests {
         stream.send_payload("test", true).await.unwrap();
     }
 
-    /// STATEMENT: Peer resets clear retained local reset history while later unknown-stream
-    /// resets are ignored.
+    /// STATEMENT: Peer resets clear retained local reset history while later resets for the
+    /// forgotten stream are ignored.
     ///
     /// HOW:
     /// - Locally reset a stream, verify its ID is retained, then inject a peer reset and verify
     ///   the ID is removed.
-    /// - Inject resets for the forgotten stream and an unknown stream; verify the client
-    ///   remains open and accepts a new request.
+    /// - Inject another reset for the forgotten stream; verify the client remains open and
+    ///   accepts a new request.
     #[ntex::test]
     async fn test_rst_stream_for_unknown_stream_ignored() {
         let (client, srv) = zero_window_client().await;
@@ -3374,15 +3478,60 @@ mod tests {
         sleep(Millis(50)).await;
         assert!(!con.0.local_pending_reset.is_pending(id));
 
-        // late resets for forgotten and unknown streams are ignored
+        // late reset for the forgotten stream is ignored
         srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
-        srv.write([0, 0, 4, 3, 0, 0, 0, 0, 9, 0, 0, 0, 8]);
         sleep(Millis(50)).await;
         assert!(!client.is_closed());
         client
             .send(Method::GET, "/".into(), HeaderMap::default(), true)
             .await
             .unwrap();
+    }
+
+    /// STATEMENT: `RST_STREAM` for an idle stream is a connection error unless unknown streams
+    /// are skipped, while resets for closed streams are ignored.
+    ///
+    /// HOW:
+    /// - Create server connections with and without `skip_streams`, with client stream 3 as the
+    ///   last opened stream.
+    /// - Verify resets for closed streams 1 and 3 return `Ok`.
+    /// - Verify resets for idle client stream 5 and idle server stream 2 return
+    ///   `ConnectionError::UnknownStream`, or `Ok` when unknown streams are skipped.
+    #[ntex::test]
+    async fn test_rst_stream_for_idle_stream() {
+        for skip in [false, true] {
+            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let cfg = SharedCfg::new("SRV").add(ServiceConfig::new()).build();
+            let io = Io::new(wire, cfg.clone());
+            let con = super::Connection::new(
+                true,
+                io.get_ref(),
+                Codec::default(),
+                cfg.get(),
+                false,
+                skip,
+                ntex::channel::pool::new(),
+            );
+            con.0.last_id.set(3.into());
+            let con = con.recv_half();
+
+            for id in [1, 3] {
+                let res = con.recv_rst_stream(frame::Reset::new(id.into(), Reason::CANCEL));
+                assert!(res.is_ok(), "closed stream {id}");
+            }
+            for id in [5, 2] {
+                let res = con.recv_rst_stream(frame::Reset::new(id.into(), Reason::CANCEL));
+                if skip {
+                    assert!(res.is_ok(), "idle stream {id}");
+                } else {
+                    assert!(
+                        matches!(res, Err(super::Either::Left(ref err))
+                            if *err == super::ConnectionError::UnknownStream("RST_STREAM-idle")),
+                        "idle stream {id}"
+                    );
+                }
+            }
+        }
     }
 
     /// Sum of connection level window updates sent by the client

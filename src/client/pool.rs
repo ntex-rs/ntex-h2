@@ -408,7 +408,7 @@ where
     #[must_use]
     /// Do not return error for frames for unknown streams.
     ///
-    /// This includes pending resets, data and window update frames.
+    /// This includes pending resets, data, window update and reset frames.
     pub fn skip_unknown_streams(mut self) -> Self {
         self.inner.skip_unknown_streams = true;
         self

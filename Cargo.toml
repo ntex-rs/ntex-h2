@@ -32,7 +32,6 @@ ntex-io = "4.5"
 ntex-net = "4.6"
 ntex-service = "5.3"
 ntex-util = "4.4"
-ntex-server = "4.3"
 
 bitflags = "2"
 fastrand = "2.3"
