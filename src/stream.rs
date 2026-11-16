@@ -133,8 +133,9 @@ pub(super) enum ContentLength {
 /// stream, see [`send_pages`](Self::send_pages) and
 /// [`send_capacity`](Self::send_capacity). The stream keeps a single send
 /// waker, so a second concurrent sender or capacity waiter replaces the
-/// first one's waker and ends its capacity wait. Debug builds panic on
-/// concurrent capacity waiters.
+/// first one's waker and ends its capacity wait. A send or capacity future
+/// may move to another task between polls, the stream then wakes the task
+/// that polled it last.
 #[derive(Clone, Debug)]
 pub struct StreamRef(pub(crate) Rc<StreamState>);
 
@@ -1129,11 +1130,6 @@ impl StreamRef {
     ///
     /// Only one task at a time may wait for capacity or send payload on the
     /// stream, see [`StreamRef`].
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if another task is already waiting for
-    /// capacity on this stream.
     pub async fn send_capacity(&self) -> Result<WindowSize, Error<OperationError>> {
         let _guard = CapacityWaiter(self);
         poll_fn(|cx| self.poll_send_capacity(cx)).await
@@ -1153,11 +1149,6 @@ impl StreamRef {
     ///
     /// Only one task at a time may wait for capacity or send payload on the
     /// stream, see [`StreamRef`].
-    ///
-    /// # Panics
-    ///
-    /// In debug builds, panics if another task is already waiting for
-    /// capacity on this stream.
     pub fn poll_send_capacity(
         &self,
         cx: &Context<'_>,
@@ -1183,7 +1174,7 @@ impl StreamRef {
             self.cancel_capacity_wait();
             Poll::Ready(Ok(win))
         } else {
-            self.register_send_waker(cx);
+            self.0.send_cap.register(cx.waker());
             self.0.insert_flag(StreamFlags::WAIT_FOR_CAPACITY);
             self.start_capacity_timer();
             if self.0.send_window.get().window_size() > 0 {
@@ -1195,24 +1186,6 @@ impl StreamRef {
             }
             Poll::Pending
         }
-    }
-
-    /// Registers the waker of the task sending on the stream.
-    ///
-    /// Only one task may wait for capacity at a time, debug builds check that
-    /// a pending capacity wait belongs to the current task.
-    fn register_send_waker(&self, cx: &Context<'_>) {
-        #[cfg(debug_assertions)]
-        if self.0.flags.get().contains(StreamFlags::WAIT_FOR_CAPACITY)
-            && let Some(prev) = self.0.send_cap.take()
-        {
-            assert!(
-                prev.will_wake(cx.waker()),
-                "{:?}: concurrent send capacity waiters, only one task may send on a stream",
-                self.0.id
-            );
-        }
-        self.0.send_cap.register(cx.waker());
     }
 
     /// Waits until the io write back-pressure is released.
@@ -1228,7 +1201,7 @@ impl StreamRef {
                 return Poll::Ready(Err(Error::new(OperationError::Closed(reason), self.service())));
             }
             // stream state changes wake the send task
-            self.register_send_waker(cx);
+            self.0.send_cap.register(cx.waker());
             ready
                 .as_mut()
                 .poll(cx)

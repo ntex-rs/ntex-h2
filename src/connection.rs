@@ -3285,28 +3285,40 @@ mod tests {
         assert!(res.unwrap().unwrap());
     }
 
-    /// STATEMENT: In debug builds, distinct tasks cannot wait for send capacity on the same
-    /// stream.
+    /// STATEMENT: A send capacity wait may move to another task between polls, the stream then
+    /// wakes the task that polled it last.
     ///
     /// HOW:
-    /// - Open a zero-window stream and spawn a task waiting in `send_capacity`.
-    /// - Poll capacity from the test task and expect a panic containing "concurrent send
-    ///   capacity waiters".
-    #[cfg(debug_assertions)]
+    /// - Poll a zero-window `send_capacity` future with one counting waker, then with a second
+    ///   one, as a dispatcher does when it spawns a call that was first polled inline.
+    /// - Verify both polls are pending without a panic, inject a stream window update of 4, and
+    ///   verify only the second waker is woken and the next poll yields capacity 4.
     #[ntex::test]
-    #[should_panic(expected = "concurrent send capacity waiters")]
-    async fn test_concurrent_capacity_waiters_panic() {
-        let (client, _srv) = zero_window_client().await;
+    async fn test_capacity_wait_moves_between_tasks() {
+        use std::{sync::Arc, task::Context, task::Poll, task::Waker};
+
+        let (client, srv) = zero_window_client().await;
         let (stream, _recv) = client
             .send(Method::POST, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
 
-        let waiter = stream.stream().clone();
-        let _fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
-        sleep(Millis(50)).await;
+        let first = Arc::new(WakeCount::default());
+        let second = Arc::new(WakeCount::default());
+        let mut fut = std::pin::pin!(stream.stream().send_capacity());
+        for wakes in [&first, &second] {
+            let waker = Waker::from(wakes.clone());
+            assert!(fut.as_mut().poll(&mut Context::from_waker(&waker)).is_pending());
+        }
 
-        let _ = ntex::util::lazy(|cx| stream.stream().poll_send_capacity(cx)).await;
+        srv.write([0, 0, 4, 8, 0, 0, 0, 0, 1, 0, 0, 0, 4]);
+        sleep(Millis(50)).await;
+        assert_eq!((first.count(), second.count()), (0, 1));
+        let waker = Waker::from(second.clone());
+        assert!(matches!(
+            fut.as_mut().poll(&mut Context::from_waker(&waker)),
+            Poll::Ready(Ok(4))
+        ));
     }
 
     /// STATEMENT: The same task may repeatedly poll send capacity and observe readiness after a

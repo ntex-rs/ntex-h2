@@ -1,7 +1,7 @@
 use std::io;
 
 use ntex::{SharedCfg, error::Error, time::Millis, time::sleep};
-use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, server};
+use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, StreamEof, server};
 use ntex_http::{HeaderMap, StatusCode, header};
 
 #[ntex::main]
@@ -39,6 +39,10 @@ async fn main() -> std::io::Result<()> {
                     }
                     MessageKind::Data(data, _cap) => {
                         log::trace!("Got data: {:?}", data.len());
+                    }
+                    MessageKind::Eof(StreamEof::Error(err)) => {
+                        // the stream is already reset, there is nothing to send
+                        log::trace!("{:?} stream error: {:?}", stream.id(), err);
                     }
                     MessageKind::Eof(data) => {
                         log::trace!("Got eof: {:?}", data);
