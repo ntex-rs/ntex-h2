@@ -1,5 +1,15 @@
 # Changes
 
+## [4.5.1] - 2026-11-xx
+
+* Treat `RST_STREAM` for an idle stream as a connection error of type `PROTOCOL_ERROR`
+
+* Send `RST_STREAM(STREAM_CLOSED)` for frames on a normally closed stream, only locally reset streams ignore late frames
+
+* Count late `RST_STREAM` for a closed stream toward the stream resets limit
+
+* Treat an invalid `PRIORITY` frame for an idle or closed stream as a connection error: `PROTOCOL_ERROR` for a self-dependency, `FRAME_SIZE_ERROR` for a length other than 5 octets
+
 ## [4.5.0] - 2026-11-12
 
 * Recycle the header map of an encoded owned `Headers` frame, such as trailers

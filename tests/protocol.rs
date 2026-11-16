@@ -259,13 +259,14 @@ async fn headers_for_closed_stream() {
 ///
 /// HOW:
 /// - Start a fresh handshaked server for a connection-window overflow, a stream-zero reset, an
-///   idle-stream window update, and a duplicate settings acknowledgment.
+///   idle-stream window update, a duplicate settings acknowledgment, and a self-dependent
+///   priority for an idle stream.
 /// - Confirm a ping succeeds before each invalid frame, then send the frame.
 /// - Assert the expected `GoAway` reason and control-event text, then wait for the server to
 ///   stop.
 #[ntex::test]
 async fn connection_frame_errors() {
-    let cases: [(&[u8], Reason, &str); 4] = [
+    let cases: [(&[u8], Reason, &str); 5] = [
         // connection window overflow
         (
             &raw_frame(8, 0, 0, &[0x7f, 0xff, 0xff, 0xff]),
@@ -290,6 +291,12 @@ async fn connection_frame_errors() {
             Reason::PROTOCOL_ERROR,
             "UnexpectedSettingsAck",
         ),
+        // PRIORITY for an idle stream that depends on itself
+        (
+            &raw_frame(2, 0, 9, &[0, 0, 0, 9, 16]),
+            Reason::PROTOCOL_ERROR,
+            "InvalidDependencyId",
+        ),
     ];
 
     for (frm, reason, event) in cases {
@@ -303,14 +310,13 @@ async fn connection_frame_errors() {
     }
 }
 
-/// STATEMENT: Priority frames are ignored except that self-dependency on an open stream resets
+/// STATEMENT: Valid priority frames are ignored, while a self-dependency on an open stream resets
 /// that stream.
 ///
 /// HOW:
 /// - Open stream 1, send a valid priority frame followed by a self-dependent one, and assert a
 ///   `Reset` with `Reason::PROTOCOL_ERROR` for stream 1.
-/// - Send self-dependent and malformed priority frames for idle streams and confirm a ping
-///   still succeeds.
+/// - Confirm a ping still succeeds.
 #[ntex::test]
 async fn priority_frames_are_ignored() {
     let peer = start_default().await;
@@ -327,10 +333,37 @@ async fn priority_frames_are_ignored() {
         }
         frm => panic!("expected RST_STREAM: {frm:?}"),
     }
-    // invalid PRIORITY for an idle stream is ignored
-    peer.write(&raw_frame(2, 0, 9, &[0, 0, 0, 9, 16]));
-    peer.write(&raw_frame(2, 0, 7, &[0, 0, 0, 1]));
     peer.ping().await;
+}
+
+/// STATEMENT: An invalid-length `Priority` frame for a closed stream is a connection error of
+/// type `FRAME_SIZE_ERROR` (RFC 9113 §6.3).
+///
+/// HOW:
+/// - Send a request with `END_STREAM` for stream 1 and wait for its final response headers, so
+///   both sides of the stream are closed.
+/// - Send a four-byte priority frame for stream 1 and assert `GoAway` has
+///   `Reason::FRAME_SIZE_ERROR` and last stream ID 1.
+/// - Check the control event contains `InvalidPayloadLength` and the server stops.
+#[ntex::test]
+async fn invalid_priority_for_closed_stream() {
+    let peer = start_default().await;
+
+    peer.send(request(1, "/", true)).await;
+    match peer.recv().await {
+        Some(Frame::Headers(hdrs)) => {
+            assert_eq!(hdrs.stream_id(), 1);
+            assert!(hdrs.is_end_stream());
+        }
+        frm => panic!("expected HEADERS: {frm:?}"),
+    }
+
+    peer.write(&raw_frame(2, 0, 1, &[0, 0, 0, 1]));
+    let frm = peer.goaway().await;
+    assert_eq!(frm.reason(), Reason::FRAME_SIZE_ERROR);
+    assert_eq!(frm.last_stream_id(), 1);
+    assert!(peer.event().await.contains("InvalidPayloadLength"));
+    peer.stopped().await;
 }
 
 /// STATEMENT: Outgoing data frames honor the peer's `SETTINGS_MAX_FRAME_SIZE`.

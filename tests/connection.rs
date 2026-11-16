@@ -972,6 +972,98 @@ async fn test_first_frame_not_settings() {
     }
 }
 
+/// STATEMENT: A server treats `RST_STREAM` for an idle stream as a connection error of type
+/// `PROTOCOL_ERROR` (RFC 9113 §6.4).
+///
+/// HOW:
+/// - Open raw connections, complete the settings exchange, then send `RST_STREAM` for idle
+///   client stream 1 or idle server stream 2.
+/// - Skip settings and window updates, then assert `GoAway` has `Reason::PROTOCOL_ERROR`.
+/// - Verify each connection then reaches EOF.
+#[ntex::test]
+async fn test_rst_stream_for_idle_stream() {
+    let srv = start_server().await;
+
+    for id in [1, 2] {
+        let io = connect(srv.addr()).await;
+        let codec = Codec::default();
+        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+        io.send(frame::Settings::default().into(), &codec).await.unwrap();
+        io.send(frame::Reset::new(id.into(), Reason::CANCEL).into(), &codec)
+            .await
+            .unwrap();
+
+        loop {
+            match io.recv(&codec).await.unwrap().unwrap() {
+                frame::Frame::Settings(_) | frame::Frame::WindowUpdate(_) => {}
+                frame::Frame::GoAway(res) => {
+                    assert_eq!(res.reason(), Reason::PROTOCOL_ERROR, "stream {id}");
+                    break;
+                }
+                frm => panic!("unexpected frame: {frm:?}"),
+            }
+        }
+        assert!(io.recv(&codec).await.unwrap().is_none());
+    }
+}
+
+/// STATEMENT: `DATA` for a stream closed by both `END_STREAM` flags is a stream error of type
+/// `STREAM_CLOSED` (RFC 9113 §5.1).
+///
+/// HOW:
+/// - Open a raw connection, send a GET request with `END_STREAM`, and consume the complete
+///   response.
+/// - Send `DATA` on the closed stream and assert a `Reset` with `Reason::STREAM_CLOSED`.
+/// - Send a `Ping` and assert the acknowledgement, the connection stays open.
+#[ntex::test]
+async fn test_data_for_closed_stream() {
+    let srv = start_server().await;
+
+    let io = connect(srv.addr()).await;
+    let codec = Codec::default();
+    let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    io.send(frame::Settings::default().into(), &codec).await.unwrap();
+
+    let id = frame::StreamId::CLIENT;
+    let pseudo = frame::PseudoHeaders {
+        method: Some(Method::GET),
+        scheme: Some("HTTPS".into()),
+        authority: Some("localhost".into()),
+        path: Some("/".into()),
+        ..Default::default()
+    };
+    io.send(
+        frame::Headers::new(id, pseudo, HeaderMap::new(), true).into(),
+        &codec,
+    )
+    .await
+    .unwrap();
+    loop {
+        match io.recv(&codec).await.unwrap().unwrap() {
+            frame::Frame::Settings(_) | frame::Frame::WindowUpdate(_) => {}
+            frame::Frame::Headers(hdrs) => {
+                assert_eq!(hdrs.stream_id(), id);
+                break;
+            }
+            frm => panic!("unexpected frame: {frm:?}"),
+        }
+    }
+    recv_body(&io, &codec).await;
+
+    io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
+        .await
+        .unwrap();
+    let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    assert_eq!(res.stream_id(), id);
+    assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+
+    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    match io.recv(&codec).await.unwrap().unwrap() {
+        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+        frm => panic!("unexpected frame: {frm:?}"),
+    }
+}
+
 /// STATEMENT: Invalid `Settings` frames close the connection with the appropriate RFC 9113
 /// error code.
 ///
@@ -3077,24 +3169,21 @@ async fn test_pool_waiter_woken_on_stream_cancel() {
     assert_eq!(res, Ok(Ok(true)));
 }
 
-/// STATEMENT: An invalid-length `Priority` frame on an idle stream is ignored without resetting
-/// it (RFC 9113 §5.1).
+/// STATEMENT: An invalid-length `Priority` frame on an idle stream is a connection error of type
+/// `FRAME_SIZE_ERROR`, because an idle stream cannot be reset (RFC 9113 §6.3, §6.4).
 ///
 /// HOW:
 /// - Open a raw stream, then write a four-byte `Priority` payload for never-opened stream 5.
-/// - Send a `Ping` and assert the next frame is its acknowledgement rather than a stream reset.
+/// - Assert the next frame is a `GoAway` with `Reason::FRAME_SIZE_ERROR`.
 #[ntex::test]
-async fn test_invalid_priority_for_idle_stream_ignored() {
+async fn test_invalid_priority_for_idle_stream() {
     let srv = start_idle_server(ServiceConfig::new()).await;
     let (io, codec) = open_raw_stream(&srv).await;
 
     // PRIORITY with a 4 byte payload for idle stream 5
     let _ = io.with_write_src(|buf| buf.extend_from_slice(&[0, 0, 4, 2, 0, 0, 0, 0, 5, 0, 0, 0, 0]));
-    io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
-    match io.recv(&codec).await.unwrap().unwrap() {
-        frame::Frame::Ping(ping) => assert!(ping.is_ack()),
-        frm => panic!("unexpected frame: {frm:?}"),
-    }
+    let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+    assert_eq!(res.reason(), Reason::FRAME_SIZE_ERROR);
 }
 
 /// STATEMENT: A `GoAway` with a nonzero frame stream identifier is a connection error reporting
