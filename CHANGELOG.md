@@ -1,6 +1,10 @@
 # Changes
 
-## [4.5.1] - 2026-11-xx
+## [4.5.2] - Unreleased
+
+* Do not panic in debug builds when a pending send capacity wait moves to another task, such as a handler call spawned by the dispatcher after its first poll
+
+## [4.5.1] - 2026-11-17
 
 * Treat `RST_STREAM` for an idle stream as a connection error of type `PROTOCOL_ERROR`
 
