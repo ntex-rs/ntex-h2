@@ -29,7 +29,8 @@ pub(crate) struct Dispatcher<Err, PErr> {
 
 struct Inner<Err, PErr> {
     publish: Pipeline<Message, (), PErr>,
-    control: Pipeline<Control<PErr>, ControlAck, Err>,
+    /// Without control service, control events get default responses.
+    control: Option<Pipeline<Control<PErr>, ControlAck, Err>>,
     connection: Connection,
     disconnected: Cell<bool>,
 }
@@ -38,7 +39,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
     pub(crate) fn new(
         connection: Connection,
         publish: Pipeline<Message, (), PErr>,
-        control: Pipeline<Control<PErr>, ControlAck, Err>,
+        control: Option<Pipeline<Control<PErr>, ControlAck, Err>>,
     ) -> Self {
         Dispatcher {
             connection: connection.recv_half(),
@@ -268,7 +269,11 @@ where
 
     #[inline]
     async fn ready(&self, _: Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
-        let (res1, res2) = join(self.inner.publish.ready(), self.inner.control.ready()).await;
+        let (res1, res2) = if let Some(ctl) = &self.inner.control {
+            join(self.inner.publish.ready(), ctl.ready()).await
+        } else {
+            (self.inner.publish.ready().await, Ok(()))
+        };
 
         if let Err(e) = res1 {
             if let Err(e) = res2 {
@@ -291,7 +296,9 @@ where
 
     async fn shutdown(&self, _: Ctx<'_, Self, ()>) {
         self.inner.publish.shutdown().await;
-        self.inner.control.shutdown().await;
+        if let Some(ctl) = &self.inner.control {
+            ctl.shutdown().await;
+        }
         self.connection.disconnect();
     }
 
@@ -455,13 +462,14 @@ where
     Err: 'static,
     PErr: 'static,
 {
-    let fut = if inner.can_disconnect() {
-        Some(inner.control.call(pkt))
+    let fut = if inner.can_disconnect()
+        && let Some(ctl) = &inner.control
+    {
+        Some(ctl.call(pkt))
     } else {
-        // control service is already notified (graceful GOAWAY), use default response
-        if let Some(frm) = pkt.ack().frame {
-            inner.connection.encode(frm);
-        }
+        // control service is already notified (graceful GOAWAY)
+        // or it is not set, use default response
+        default_ack(pkt, inner);
         inner.connection.close();
         None
     };
@@ -480,15 +488,31 @@ where
     Err: 'static,
     PErr: 'static,
 {
-    let fut = if inner.can_disconnect() {
-        Some(inner.control.call(pkt))
+    let fut = if !inner.can_disconnect() {
+        None
+    } else if let Some(ctl) = &inner.control {
+        Some(ctl.call(pkt))
     } else {
+        default_ack(pkt, inner);
         None
     };
     CallControl {
         fut,
         inner,
         close: false,
+    }
+}
+
+/// Sends the default response for a control event that is not passed to control service.
+fn default_ack<Err, PErr>(pkt: Control<PErr>, inner: &Inner<Err, PErr>) {
+    if inner.control.is_none() {
+        log::trace!(
+            "{}: Control service is not set, use default response",
+            inner.connection.tag()
+        );
+    }
+    if let Some(frm) = pkt.ack().frame {
+        inner.connection.encode(frm);
     }
 }
 
@@ -546,7 +570,8 @@ mod tests {
         task::{Context, Wake, Waker},
     };
 
-    use ntex_bytes::Bytes;
+    use ntex_bytes::{BytePages, Bytes};
+    use ntex_codec::Encoder;
     use ntex_http::{HeaderMap, Method, StatusCode};
     use ntex_io::{Handle, Io, IoContext, IoStream};
     use ntex_service::cfg::SharedCfg;
@@ -604,7 +629,7 @@ mod tests {
         );
         let inner = Inner {
             publish,
-            control: Pipeline::new((), async |msg: Control<()>| Ok::<_, ()>(msg.ack())),
+            control: Some(Pipeline::new((), async |msg: Control<()>| Ok::<_, ()>(msg.ack()))),
             connection,
             disconnected: Cell::new(false),
         };
@@ -694,16 +719,16 @@ mod tests {
                     }
                     _ => panic!("unexpected message"),
                 }));
-            inner.control = Pipeline::new((), async move |msg: Control<()>| {
+            inner.control = Some(Pipeline::new((), async move |msg: Control<()>| {
                 assert!(matches!(
                     msg,
                     Control::Disconnect(crate::control::Reason::Error(_))
                 ));
                 controls2.set(controls2.get() + 1);
                 Ok::<_, ()>(msg.ack())
-            });
+            }));
             inner.publish.ready().await.unwrap();
-            inner.control.ready().await.unwrap();
+            inner.control.as_ref().unwrap().ready().await.unwrap();
             let (stream, msg) = request(&inner, false);
             let mut fut = std::pin::pin!(publish(msg, stream, &inner));
 
@@ -843,5 +868,53 @@ mod tests {
         assert_eq!(delivered.get(), 3);
         assert_eq!(completed.get(), 2);
         assert_eq!(streams.iter().filter(|s| s.upgrade().is_none()).count(), 2);
+    }
+
+    /// STATEMENT: Without a control service, a peer `GOAWAY` keeps the connection open,
+    /// later disconnect events close it, and an application error is answered with
+    /// `GOAWAY(INTERNAL_ERROR)`.
+    ///
+    /// HOW:
+    /// - Remove the control service and discard the initial connection output.
+    /// - Process a peer `GOAWAY`, assert nothing is written and the I/O stays active.
+    /// - Process a peer-gone event, assert nothing is written and the I/O is closed.
+    /// - On a new connection, process an application error for stream 3 and assert the
+    ///   written bytes equal an encoded `GOAWAY(INTERNAL_ERROR)` with last stream 3 and the
+    ///   I/O is closed.
+    #[ntex::test]
+    async fn no_control_service_default_responses() {
+        let publish = || Pipeline::new((), async |_: Message| Ok::<_, ()>(()));
+
+        let (mut inner, io, _ctx) = setup(publish());
+        inner.control = None;
+        io.with_write_dst(BytePages::freeze);
+
+        let res = go_away(Control::go_away(GoAway::new(Reason::NO_ERROR)), &inner).await;
+        assert!(matches!(res, Ok(None)));
+        assert_eq!(io.with_write_dst(|buf| buf.len()), 0);
+        assert!(io.is_active());
+
+        let res = control(Control::peer_gone(None), &inner).await;
+        assert!(matches!(res, Ok(None)));
+        assert_eq!(io.with_write_dst(|buf| buf.len()), 0);
+        assert!(!io.is_active());
+
+        let (mut inner, io, _ctx) = setup(publish());
+        inner.control = None;
+        io.with_write_dst(BytePages::freeze);
+
+        let res = control(Control::error((), StreamId::from(3)), &inner).await;
+        assert!(matches!(res, Ok(None)));
+        let mut expected = BytePages::default();
+        Codec::default()
+            .encode(
+                GoAway::new(Reason::INTERNAL_ERROR)
+                    .set_last_stream_id(StreamId::from(3))
+                    .into(),
+                &mut expected,
+            )
+            .unwrap();
+        assert_eq!(io.with_write_dst(BytePages::freeze), expected.freeze());
+        assert!(!io.is_active());
     }
 }

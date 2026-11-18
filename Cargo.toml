@@ -1,6 +1,6 @@
 [package]
 name = "ntex-h2"
-version = "4.5.2"
+version = "4.6.0"
 license = "MIT OR Apache-2.0"
 authors = ["Nikolay Kim <fafhrd91@gmail.com>"]
 description = "An HTTP/2 client and server"
@@ -23,15 +23,15 @@ trace = []
 features = []
 
 [dependencies]
-ntex-bytes = "1.14"
+ntex-bytes = "1.15"
 ntex-codec = "2.0"
-ntex-dispatcher = "4.4"
+ntex-dispatcher = "4.5"
 ntex-error = "3.1"
 ntex-http = "2.0"
-ntex-io = "4.5"
-ntex-net = "4.6"
-ntex-service = "5.3"
-ntex-util = "4.4"
+ntex-io = "4.8"
+ntex-net = "4.12"
+ntex-service = "5.8"
+ntex-util = "4.11"
 
 bitflags = "2"
 fastrand = "2.3"
@@ -51,7 +51,7 @@ walkdir = "2.3.2"
 serde = "1"
 serde_json = "1"
 
-ntex = { version = "4.4.0", features = ["openssl"] }
+ntex = { version = "4.9.0", features = ["openssl"] }
 ntex-tls = { version = "4.4.0", features = ["openssl"] }
 openssl = "0.10"
 

@@ -43,8 +43,10 @@
 //! [`StreamRef::send_trailers`] unless the headers end the stream. An error
 //! returned by the publish service is passed to the control service as
 //! [`Control::Disconnect`] and closes the connection, stream-level failures
-//! should reset the stream with [`StreamRef::reset`] instead. See the
-//! `examples` directory for complete servers and clients.
+//! should reset the stream with [`StreamRef::reset`] instead. The control
+//! service is optional, without it every control event gets the default
+//! acknowledgment, [`Control::ack`]. See the `examples` directory for
+//! complete servers and clients.
 //!
 //! # Handshake
 //!
@@ -126,7 +128,6 @@ mod config;
 mod connection;
 mod consts;
 pub mod control;
-mod default;
 mod dispatcher;
 mod error;
 mod message;

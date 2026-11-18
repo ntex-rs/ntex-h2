@@ -3,7 +3,7 @@
 use std::{error::Error, io};
 
 mod service;
-pub use self::service::{Server, handle_one};
+pub use self::service::{Server, handle_one, handle_one2};
 
 use crate::frame;
 
@@ -12,9 +12,9 @@ use crate::frame;
 pub enum ServerError<Err> {
     /// Control service error.
     ///
-    /// Request handler errors are passed to the control service as
-    /// [`Control::Disconnect`](crate::Control::Disconnect) and close the
-    /// connection. This error is returned only if the control service
+    /// Request handler errors are passed to the control service, if one is
+    /// set, as [`Control::Disconnect`](crate::Control::Disconnect) and close
+    /// the connection. This error is returned only if the control service
     /// itself fails.
     #[error("Control service error")]
     Service(Err),

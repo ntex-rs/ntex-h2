@@ -1,6 +1,6 @@
 # Changes
 
-## [4.5.2] - 2026-11-18
+## [4.6.0] - 2026-11-18
 
 * Do not panic in debug builds when a pending send capacity wait moves to
   another task, such as a handler call spawned by the dispatcher after its
@@ -8,6 +8,12 @@
 
 * Reduce the size of the per-frame dispatcher future, `SETTINGS`, `GOAWAY`,
   error and stop handling are boxed off the `HEADERS`/`DATA` path
+
+* Make the control service optional, the server and the client do not create
+  a default control service, control events without a control service get
+  the default `Control::ack()` response
+
+* Add `server::handle_one2()` with an optional control service
 
 ## [4.5.1] - 2026-11-17
 
