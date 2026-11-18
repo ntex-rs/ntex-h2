@@ -1,4 +1,5 @@
-use std::{fmt, future::Future, pin::Pin, rc::Rc, task::Context, task::Poll, time::SystemTime};
+use std::{convert::Infallible, fmt, future::Future, pin::Pin, rc::Rc};
+use std::{task::Context, task::Poll, time::SystemTime};
 
 use ntex_bytes::{BufMut, ByteString, BytesMut};
 use ntex_dispatcher::Dispatcher as IoDispatcher;
@@ -9,7 +10,7 @@ use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
 use crate::{OperationError, ServiceConfig, codec::Codec, stream::Stream};
-use crate::{connection::Connection, default::DefaultControlService, dispatcher::Dispatcher};
+use crate::{connection::Connection, dispatcher::Dispatcher};
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
 
@@ -70,10 +71,10 @@ impl SimpleClient {
 
         let disp = Pipeline::new(
             (),
-            Dispatcher::new(
+            Dispatcher::<Infallible, _>::new(
                 con.clone(),
                 Pipeline::new((), HandleService::new(storage.clone())),
-                Pipeline::new((), DefaultControlService),
+                None,
             ),
         );
 

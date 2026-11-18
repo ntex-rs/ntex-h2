@@ -5,8 +5,8 @@ use ntex::io::{Io, IoBoxed, testing::IoTest};
 use ntex::service::{Ctx, Pipeline, Service, ServiceFactory, cfg::SharedCfg};
 use ntex::time::{Millis, Seconds};
 use ntex_h2::client::SimpleClient;
-use ntex_h2::server::{Server, ServerError, handle_one};
-use ntex_h2::{Control, ControlAck, Message, ServiceConfig, frame};
+use ntex_h2::server::{Server, ServerError, handle_one, handle_one2};
+use ntex_h2::{Control, ControlAck, Message, MessageKind, OperationError, ServiceConfig, frame};
 
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -270,6 +270,61 @@ async fn server_control_error_is_returned() {
         .unwrap()
         .unwrap_err();
     assert!(matches!(err, ServerError::Service("control failed")));
+}
+
+/// STATEMENT: Without a control service, a failing publish service closes the connection
+/// and the server completes without an error.
+///
+/// HOW:
+/// - Serve a connection with `Server::new` and with `handle_one2(.., None)`, using a publish
+///   handler that fails.
+/// - Send a client request and wait for the server result with a one-second timeout.
+/// - Assert the server returns `Ok(())`, the response stream receives
+///   `OperationError::Disconnected` and the client connection is closed.
+#[ntex::test]
+async fn server_without_control_service() {
+    for use_server in [true, false] {
+        let (client_io, server_io) = IoTest::create();
+        client_io.remote_buffer_cap(1024 * 1024);
+        server_io.remote_buffer_cap(1024 * 1024);
+
+        let (tx, rx) = ntex::channel::oneshot::channel();
+        ntex::rt::spawn(async move {
+            let io = Io::new(server_io, SharedCfg::default());
+            let result = if use_server {
+                Server::new(async |_msg: Message| Err::<(), ()>(())).run(io).await
+            } else {
+                let publish = Pipeline::new((), async |_msg: Message| Err::<(), ()>(()));
+                handle_one2(io.into(), publish, None).await
+            };
+            let _ = tx.send(result);
+        });
+
+        let client = SimpleClient::new(
+            Io::new(client_io, SharedCfg::default()),
+            false,
+            "localhost".into(),
+        );
+        let (_snd, rcv) = client
+            .send(Method::GET, "/".into(), HeaderMap::new(), true)
+            .await
+            .unwrap();
+
+        ntex::time::timeout(Millis(1_000), rx)
+            .await
+            .expect("server did not stop")
+            .unwrap()
+            .unwrap();
+        let msg = rcv.recv().await.unwrap();
+        assert!(
+            matches!(
+                &msg.kind,
+                MessageKind::Disconnect(err) if matches!(**err, OperationError::Disconnected)
+            ),
+            "{msg:?}"
+        );
+        assert!(client.is_closed());
+    }
 }
 
 /// STATEMENT: `handle_one` rejects an invalid connection preface before processing requests.

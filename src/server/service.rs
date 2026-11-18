@@ -8,10 +8,12 @@ use ntex_service::{Ctx, IntoServiceFactory, RequestState, Service, ServiceFactor
 use ntex_util::{channel::pool, time::timeout_checked};
 
 use crate::control::{Control, ControlAck};
-use crate::{codec::Codec, connection::Connection, default::DefaultControlService};
-use crate::{config::ServiceConfig, consts, dispatcher::Dispatcher, frame, message::Message};
+use crate::{codec::Codec, config::ServiceConfig, connection::Connection, consts};
+use crate::{dispatcher::Dispatcher, frame, message::Message};
 
 use super::ServerError;
+
+type ControlFactory<St, PErr, Err> = PipelineFactory<St, Control<PErr>, ControlAck, Err, Box<dyn Error>>;
 
 // The dispatcher service can outlive its driver through detached publish calls.
 // Dropped after the protocol dispatcher, no frames are decoded or encoded anymore.
@@ -35,7 +37,7 @@ where
     Req: RequestState<IoBoxed>,
 {
     publish: PipelineFactory<Req::State, Message, (), PErr, Box<dyn Error>>,
-    control: PipelineFactory<Req::State, Control<PErr>, ControlAck, Err, Box<dyn Error>>,
+    control: Option<ControlFactory<Req::State, PErr, Err>>,
     pool: pool::Pool<()>,
 }
 
@@ -48,7 +50,9 @@ where
     /// Creates a server with the specified request service factory.
     ///
     /// The publish service is created once per connection and is called with
-    /// a [`Message`] for every event of peer-initiated streams.
+    /// a [`Message`] for every event of peer-initiated streams. Control events
+    /// get the default acknowledgment unless a control service is set with
+    /// [`Server::control`].
     pub fn new<Pub>(publish: impl IntoServiceFactory<Pub, Req::State, Message>) -> Self
     where
         Pub: ServiceFactory<Req::State, Message, Res = (), Error = PErr> + 'static,
@@ -56,7 +60,7 @@ where
     {
         Self {
             publish: PipelineFactory::new(publish.into_factory().map_init_err(Into::into)),
-            control: PipelineFactory::new(DefaultControlService.map_init_err(Into::into)),
+            control: None,
             pool: pool::new(),
         }
     }
@@ -72,7 +76,8 @@ where
     /// Sets the service factory used to handle connection control events.
     ///
     /// The control service is created once per connection, after the publish
-    /// service. The default control service acknowledges every event.
+    /// service. Without a control service, every event gets the default
+    /// acknowledgment, [`Control::ack`].
     #[must_use]
     pub fn control<S>(
         self,
@@ -84,7 +89,7 @@ where
     {
         Server {
             publish: self.publish,
-            control: PipelineFactory::new(f.into_factory().map_init_err(Into::into)),
+            control: Some(PipelineFactory::new(f.into_factory().map_init_err(Into::into))),
             pool: self.pool,
         }
     }
@@ -99,9 +104,9 @@ where
 {
     /// Runs one HTTP/2 server connection.
     ///
-    /// Reads the connection preface, creates the publish and control services
-    /// and serves the connection until it is closed. The preface and the
-    /// services creation are limited by
+    /// Reads the connection preface, creates the publish and the optional
+    /// control services and serves the connection until it is closed. The
+    /// preface and the services creation are limited by
     /// [`ServiceConfig::set_handshake_timeout`](crate::ServiceConfig::set_handshake_timeout).
     ///
     /// Dropping this future disconnects open streams and wakes their waiters.
@@ -121,11 +126,11 @@ where
                 .create(st.clone())
                 .await
                 .map_err(ServerError::PublishService)?;
-            let ctl_svc = self
-                .control
-                .create(st)
-                .await
-                .map_err(ServerError::ControlService)?;
+            let ctl_svc = if let Some(control) = &self.control {
+                Some(control.create(st).await.map_err(ServerError::ControlService)?)
+            } else {
+                None
+            };
             Ok::<_, ServerError<Err>>((pub_svc, ctl_svc))
         })
         .await
@@ -211,10 +216,26 @@ thread_local! {
 ///
 /// Dropping this future disconnects open streams and wakes their waiters.
 /// Cancellation does not wait for asynchronous service shutdown.
-pub async fn handle_one<Err: 'static, PErr: 'static>(
+pub fn handle_one<Err: 'static, PErr: 'static>(
     io: IoBoxed,
     pub_svc: Pipeline<Message, (), PErr>,
     ctl_svc: Pipeline<Control<PErr>, ControlAck, Err>,
+) -> impl Future<Output = Result<(), ServerError<Err>>> {
+    handle_one2(io, pub_svc, Some(ctl_svc))
+}
+
+/// Serves one established HTTP/2 transport with an optional control service.
+///
+/// Same as [`handle_one`], but the control service is optional. Without a
+/// control service, every control event gets the default acknowledgment,
+/// [`Control::ack`].
+///
+/// Dropping this future disconnects open streams and wakes their waiters.
+/// Cancellation does not wait for asynchronous service shutdown.
+pub async fn handle_one2<Err: 'static, PErr: 'static>(
+    io: IoBoxed,
+    pub_svc: Pipeline<Message, (), PErr>,
+    ctl_svc: Option<Pipeline<Control<PErr>, ControlAck, Err>>,
 ) -> Result<(), ServerError<Err>> {
     let config: Cfg<ServiceConfig> = io.shared().get();
 
@@ -358,13 +379,9 @@ mod tests {
             .await
             .unwrap();
         } else {
-            handle_one(
-                io,
-                Pipeline::new((), Publish(observed)),
-                Pipeline::new((), DefaultControlService),
-            )
-            .await
-            .unwrap();
+            handle_one2::<Infallible, _>(io, Pipeline::new((), Publish(observed)), None)
+                .await
+                .unwrap();
         }
     }
 
@@ -404,7 +421,7 @@ mod tests {
     /// by pending publish calls.
     ///
     /// HOW:
-    /// - Exercise both `Server::run` and `handle_one`, with publish calls either completing or
+    /// - Exercise both `Server::run` and `handle_one2`, with publish calls either completing or
     ///   blocking.
     /// - Drive two requests until their stream states are observed, covering dispatcher-held
     ///   and detached call futures.
@@ -443,7 +460,7 @@ mod tests {
     /// reset waiters.
     ///
     /// HOW:
-    /// - For both `Server::run` and `handle_one`, open a stream with zero peer send capacity
+    /// - For both `Server::run` and `handle_one2`, open a stream with zero peer send capacity
     ///   and poll capacity and reset waiters to pending.
     /// - Drop the server future and assert the capacity waker fires, capacity fails with
     ///   `OperationError::Disconnected`, and the stream is failed.
@@ -493,7 +510,7 @@ mod tests {
     /// its streams.
     ///
     /// HOW:
-    /// - For both `Server::run` and `handle_one`, open a stream with publish-service shutdown
+    /// - For both `Server::run` and `handle_one2`, open a stream with publish-service shutdown
     ///   configured to remain pending.
     /// - Close the peer, drive execution until service shutdown starts, and drop the server
     ///   future.
@@ -530,7 +547,7 @@ mod tests {
     /// `StreamRef` is still retained by user code.
     ///
     /// HOW:
-    /// - Exercise both `Server::run` and `handle_one` with a blocking handler.
+    /// - Exercise both `Server::run` and `handle_one2` with a blocking handler.
     /// - Send a request with a custom header and respond with a custom header so both
     ///   HPACK tables index entries.
     /// - Keep a strong `StreamRef`, drop the server future, and assert the codec reports
@@ -580,14 +597,14 @@ mod tests {
         }
     }
 
-    /// STATEMENT: `handle_one` connections use the per-thread readiness pool instead of
+    /// STATEMENT: `handle_one2` connections use the per-thread readiness pool instead of
     /// allocating a pool for each connection.
     ///
     /// HOW:
-    /// - Serve a request through `handle_one` with a blocking publish call and capture its stream.
+    /// - Serve a request through `handle_one2` with a blocking publish call and capture its stream.
     /// - Create a channel in the thread pool, then confirm the connection pool reports it.
     #[ntex::test]
-    async fn handle_one_shares_thread_pool() {
+    async fn handle_one2_shares_thread_pool() {
         let observed = Rc::new(Observed {
             block_calls: true,
             ..Observed::default()

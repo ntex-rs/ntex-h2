@@ -294,3 +294,29 @@ pub enum ExpectResult {
     /// Complete the request with the response status and headers.
     Failed(Expect, StatusCode, HeaderMap),
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frame::{Reason, StreamId};
+
+    /// STATEMENT: The default acknowledgment answers an application error with `GOAWAY` and
+    /// peer loss without a frame.
+    ///
+    /// HOW:
+    /// - Acknowledge `Control::error` for stream 3 and assert the frame is `GOAWAY` with
+    ///   `Reason::INTERNAL_ERROR` and last stream ID 3.
+    /// - Acknowledge `Control::peer_gone(None)` and assert the acknowledgment has no frame.
+    #[test]
+    fn default_ack() {
+        let ack = Control::error("err", StreamId::from(3)).ack();
+        let Some(Frame::GoAway(frm)) = ack.frame else {
+            panic!("expected GOAWAY: {:?}", ack.frame)
+        };
+        assert_eq!(frm.reason(), Reason::INTERNAL_ERROR);
+        assert_eq!(frm.last_stream_id(), StreamId::from(3));
+
+        let ack = Control::<&str>::peer_gone(None).ack();
+        assert!(ack.frame.is_none());
+    }
+}
