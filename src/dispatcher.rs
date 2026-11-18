@@ -1,4 +1,5 @@
-use std::{cell::Cell, future, future::Future, rc::Rc, task::Poll};
+use std::task::{Context, Poll, ready};
+use std::{cell::Cell, future, future::Future, pin::Pin, rc::Rc};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
@@ -446,62 +447,94 @@ impl<Err, PErr> Inner<Err, PErr> {
     }
 }
 
-async fn control<Err, PErr>(pkt: Control<PErr>, inner: &Inner<Err, PErr>) -> Result<Option<Frame>, Err>
+fn control<Err, PErr>(
+    pkt: Control<PErr>,
+    inner: &Inner<Err, PErr>,
+) -> impl Future<Output = CallResult<Err>>
 where
     Err: 'static,
     PErr: 'static,
 {
-    if inner.can_disconnect() {
-        call_control(pkt, inner, true).await
+    let fut = if inner.can_disconnect() {
+        Some(inner.control.call(pkt))
     } else {
         // control service is already notified (graceful GOAWAY), use default response
         if let Some(frm) = pkt.ack().frame {
             inner.connection.encode(frm);
         }
         inner.connection.close();
-        Ok(None)
+        None
+    };
+    CallControl {
+        fut,
+        inner,
+        close: true,
     }
 }
 
-async fn go_away<Err, PErr>(pkt: Control<PErr>, inner: &Inner<Err, PErr>) -> Result<Option<Frame>, Err>
-where
-    Err: 'static,
-    PErr: 'static,
-{
-    if inner.can_disconnect() {
-        call_control(pkt, inner, false).await
-    } else {
-        Ok(None)
-    }
-}
-
-async fn call_control<Err, PErr>(
+fn go_away<Err, PErr>(
     pkt: Control<PErr>,
     inner: &Inner<Err, PErr>,
-    close: bool,
-) -> Result<Option<Frame>, Err>
+) -> impl Future<Output = CallResult<Err>>
 where
     Err: 'static,
     PErr: 'static,
 {
-    match inner.control.call(pkt).await {
-        Ok(res) => {
-            if let Some(frm) = res.frame {
-                inner.connection.encode(frm);
+    let fut = if inner.can_disconnect() {
+        Some(inner.control.call(pkt))
+    } else {
+        None
+    };
+    CallControl {
+        fut,
+        inner,
+        close: false,
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Control service call, resolves to `Ok(None)` without a call.
+    struct CallControl<'a, F, Err, PErr> {
+        #[pin]
+        fut: Option<F>,
+        inner: &'a Inner<Err, PErr>,
+        close: bool,
+    }
+}
+
+impl<F, Err, PErr> Future for CallControl<'_, F, Err, PErr>
+where
+    F: Future<Output = Result<ControlAck, Err>>,
+{
+    type Output = CallResult<Err>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        let Some(fut) = this.fut.as_pin_mut() else {
+            return Poll::Ready(Ok(None));
+        };
+        let inner = *this.inner;
+
+        Poll::Ready(match ready!(fut.poll(cx)) {
+            Ok(res) => {
+                if let Some(frm) = res.frame {
+                    inner.connection.encode(frm);
+                }
+                if *this.close {
+                    inner.connection.close();
+                }
+                Ok(None)
             }
-            if close {
+            Err(err) => {
+                // we cannot handle control service errors, close connection
+                inner.connection.encode(
+                    GoAway::new(Reason::INTERNAL_ERROR)
+                        .set_last_stream_id(inner.connection.last_stream_id()),
+                );
                 inner.connection.close();
+                Err(err)
             }
-            Ok(None)
-        }
-        Err(err) => {
-            // we cannot handle control service errors, close connection
-            inner.connection.encode(
-                GoAway::new(Reason::INTERNAL_ERROR).set_last_stream_id(inner.connection.last_stream_id()),
-            );
-            inner.connection.close();
-            Err(err)
-        }
+        })
     }
 }
 

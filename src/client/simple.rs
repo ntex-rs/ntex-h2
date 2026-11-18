@@ -8,7 +8,7 @@ use ntex_io::{IoBoxed, IoRef, Waiter};
 use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
-use crate::{OperationError, ServiceConfig, codec::Codec};
+use crate::{OperationError, ServiceConfig, codec::Codec, stream::Stream};
 use crate::{connection::Connection, default::DefaultControlService, dispatcher::Dispatcher};
 
 use super::stream::{HandleService, InflightStorage, RecvStream, SendStream};
@@ -125,20 +125,20 @@ impl SimpleClient {
     /// `path` is the `:path` pseudo-header including the query. If `eof` is
     /// `true` the headers end the request, otherwise the body is sent with the
     /// returned [`SendStream`].
-    pub async fn send(
+    pub fn send(
         &self,
         method: Method,
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
-        let stream = self
-            .0
-            .con
-            .send_request(self.0.authority.clone(), method, path, headers, eof)
-            .await?;
-
-        Ok(self.0.storage.inflight(stream))
+    ) -> impl Future<Output = Result<(SendStream, RecvStream), Error<OperationError>>> {
+        SendFut {
+            fut: self
+                .0
+                .con
+                .send_request(self.0.authority.clone(), method, path, headers, eof),
+            storage: &self.0.storage,
+        }
     }
 
     /// Reserves a stream for a later request.
@@ -382,6 +382,27 @@ impl Future for ClientDisconnect {
             )));
         }
         Poll::Pending
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Send request future, registers the opened stream.
+    struct SendFut<'a, F> {
+        #[pin]
+        fut: F,
+        storage: &'a InflightStorage,
+    }
+}
+
+impl<F> Future for SendFut<'_, F>
+where
+    F: Future<Output = Result<Stream, Error<OperationError>>>,
+{
+    type Output = Result<(SendStream, RecvStream), Error<OperationError>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        this.fut.poll(cx).map_ok(|stream| this.storage.inflight(stream))
     }
 }
 

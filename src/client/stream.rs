@@ -130,22 +130,30 @@ impl SendStream {
     /// Sends payload bytes, waiting for flow-control capacity as needed.
     ///
     /// See [`StreamRef::send_pages`](crate::StreamRef::send_pages).
-    pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    pub fn send_payload<D>(
+        &self,
+        data: D,
+        eof: bool,
+    ) -> impl Future<Output = Result<(), Error<OperationError>>>
     where
         Bytes: From<D>,
     {
-        self.send_pages(Bytes::from(data), eof).await
+        self.0.send_payload(data, eof)
     }
 
     #[inline]
     /// Sends paged payload data, waiting for flow-control capacity as needed.
     ///
     /// See [`StreamRef::send_pages`](crate::StreamRef::send_pages).
-    pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    pub fn send_pages<D>(
+        &self,
+        data: D,
+        eof: bool,
+    ) -> impl Future<Output = Result<(), Error<OperationError>>>
     where
         StreamData: From<D>,
     {
-        self.0.send_pages(data, eof).await
+        self.0.send_pages(data, eof)
     }
 
     #[inline]
@@ -303,7 +311,7 @@ impl Service<(), Message> for HandleService {
     type Res = ();
     type Error = ();
 
-    async fn call(&self, msg: Message, _: Ctx<'_, Self, ()>) -> Result<(), ()> {
+    fn call(&self, msg: Message, _: Ctx<'_, Self, ()>) -> impl Future<Output = Result<(), ()>> {
         let id = msg.id();
         if let Some(inflight) = self.0.0.inflight.borrow_mut().get_mut(&id) {
             inflight.push(msg);
@@ -313,7 +321,7 @@ impl Service<(), Message> for HandleService {
                 msg.stream().tag(),
             );
         }
-        Ok(())
+        std::future::ready(Ok(()))
     }
 }
 

@@ -1,4 +1,5 @@
-use std::marker::PhantomData;
+use std::task::{Context, Poll, ready};
+use std::{future::Future, marker::PhantomData, pin::Pin};
 
 use ntex_bytes::ByteString;
 use ntex_error::Error;
@@ -83,13 +84,18 @@ where
     type Error = Error<ClientError>;
 
     /// Connects to an HTTP/2 server.
-    async fn call(&self, req: A, ctx: Ctx<'_, Self, SharedCfg>) -> Result<Self::Res, Self::Error> {
+    fn call(
+        &self,
+        req: A,
+        ctx: Ctx<'_, Self, SharedCfg>,
+    ) -> impl Future<Output = Result<Self::Res, Self::Error>> {
         let authority = ByteString::from(req.host());
 
         let cfg = ctx.st().get::<ServiceConfig>();
         let timeout = cfg.handshake_timeout;
+        let service = cfg.service();
 
-        let fut = async {
+        let fut = async move {
             let io = ctx
                 .call(&self.svc, Connect::new(req))
                 .await
@@ -97,7 +103,7 @@ where
 
             Ok::<_, Error<ClientError>>(SimpleClient::with_params(
                 io.into(),
-                cfg.clone(),
+                cfg,
                 self.secure,
                 authority,
                 false,
@@ -106,10 +112,10 @@ where
             ))
         };
 
-        timeout_checked(timeout, fut)
-            .await
-            .map_err(|()| Error::from(ClientError::HandshakeTimeout).with_service(cfg.service()))
-            .and_then(|item| item)
+        ConnectFut {
+            fut: timeout_checked(timeout, fut),
+            service,
+        }
     }
 
     #[inline]
@@ -125,5 +131,30 @@ where
     #[inline]
     async fn shutdown(&self, ctx: Ctx<'_, Self, SharedCfg>) {
         ctx.shutdown(&self.svc).await;
+    }
+}
+
+pin_project_lite::pin_project! {
+    /// Connect future, maps the handshake timeout to an error.
+    struct ConnectFut<F> {
+        #[pin]
+        fut: F,
+        service: &'static str,
+    }
+}
+
+impl<F> Future for ConnectFut<F>
+where
+    F: Future<Output = Result<Result<SimpleClient, Error<ClientError>>, ()>>,
+{
+    type Output = Result<SimpleClient, Error<ClientError>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.project();
+        Poll::Ready(
+            ready!(this.fut.poll(cx))
+                .map_err(|()| Error::from(ClientError::HandshakeTimeout).with_service(this.service))
+                .and_then(|item| item),
+        )
     }
 }
