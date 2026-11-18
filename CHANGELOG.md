@@ -1,8 +1,13 @@
 # Changes
 
-## [4.5.2] - Unreleased
+## [4.5.2] - 2026-11-18
 
-* Do not panic in debug builds when a pending send capacity wait moves to another task, such as a handler call spawned by the dispatcher after its first poll
+* Do not panic in debug builds when a pending send capacity wait moves to
+  another task, such as a handler call spawned by the dispatcher after its
+  first poll
+
+* Reduce the size of the per-frame dispatcher future, `SETTINGS`, `GOAWAY`,
+  error and stop handling are boxed off the `HEADERS`/`DATA` path
 
 ## [4.5.1] - 2026-11-17
 
