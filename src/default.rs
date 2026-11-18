@@ -24,9 +24,14 @@ impl<St, E: fmt::Debug> Service<St, Control<E>> for DefaultControlService {
     type Res = ControlAck;
     type Error = Infallible;
 
-    async fn call(&self, msg: Control<E>, _: Ctx<'_, Self, St>) -> Result<Self::Res, Self::Error> {
+    fn call(
+        &self,
+        msg: Control<E>,
+        _: Ctx<'_, Self, St>,
+    ) -> impl Future<Output = Result<Self::Res, Self::Error>> {
         log::trace!("Default control service is used: {msg:?}");
-        Ok(msg.ack())
+        // `ControlAck` is larger than `msg`, build it on poll
+        async move { Ok(msg.ack()) }
     }
 }
 

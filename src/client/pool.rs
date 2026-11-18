@@ -77,18 +77,22 @@ impl Client {
     ///
     /// Waits for a connection that can open a stream, see
     /// [`SimpleClient::send`] for the arguments.
-    pub async fn send(
+    // `async fn` would store the arguments twice, as captures and as locals
+    #[allow(clippy::manual_async_fn)]
+    pub fn send(
         &self,
         method: Method,
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<(SendStream, RecvStream), Error<ClientError>> {
-        self.client()
-            .await?
-            .send(method, path, headers, eof)
-            .await
-            .map_err(|e| e.map(ClientError::from))
+    ) -> impl Future<Output = Result<(SendStream, RecvStream), Error<ClientError>>> {
+        async move {
+            self.client()
+                .await?
+                .send(method, path, headers, eof)
+                .await
+                .map_err(|e| e.map(ClientError::from))
+        }
     }
 
     /// Returns a connection that can open a stream.

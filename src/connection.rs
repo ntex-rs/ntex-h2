@@ -485,32 +485,36 @@ impl Connection {
         }
     }
 
-    pub(crate) async fn send_request(
+    // `async fn` would store the arguments twice, as captures and as locals
+    #[allow(clippy::manual_async_fn)]
+    pub(crate) fn send_request(
         &self,
         authority: ByteString,
         method: Method,
         path: ByteString,
         headers: HeaderMap,
         eof: bool,
-    ) -> Result<Stream, Error<OperationError>> {
-        self.check_error_with_disconnect()?;
+    ) -> impl Future<Output = Result<Stream, Error<OperationError>>> {
+        async move {
+            self.check_error_with_disconnect()?;
 
-        if !self.can_create_new_stream() {
-            log::warn!(
-                "{}: Cannot create new stream, waiting for available streams",
-                self.tag()
-            );
-            self.ready().await?;
-        }
+            if !self.can_create_new_stream() {
+                log::warn!(
+                    "{}: Cannot create new stream, waiting for available streams",
+                    self.tag()
+                );
+                self.ready().await?;
+            }
 
-        self.0
-            .active_local_streams
-            .set(self.0.active_local_streams.get() + 1);
-        let result = self.open_stream(authority, method, path, headers, eof);
-        if result.is_err() {
-            self.0.release_local_stream();
+            self.0
+                .active_local_streams
+                .set(self.0.active_local_streams.get() + 1);
+            let result = self.open_stream(authority, method, path, headers, eof);
+            if result.is_err() {
+                self.0.release_local_stream();
+            }
+            result
         }
-        result
     }
 
     /// Reserves a local stream, the stream is counted as active.

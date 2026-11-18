@@ -925,11 +925,15 @@ impl StreamRef {
     /// Sends payload bytes, waiting for flow-control capacity as needed.
     ///
     /// See [`send_pages`](Self::send_pages).
-    pub async fn send_payload<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    pub fn send_payload<D>(
+        &self,
+        data: D,
+        eof: bool,
+    ) -> impl Future<Output = Result<(), Error<OperationError>>>
     where
         Bytes: From<D>,
     {
-        self.send_pages(Bytes::from(data), eof).await
+        self.send_pages(Bytes::from(data), eof)
     }
 
     /// Sends paged payload data, waiting for flow-control capacity as needed.
@@ -951,92 +955,102 @@ impl StreamRef {
     ///
     /// Only one task at a time may send payload or wait for capacity on the
     /// stream, see [`StreamRef`].
-    pub async fn send_pages<D>(&self, data: D, eof: bool) -> Result<(), Error<OperationError>>
+    pub fn send_pages<D>(
+        &self,
+        data: D,
+        eof: bool,
+    ) -> impl Future<Output = Result<(), Error<OperationError>>>
     where
         StreamData: From<D>,
     {
+        // convert eagerly, an `async fn` would keep both `D` and `StreamData`
         let mut data = StreamData::from(data);
 
-        match self.0.send.get() {
-            HalfState::Payload => {
-                // check if stream is disconnected
-                self.0.check_error()?;
+        async move {
+            match self.0.send.get() {
+                HalfState::Payload => {
+                    // check if stream is disconnected
+                    self.0.check_error()?;
 
-                #[cfg(feature = "trace")]
-                log::trace!(
-                    "{}: {:?} sending {} bytes, eof: {eof}, send: {:?}",
-                    self.0.tag(),
-                    self.0.id,
-                    data.len(),
-                    self.0.send.get()
-                );
+                    #[cfg(feature = "trace")]
+                    log::trace!(
+                        "{}: {:?} sending {} bytes, eof: {eof}, send: {:?}",
+                        self.0.tag(),
+                        self.0.id,
+                        data.len(),
+                        self.0.send.get()
+                    );
 
-                // eof and empty data
-                if data.is_empty() {
-                    if eof {
-                        let mut data = Data::new(self.0.id, Bytes::new());
-                        data.set_end_stream();
-                        self.0.state_send_close(None);
-
-                        // write to io buffer
-                        self.0.con.encode(data);
-                    }
-                    return Ok(());
-                }
-
-                // pass connection capacity left after sending to queued streams
-                let _guard = PassCapacity(&self.0.con);
-
-                loop {
-                    // the io write buffer is full, wait until the peer reads it
-                    if self.0.con.io().is_wr_backpressure() {
-                        self.write_ready().await?;
-                    }
-
-                    // calaculate available send window size
-                    self.release_claim();
-                    let win = self.available_send_capacity() as usize;
-                    if win > 0 {
-                        let size = cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
-
-                        // write to io buffer
-                        let empty = self
-                            .0
-                            .con
-                            .encode_data_frame(|buf| data.encode(self.0.tag(), self.0.id, size, eof, buf))
-                            .map_err(|_| OperationError::Disconnected)
-                            .into_error()?;
-
-                        if eof && empty {
+                    // eof and empty data
+                    if data.is_empty() {
+                        if eof {
+                            let mut data = Data::new(self.0.id, Bytes::new());
+                            data.set_end_stream();
                             self.0.state_send_close(None);
+
+                            // write to io buffer
+                            self.0.con.encode(data);
+                        }
+                        return Ok(());
+                    }
+
+                    // pass connection capacity left after sending to queued streams
+                    let _guard = PassCapacity(&self.0.con);
+
+                    loop {
+                        // the io write buffer is full, wait until the peer reads it
+                        if self.0.con.io().is_wr_backpressure() {
+                            self.write_ready().await?;
                         }
 
-                        // update send window
-                        self.0.send_window.set(self.0.send_window.get().dec(size as u32));
+                        // calaculate available send window size
+                        self.release_claim();
+                        let win = self.available_send_capacity() as usize;
+                        if win > 0 {
+                            let size =
+                                cmp::min(win, cmp::min(data.len(), self.0.con.remote_frame_size()));
 
-                        // update connection send window
-                        self.0.con.consume_send_window(size as u32);
+                            // write to io buffer
+                            let empty = self
+                                .0
+                                .con
+                                .encode_data_frame(|buf| {
+                                    data.encode(self.0.tag(), self.0.id, size, eof, buf)
+                                })
+                                .map_err(|_| OperationError::Disconnected)
+                                .into_error()?;
 
-                        if empty {
-                            return Ok(());
+                            if eof && empty {
+                                self.0.state_send_close(None);
+                            }
+
+                            // update send window
+                            self.0.send_window.set(self.0.send_window.get().dec(size as u32));
+
+                            // update connection send window
+                            self.0.con.consume_send_window(size as u32);
+
+                            if empty {
+                                return Ok(());
+                            }
+                        } else {
+                            #[cfg(feature = "trace")]
+                            log::trace!(
+                                "{}: Not enough sending capacity for {:?} remaining {:?}",
+                                self.0.tag(),
+                                self.0.id,
+                                data.len()
+                            );
+
+                            // wait for available send window
+                            self.send_capacity().await?;
                         }
-                    } else {
-                        #[cfg(feature = "trace")]
-                        log::trace!(
-                            "{}: Not enough sending capacity for {:?} remaining {:?}",
-                            self.0.tag(),
-                            self.0.id,
-                            data.len()
-                        );
-
-                        // wait for available send window
-                        self.send_capacity().await?;
                     }
                 }
-            }
-            HalfState::Idle => Err(Error::new(OperationError::Idle, self.0.con.service())),
-            HalfState::Closed(reason) => {
-                Err(Error::new(OperationError::Closed(reason), self.0.con.service()))
+                HalfState::Idle => Err(Error::new(OperationError::Idle, self.0.con.service())),
+                HalfState::Closed(reason) => {
+                    Err(Error::new(OperationError::Closed(reason), self.0.con.service()))
+                }
             }
         }
     }

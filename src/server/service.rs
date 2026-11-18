@@ -178,8 +178,8 @@ where
     type Res = ();
     type Error = ServerError<Err>;
 
-    async fn call(&self, req: Req, _: Ctx<'_, Self, St>) -> Result<(), Self::Error> {
-        self.run(req).await
+    fn call(&self, req: Req, _: Ctx<'_, Self, St>) -> impl Future<Output = Result<(), Self::Error>> {
+        self.run(req)
     }
 }
 
