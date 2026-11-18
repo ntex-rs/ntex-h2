@@ -1,17 +1,24 @@
-use std::{cell::Cell, future, rc::Rc, task::Poll};
+use std::{cell::Cell, future, future::Future, rc::Rc, task::Poll};
 
 use ntex_dispatcher::{DispatchItem, Reason as DispReason};
 use ntex_error::Error;
 use ntex_service::pipeline::Pipeline;
 use ntex_service::{Ctx, Service};
-use ntex_util::{HashMap, future::Either, future::join, spawn};
+use ntex_util::{HashMap, future::BoxFuture, future::Either, future::join, spawn};
 
 use crate::connection::{Connection, EitherError, RecvHalfConnection};
 use crate::control::{Control, ControlAck};
 use crate::error::{ConnectionError, OperationError, StreamError};
-use crate::frame::{Frame, GoAway, Ping, Reason, Reset, StreamId};
+use crate::frame::{Frame, GoAway, Ping, Reason, Reset, Settings, StreamId};
 use crate::message::Message;
 use crate::{codec::Codec, stream::StreamRef};
+
+type CallResult<Err> = Result<Option<Frame>, Err>;
+type ReadyOrBoxed<'a, Err> = Either<future::Ready<CallResult<Err>>, BoxFuture<'a, CallResult<Err>>>;
+
+fn boxed<'a, T>(fut: impl Future<Output = T> + 'a) -> BoxFuture<'a, T> {
+    Box::pin(fut)
+}
 
 /// Amqp server dispatcher service.
 pub(crate) struct Dispatcher<Err, PErr> {
@@ -43,14 +50,20 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
         }
     }
 
-    async fn handle_message(
+    fn handle_message(
         &self,
         result: Result<Option<(StreamRef, Message)>, EitherError>,
-    ) -> Result<Option<Frame>, Err> {
+    ) -> Either<impl Future<Output = CallResult<Err>>, ReadyOrBoxed<'_, Err>> {
         match result {
-            Ok(Some((stream, msg))) => publish(msg, stream, &self.inner).await,
-            Ok(None) => Ok(None),
-            Err(Either::Left(err)) => {
+            Ok(Some((stream, msg))) => Either::Left(publish(msg, stream, &self.inner)),
+            Ok(None) => Either::Right(Either::Left(future::ready(Ok(None)))),
+            Err(err) => Either::Right(Either::Right(boxed(self.handle_error(err)))),
+        }
+    }
+
+    async fn handle_error(&self, err: EitherError) -> CallResult<Err> {
+        match err {
+            Either::Left(err) => {
                 log::error!(
                     "{}: Connection failed during message handling: {err:?}",
                     self.connection.tag()
@@ -63,7 +76,7 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
                 )
                 .await
             }
-            Err(Either::Right(err)) => {
+            Either::Right(err) => {
                 let (stream, kind) = err.into_inner();
 
                 if matches!(&*kind, StreamError::Reset(_)) {
@@ -112,6 +125,136 @@ impl<Err: 'static, PErr: 'static> Dispatcher<Err, PErr> {
             });
         }
     }
+
+    async fn settings(&self, settings: Settings) -> CallResult<Err> {
+        match self.connection.recv_settings(settings) {
+            Err(Either::Left(err)) => {
+                let streams = self.connection.proto_error(&err);
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+            }
+            Err(Either::Right(errs)) => {
+                // handle stream errors
+                for err in errs {
+                    let (stream, kind) = err.into_inner();
+                    stream.set_failed_stream(kind.clone().map(OperationError::from));
+
+                    self.connection.encode(Reset::new(stream.id(), kind.reason()));
+                    let _ = publish(Message::error(kind, &stream), stream, &self.inner).await;
+                }
+                Ok(None)
+            }
+            Ok(()) => Ok(None),
+        }
+    }
+
+    async fn go_away(&self, frm: GoAway) -> CallResult<Err> {
+        log::trace!("{}: Processing GoAway: {:#?}", self.connection.tag(), frm);
+        let reason = frm.reason();
+        let streams = self
+            .connection
+            .recv_go_away(reason, frm.last_stream_id(), frm.data());
+        self.handle_connection_error(
+            streams,
+            &Error::new(ConnectionError::GoAway(reason), self.connection.service()),
+        );
+        // remaining streams complete, connection closes when they are done
+        go_away(Control::go_away(frm), &self.inner).await
+    }
+
+    async fn stop(&self, reason: DispReason<Codec>) -> CallResult<Err> {
+        match reason {
+            DispReason::Encoder(err) => self.codec_error(err.into()).await,
+            DispReason::Decoder(err) => self.codec_error(err.into()).await,
+            DispReason::KeepAlive if self.connection.is_settings_timeout() => {
+                log::warn!(
+                    "{}: did not receive settings ack in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.settings_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::SettingsTimeout, self.connection.service());
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+            }
+            DispReason::KeepAlive => {
+                log::warn!(
+                    "{}: did not receive pong response in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.ping_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::KeepaliveTimeout, self.connection.service());
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+            }
+            DispReason::ReadTimeout => {
+                log::warn!(
+                    "{}: did not receive complete frame in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.read_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::ReadTimeout, self.connection.service());
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+            }
+            DispReason::WriteTimeout => {
+                log::warn!(
+                    "{}: did not send write buffer in time, closing connection",
+                    self.connection.tag(),
+                );
+                let streams = self.connection.write_timeout();
+                let err: Error<ConnectionError> =
+                    Error::new(ConnectionError::WriteTimeout, self.connection.service());
+                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
+                control(
+                    Control::proto_error(err, self.connection.last_stream_id()),
+                    &self.inner,
+                )
+                .await
+            }
+            DispReason::Io(err) => {
+                let streams = self.connection.disconnect();
+                self.handle_connection_error(
+                    streams,
+                    &Error::new(OperationError::Disconnected, self.connection.service()),
+                );
+                control(Control::peer_gone(err), &self.inner).await
+            }
+            DispReason::Service => {
+                // the dispatcher does not deliver any further items, release the
+                // open streams so pending handlers do not block the shutdown
+                let streams = self.connection.disconnect();
+                self.handle_connection_error(
+                    streams,
+                    &Error::new(OperationError::Disconnected, self.connection.service()),
+                );
+                self.inner.connection.encode(
+                    GoAway::new(Reason::INTERNAL_ERROR)
+                        .set_last_stream_id(self.inner.connection.last_stream_id()),
+                );
+                self.inner.connection.close();
+                Ok(None)
+            }
+        }
+    }
 }
 
 impl<Err, PErr> Service<(), DispatchItem<Codec>> for Dispatcher<Err, PErr>
@@ -152,191 +295,92 @@ where
     }
 
     #[allow(clippy::used_underscore_binding)]
-    async fn call(
+    fn call(
         &self,
         req: DispatchItem<Codec>,
         _: Ctx<'_, Self, ()>,
-    ) -> Result<Self::Res, Self::Error> {
+    ) -> impl Future<Output = Result<Self::Res, Self::Error>> {
         #[cfg(feature = "trace")]
         log::debug!("{}: Handle h2 message: {req:?}", self.connection.tag());
 
-        match req {
-            DispatchItem::Item(frame) if let Err(err) = self.connection.check_first_frame(&frame) => {
-                self.handle_message(Err(Either::Left(err))).await
+        let frame = match req {
+            DispatchItem::Item(frame) => frame,
+            DispatchItem::Stop(reason) => {
+                return Either::Right(Either::Right(boxed(self.stop(reason))));
             }
-            DispatchItem::Item(frame) => match frame {
-                Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)).await,
-                Frame::Data(data) => self.handle_message(self.connection.recv_data(data)).await,
-                Frame::Settings(settings) => match self.connection.recv_settings(settings) {
-                    Err(Either::Left(err)) => {
-                        let streams = self.connection.proto_error(&err);
-                        self.handle_connection_error(streams, &err.clone().map(OperationError::from));
-                        control(
-                            Control::proto_error(err, self.connection.last_stream_id()),
-                            &self.inner,
-                        )
-                        .await
-                    }
-                    Err(Either::Right(errs)) => {
-                        // handle stream errors
-                        for err in errs {
-                            let (stream, kind) = err.into_inner();
-                            stream.set_failed_stream(kind.clone().map(OperationError::from));
-
-                            self.connection.encode(Reset::new(stream.id(), kind.reason()));
-                            let _ = publish(Message::error(kind, &stream), stream, &self.inner).await;
-                        }
-                        Ok(None)
-                    }
-                    Ok(()) => Ok(None),
-                },
-                Frame::WindowUpdate(update) => {
-                    self.handle_message(self.connection.recv_window_update(update).map(|()| None))
-                        .await
+            DispatchItem::Control(_) => return Either::Right(Either::Left(future::ready(Ok(None)))),
+        };
+        if let Err(err) = self.connection.check_first_frame(&frame) {
+            return self.handle_message(Err(Either::Left(err)));
+        }
+        match frame {
+            Frame::Headers(hdrs) => self.handle_message(self.connection.recv_headers(hdrs)),
+            Frame::Data(data) => self.handle_message(self.connection.recv_data(data)),
+            Frame::Settings(settings) => Either::Right(Either::Right(boxed(self.settings(settings)))),
+            Frame::WindowUpdate(update) => {
+                self.handle_message(self.connection.recv_window_update(update).map(|()| None))
+            }
+            Frame::Reset(reset) => {
+                self.handle_message(self.connection.recv_rst_stream(reset).map(|()| None))
+            }
+            Frame::Ping(ping) => {
+                #[cfg(feature = "trace")]
+                log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
+                if ping.is_ack() {
+                    self.connection.recv_pong(&ping);
+                    Either::Right(Either::Left(future::ready(Ok(None))))
+                } else {
+                    Either::Right(Either::Left(future::ready(Ok(Some(
+                        Ping::pong(ping.into_payload()).into(),
+                    )))))
                 }
-                Frame::Reset(reset) => {
-                    self.handle_message(self.connection.recv_rst_stream(reset).map(|()| None))
-                        .await
-                }
-                Frame::Ping(ping) => {
-                    #[cfg(feature = "trace")]
-                    log::trace!("{}: Processing PING: {:#?}", self.connection.tag(), ping);
-                    if ping.is_ack() {
-                        self.connection.recv_pong(&ping);
-                        Ok(None)
-                    } else {
-                        Ok(Some(Ping::pong(ping.into_payload()).into()))
-                    }
-                }
-                Frame::GoAway(frm) => {
-                    log::trace!("{}: Processing GoAway: {:#?}", self.connection.tag(), frm);
-                    let reason = frm.reason();
-                    let streams = self
-                        .connection
-                        .recv_go_away(reason, frm.last_stream_id(), frm.data());
-                    self.handle_connection_error(
-                        streams,
-                        &Error::new(ConnectionError::GoAway(reason), self.connection.service()),
-                    );
-                    // remaining streams complete, connection closes when they are done
-                    go_away(Control::go_away(frm), &self.inner).await
-                }
-                Frame::Invalid(frm) => self.handle_message(self.connection.recv_invalid_frame(frm)).await,
-                Frame::Priority(_prio) => {
-                    #[cfg(feature = "trace")]
-                    log::debug!(
-                        "{}: PRIORITY frame is not supported: {_prio:#?}",
-                        self.connection.tag(),
-                    );
-                    Ok(None)
-                }
-            },
-            DispatchItem::Stop(DispReason::Encoder(err)) => self.codec_error(err.into()).await,
-            DispatchItem::Stop(DispReason::Decoder(err)) => self.codec_error(err.into()).await,
-            DispatchItem::Stop(DispReason::KeepAlive) if self.connection.is_settings_timeout() => {
-                log::warn!(
-                    "{}: did not receive settings ack in time, closing connection",
+            }
+            Frame::GoAway(frm) => Either::Right(Either::Right(boxed(self.go_away(frm)))),
+            Frame::Invalid(frm) => self.handle_message(self.connection.recv_invalid_frame(frm)),
+            Frame::Priority(_prio) => {
+                #[cfg(feature = "trace")]
+                log::debug!(
+                    "{}: PRIORITY frame is not supported: {_prio:#?}",
                     self.connection.tag(),
                 );
-                let streams = self.connection.settings_timeout();
-                let err: Error<ConnectionError> =
-                    Error::new(ConnectionError::SettingsTimeout, self.connection.service());
-                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
+                Either::Right(Either::Left(future::ready(Ok(None))))
             }
-            DispatchItem::Stop(DispReason::KeepAlive) => {
-                log::warn!(
-                    "{}: did not receive pong response in time, closing connection",
-                    self.connection.tag(),
-                );
-                let streams = self.connection.ping_timeout();
-                let err: Error<ConnectionError> =
-                    Error::new(ConnectionError::KeepaliveTimeout, self.connection.service());
-                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
-            }
-            DispatchItem::Stop(DispReason::ReadTimeout) => {
-                log::warn!(
-                    "{}: did not receive complete frame in time, closing connection",
-                    self.connection.tag(),
-                );
-                let streams = self.connection.read_timeout();
-                let err: Error<ConnectionError> =
-                    Error::new(ConnectionError::ReadTimeout, self.connection.service());
-                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
-            }
-            DispatchItem::Stop(DispReason::WriteTimeout) => {
-                log::warn!(
-                    "{}: did not send write buffer in time, closing connection",
-                    self.connection.tag(),
-                );
-                let streams = self.connection.write_timeout();
-                let err: Error<ConnectionError> =
-                    Error::new(ConnectionError::WriteTimeout, self.connection.service());
-                self.handle_connection_error(streams, &err.clone().map(OperationError::from));
-                control(
-                    Control::proto_error(err, self.connection.last_stream_id()),
-                    &self.inner,
-                )
-                .await
-            }
-            DispatchItem::Stop(DispReason::Io(err)) => {
-                let streams = self.connection.disconnect();
-                self.handle_connection_error(
-                    streams,
-                    &Error::new(OperationError::Disconnected, self.connection.service()),
-                );
-                control(Control::peer_gone(err), &self.inner).await
-            }
-            DispatchItem::Stop(DispReason::Service) => {
-                // the dispatcher does not deliver any further items, release the
-                // open streams so pending handlers do not block the shutdown
-                let streams = self.connection.disconnect();
-                self.handle_connection_error(
-                    streams,
-                    &Error::new(OperationError::Disconnected, self.connection.service()),
-                );
-                self.inner.connection.encode(
-                    GoAway::new(Reason::INTERNAL_ERROR)
-                        .set_last_stream_id(self.inner.connection.last_stream_id()),
-                );
-                self.inner.connection.close();
-                Ok(None)
-            }
-            DispatchItem::Control(_) => Ok(None),
         }
     }
 }
 
-async fn publish<Err, PErr>(
+fn publish<Err, PErr>(
     msg: Message,
     stream: StreamRef,
     inner: &Inner<Err, PErr>,
-) -> Result<Option<Frame>, Err>
+) -> impl Future<Output = CallResult<Err>>
 where
     Err: 'static,
     PErr: 'static,
 {
     // the final message of a reset stream is always published
-    let result = if stream.is_remote() && !stream.has_error() {
+    let watch_reset = stream.is_remote() && !stream.has_error();
+    // created eagerly so the future does not retain `msg`
+    let call = inner.publish.call(msg);
+    publish_inner(call, stream, inner, watch_reset)
+}
+
+async fn publish_inner<Err, PErr, F>(
+    call: F,
+    stream: StreamRef,
+    inner: &Inner<Err, PErr>,
+    watch_reset: bool,
+) -> CallResult<Err>
+where
+    Err: 'static,
+    PErr: 'static,
+    F: Future<Output = Result<(), PErr>>,
+{
+    let result = if watch_reset {
         // a reset wakes all publish calls of the stream
         let io = inner.connection.io();
         let waiter = stream.on_reset();
-        let fut = inner.publish.call(msg);
-        let mut pinned = std::pin::pin!(fut);
+        let mut pinned = std::pin::pin!(call);
         let mut first = true;
         let mut watch = true;
         let result = future::poll_fn(|cx| {
@@ -382,7 +426,7 @@ where
             },
         }
     } else {
-        inner.publish.call(msg).await
+        call.await
     };
 
     match result {
