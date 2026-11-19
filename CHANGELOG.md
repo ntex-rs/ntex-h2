@@ -1,5 +1,14 @@
 # Changes
 
+## [Unreleased]
+
+* `StreamRef::send_trailers()` and `client::SendStream::send_trailers()` accept
+  `&HeaderMap`, the trailers are encoded without taking the map. A map passed by
+  value is no longer returned to the header map pool
+
+* Decode Huffman-encoded header strings straight into the spare capacity of
+  the buffer, without filling it with zeros first
+
 ## [4.6.0] - 2026-11-18
 
 * Do not panic in debug builds when a pending send capacity wait moves to

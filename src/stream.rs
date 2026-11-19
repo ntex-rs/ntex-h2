@@ -1060,15 +1060,18 @@ impl StreamRef {
     /// Does nothing if the stream is not in the payload state. Fails if
     /// the trailers exceed the peer's `SETTINGS_MAX_HEADER_LIST_SIZE`,
     /// the stream stays in the payload state.
-    pub fn send_trailers(&self, map: HeaderMap) -> Result<(), Error<OperationError>> {
+    ///
+    /// The header map can be passed by value or by reference, it is encoded
+    /// without being consumed, so a borrowed map keeps its allocation.
+    pub fn send_trailers<H>(&self, map: H) -> Result<(), Error<OperationError>>
+    where
+        H: Borrow<HeaderMap>,
+    {
         if self.0.send.get() == HalfState::Payload {
-            self.0
-                .con
-                .check_header_list_size(&PseudoHeaders::default(), &map)?;
-            let mut hdrs = Headers::trailers(self.0.id, map);
-            hdrs.set_end_headers();
-            hdrs.set_end_stream();
-            self.0.con.encode(hdrs);
+            let map = map.borrow();
+            let pseudo = PseudoHeaders::default();
+            self.0.con.check_header_list_size(&pseudo, map)?;
+            self.0.con.encode_headers_ref(self.0.id, &pseudo, map, true);
             self.0.state_send_close(None);
         }
         Ok(())

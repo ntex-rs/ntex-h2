@@ -4663,6 +4663,44 @@ mod tests {
         assert_eq!(data.last(), Some(&(1, true)));
     }
 
+    /// STATEMENT: Trailers sent from a borrowed map end the stream with a single HEADERS frame
+    /// that carries the map's fields.
+    ///
+    /// HOW:
+    /// - Open a client stream, send a payload, then send trailers with `send_trailers(&map)`.
+    /// - Decode the client frames and verify the last is a HEADERS frame for the stream with
+    ///   `END_HEADERS` and `END_STREAM`, no pseudo-headers, and the `grpc-status` field.
+    #[ntex::test]
+    async fn test_send_trailers_borrowed() {
+        use ntex::http::header::{HeaderName, HeaderValue};
+
+        let (client, srv) = window_client(65_535).await;
+        let codec = Codec::default();
+        let (stream, _recv) = client
+            .send(Method::POST, "/".into(), HeaderMap::default(), false)
+            .await
+            .unwrap();
+        stream.send_payload("abc", false).await.unwrap();
+
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            HeaderName::from_static("grpc-status"),
+            HeaderValue::from_static("0"),
+        );
+        stream.send_trailers(&trailers).unwrap();
+
+        sleep(Millis(50)).await;
+        let frm = client_frames(&srv, &codec).pop();
+        let Some(frame::Frame::Headers(hdrs)) = frm else {
+            panic!("expected trailers, got {frm:?}");
+        };
+        assert_eq!(hdrs.stream_id(), stream.id());
+        assert!(hdrs.is_end_headers());
+        assert!(hdrs.is_end_stream());
+        assert_eq!(hdrs.pseudo(), &frame::PseudoHeaders::default());
+        assert_eq!(hdrs.fields(), &trailers);
+    }
+
     /// STATEMENT: Receive capacity is released on consumption, with stream window updates gated
     /// by a threshold.
     ///

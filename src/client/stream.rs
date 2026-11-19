@@ -1,5 +1,5 @@
 use std::task::{Context, Poll};
-use std::{cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, rc::Rc};
+use std::{borrow::Borrow, cell::RefCell, collections::VecDeque, fmt, future::poll_fn, pin::Pin, rc::Rc};
 
 use ntex_bytes::Bytes;
 use ntex_error::Error;
@@ -160,7 +160,10 @@ impl SendStream {
     /// Sends trailers and closes the local side of the stream.
     ///
     /// See [`crate::StreamRef::send_trailers`].
-    pub fn send_trailers(&self, map: HeaderMap) -> Result<(), Error<OperationError>> {
+    pub fn send_trailers<H>(&self, map: H) -> Result<(), Error<OperationError>>
+    where
+        H: Borrow<HeaderMap>,
+    {
         self.0.send_trailers(map)
     }
 
