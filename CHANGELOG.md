@@ -1,6 +1,6 @@
 # Changes
 
-## [Unreleased]
+## [4.6.1] - 2026-11-19
 
 * `StreamRef::send_trailers()` and `client::SendStream::send_trailers()` accept
   `&HeaderMap`, the trailers are encoded without taking the map. A map passed by
