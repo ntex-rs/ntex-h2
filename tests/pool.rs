@@ -111,7 +111,7 @@ fn client_error_conversions() {
 async fn disconnecting_connection_is_replaced() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(None));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .disconnect_timeout(Millis(100))
         .connector(async move |_| connect(&p, &s))
         .build(SharedCfg::default());
@@ -161,7 +161,7 @@ async fn disconnecting_connection_is_replaced() {
 async fn busy_connections_are_shared() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(4)));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .connection_limit(2)
         .connector(async move |_| connect(&p, &s))
         .build(SharedCfg::default());
@@ -196,7 +196,7 @@ async fn busy_connections_are_shared() {
 async fn zero_capacity_connection_is_skipped() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(3)));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .minconn(2)
         .connection_limit(2)
         .connector(async move |_| connect(&p, &s))
@@ -237,7 +237,7 @@ async fn zero_capacity_connection_is_skipped() {
 async fn zero_capacity_connection_opens_another() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .connection_limit(2)
         .connector(async move |_| connect(&p, &s))
         .build(SharedCfg::default());
@@ -267,7 +267,7 @@ async fn zero_capacity_connection_opens_another() {
 async fn zero_capacity_connection_waits_for_settings() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .connection_limit(1)
         .connector(async move |_| connect(&p, &s))
         .build(SharedCfg::default());
@@ -313,7 +313,7 @@ async fn cancelled_waiter_passes_notification() {
         for notified in [false, true] {
             let peers = Peers::default();
             let (p, s) = (peers.clone(), settings(Some(1)));
-            let pool = Client::builder("localhost")
+            let pool = Client::builder("localhost", false)
                 .connection_limit(1)
                 .connector(async move |_| connect(&p, &s))
                 .build(SharedCfg::default());
@@ -392,7 +392,7 @@ async fn cancelled_waiter_passes_notification() {
 async fn ready_waiter_passes_notification_on_completion() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .connection_limit(1)
         .connector(async move |_| connect(&p, &s))
         .build(SharedCfg::default());
@@ -439,7 +439,7 @@ async fn pool_max_streams() {
     for (limit, same) in [(None, true), (Some(2), false)] {
         let peers = Peers::default();
         let (p, s) = (peers.clone(), settings(None));
-        let builder = Client::builder("localhost").minconn(2);
+        let builder = Client::builder("localhost", false).minconn(2);
         let builder = if let Some(limit) = limit {
             builder.max_streams(limit)
         } else {
@@ -482,7 +482,7 @@ async fn skip_unknown_streams() {
     for skip in [false, true] {
         let peers = Peers::default();
         let (p, s) = (peers.clone(), settings(None));
-        let builder = Client::builder("localhost");
+        let builder = Client::builder("localhost", false);
         let builder = if skip { builder.skip_unknown_streams() } else { builder };
         let pool = builder
             .connector(async move |_| connect(&p, &s))

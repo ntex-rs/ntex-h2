@@ -702,7 +702,7 @@ fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
             header::WWW_AUTHENTICATE => Some((61, false)),
             _ => None,
         },
-        HeaderRef::Authority(_) => Some((1, false)),
+        HeaderRef::Authority(_) | HeaderRef::AuthoritySensitive(_) => Some((1, false)),
         HeaderRef::Method(v) => match *v {
             Method::GET => Some((2, true)),
             Method::POST => Some((3, true)),
@@ -718,6 +718,7 @@ fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
             "/index.html" => Some((5, true)),
             _ => Some((4, false)),
         },
+        HeaderRef::PathSensitive(_) => Some((4, false)),
         HeaderRef::Protocol(..) => None,
         HeaderRef::Status(v) => match u16::from(*v) {
             200 => Some((8, true)),

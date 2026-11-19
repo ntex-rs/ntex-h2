@@ -6,7 +6,9 @@ use super::{Header, header::HeaderRef, huffman, table::Index, table::Table};
 /// Stateful HPACK header encoder.
 #[derive(Debug)]
 pub struct Encoder {
-    table: Table,
+    // For testing
+    #[allow(private_interfaces)]
+    pub(super) table: Table,
     size_update: Option<SizeUpdate>,
 }
 
@@ -85,6 +87,10 @@ impl Encoder {
 
         for header in headers {
             match header.reify() {
+                Ok(header) if header.is_sensitive() => {
+                    print!("Flag enconde sensitive");
+                    encode_sensitive(header.as_ref(), dst);
+                }
                 // The header has an associated name. In which case, try to
                 // index it in the table.
                 Ok(header) => {
@@ -227,6 +233,12 @@ fn encode_not_indexed2(name: &[u8], value: &[u8], sensitive: bool, dst: &mut Byt
     encode_str(value, dst);
 }
 
+fn encode_sensitive(header: HeaderRef<'_>, dst: &mut BytesMut) {
+    dst.put_u8(0b10000);
+    encode_str(header.name().as_slice(), dst);
+    encode_str(header.value_slice(), dst);
+}
+
 fn encode_str(val: &[u8], dst: &mut BytesMut) {
     if val.is_empty() {
         // Write an empty string
@@ -320,10 +332,9 @@ fn position(buf: &BytesMut) -> usize {
 #[cfg(test)]
 #[allow(clippy::decimal_bitwise_operands)]
 mod test {
+    use super::*;
     use ntex_bytes::{ByteString, Bytes};
     use ntex_http::*;
-
-    use super::*;
 
     /// STATEMENT: `GET` uses its static HPACK index without populating the dynamic table.
     ///
@@ -505,70 +516,106 @@ mod test {
     /// source.
     ///
     /// HOW:
-    /// - Mark `12345` sensitive and encode it with a new `my-password` name and static
-    ///   `authorization` name.
-    /// - Insert a non-sensitive `my-password` field, then encode the sensitive value using its
-    ///   dynamic name.
-    /// - Check never-indexed prefixes, name indexes or literal name, and the decoded Huffman
-    ///   value.
+    /// - Control: encode `authorization: 12345` non-sensitively and prove the encoder resolves
+    ///   the name to static index 23 (incremental `0x40 | 23`, or not-indexed `0x0F, 23 - 15`).
+    /// - Case 1: encode a sensitive `my-password: 12345` (name not in the static table) and
+    ///   verify the literal Huffman name and value, and an empty dynamic table.
+    /// - Case 2: encode a sensitive `authorization: 12345` and verify the name is emitted
+    ///   literally (never as static index 23), and the dynamic table stays empty.
+    /// - Case 3: insert a non-sensitive `my-password`, then encode the sensitive value using
+    ///   that name; confirm the literal name is still used and the dynamic table is unchanged.
     #[test]
     fn test_sensitive_headers_are_never_indexed() {
-        use ntex_http::HeaderValue;
+        // --- Control: prove `authorization` is in the static table (RFC 7541 #23) ---
+        let mut encoder = Encoder::default();
+        let ctrl = encode(&mut encoder, vec![header("authorization", "12345")]);
+        assert!(
+            ctrl[0] == (0x40 | 23) || (ctrl[0] == 0x0f && ctrl[1] == 23 - 15),
+            "expected `authorization` to resolve to static index 23, got {ctrl:?}"
+        );
 
+        // --- Case 1: name not present in the static table ---
         let name = "my-password".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();
         value.set_sensitive(true);
 
-        let header = Header::Field {
+        let hdr = Header::Field {
             name: Some(name),
             value,
         };
 
-        // Now, try to encode the sensitive header
-
         let mut encoder = Encoder::default();
-        let res = encode(&mut encoder, vec![header]);
+        let res = encode(&mut encoder, vec![hdr]);
 
-        assert_eq!(&[0b10000, 0x80 | 8], &res[..2]);
+        // 0001 0000 -> never-indexed with a literal name
+        assert_eq!(0b10000, res[0]);
+        assert_eq!(0x80 | 8, res[1]); // name "my-password" in Huffman (8 bytes)
         assert_eq!("my-password", huff_decode(&res[2..10]));
-        assert_eq!(0x80 | 4, res[10]);
+        assert_eq!(0x80 | 4, res[10]); // value "12345" in Huffman (4 bytes)
         assert_eq!("12345", huff_decode(&res[11..]));
+        assert_eq!(15, res.len());
 
-        // Now, try to encode a sensitive header w/ a name in the static table
+        assert_eq!(0, encoder.table.size());
+        assert_eq!(0, encoder.table.len());
+
+        // --- Case 2: name present in the static table (authorization = RFC 7541 #23) ---
         let name = "authorization".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();
         value.set_sensitive(true);
 
-        let header = Header::Field {
+        let hdr = Header::Field {
             name: Some(name),
             value,
         };
 
         let mut encoder = Encoder::default();
-        let res = encode(&mut encoder, vec![header]);
+        let res = encode(&mut encoder, vec![hdr]);
 
-        assert_eq!(&[0b11111, 8], &res[..2]);
-        assert_eq!(0x80 | 4, res[2]);
-        assert_eq!("12345", huff_decode(&res[3..]));
+        // `encode_sensitive` never performs a table lookup: even a name present in the
+        // static table is written out literally. The first byte must be the
+        // never-indexed + literal-name prefix, and the name that follows must decode
+        // back to "authorization" — not a single reference byte to index 23.
+        assert_eq!(0b10000, res[0]);
+        assert_eq!(0x80, res[1] & 0x80); // Huffman flag set
+        let name_len = (res[1] & 0x7f) as usize;
+        assert_eq!(
+            "authorization",
+            huff_decode(&res[2..2 + name_len]),
+            "sensitive header must emit the literal name, not a static index"
+        );
 
-        // Using the name component of a previously indexed header (without
-        // sensitive flag set)
+        let val_idx = 2 + name_len;
+        assert_eq!(0x80, res[val_idx] & 0x80);
+        let val_len = (res[val_idx] & 0x7f) as usize;
+        assert_eq!("12345", huff_decode(&res[val_idx + 1..val_idx + 1 + val_len]));
 
-        let _ = encode(&mut encoder, vec![self::header("my-password", "not-so-secret")]);
+        assert_eq!(0, encoder.table.size());
+        assert_eq!(0, encoder.table.len());
+
+        // --- Case 3: name present in the dynamic table ---
+        let _ = encode(&mut encoder, vec![header("my-password", "not-so-secret")]);
+        assert_eq!(1, encoder.table.len(), "non-sensitive header must be indexed");
+        let table_size_before = encoder.table.size();
 
         let name = "my-password".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();
         value.set_sensitive(true);
 
-        let header = Header::Field {
+        let hdr = Header::Field {
             name: Some(name),
             value,
         };
-        let res = encode(&mut encoder, vec![header]);
+        let res = encode(&mut encoder, vec![hdr]);
 
-        assert_eq!(&[0b11111, 47], &res[..2]);
-        assert_eq!(0x80 | 4, res[2]);
-        assert_eq!("12345", huff_decode(&res[3..]));
+        assert_eq!(0b10000, res[0]);
+        assert_eq!(0x80 | 8, res[1]);
+        assert_eq!("my-password", huff_decode(&res[2..10]));
+        assert_eq!(0x80 | 4, res[10]);
+        assert_eq!("12345", huff_decode(&res[11..]));
+
+        // The sensitive header must not have touched the dynamic table.
+        assert_eq!(1, encoder.table.len());
+        assert_eq!(table_size_before, encoder.table.size());
     }
 
     /// STATEMENT: `content-length` values use a non-indexed literal with the static name index.
@@ -971,6 +1018,79 @@ mod test {
             })
             .collect();
         assert_eq!(fields, vec![("x-big", long.as_str()), ("x-big", "small")]);
+    }
+
+    /// STATEMENT: A sensitive header must not leave an indexed name available
+    /// for subsequent nameless headers.
+    ///
+    /// HOW:
+    /// - Encode a sensitive header with an explicit name.
+    /// - Follow it with a sensitive header without an explicit name.
+    /// - Verify that encoding panics because no previous index is available.
+    #[test]
+    #[should_panic(expected = "encoding header without name, but no previous index to use for name")]
+    fn test_sensitive_header_does_not_preserve_index_for_nameless_header() {
+        let mut encoder = Encoder::new(4096, 4096);
+
+        let name = Bytes::from_static(b"authorization");
+
+        let h1 = Header::new(&name, Bytes::from("token-one"), true).unwrap();
+        let h2 = Header::new(&name, Bytes::from("token-two"), true).unwrap();
+
+        let headers = vec![
+            match h1 {
+                Header::Field { name, value } => Header::Field {
+                    name: Some(name),
+                    value,
+                },
+                other => other.into(),
+            },
+            match h2 {
+                Header::Field { value, .. } => Header::Field { name: None, value },
+                other => other.into(),
+            },
+        ];
+
+        let mut dst = BytesMut::new();
+        encoder.encode(headers, &mut dst);
+    }
+
+    /// STATEMENT: A sensitive header must not leave an indexed name available
+    /// for a subsequent non-sensitive nameless header.
+    ///
+    /// HOW:
+    /// - Encode a sensitive header with an explicit name.
+    /// - Follow it with a non-sensitive header without an explicit name.
+    /// - Verify that encoding panics because no previous index is available.
+    #[test]
+    #[should_panic(expected = "encoding header without name, but no previous index to use for name")]
+    fn test_sensitive_header_followed_by_non_sensitive_nameless_header() {
+        use crate::hpack::{Encoder, header::Header};
+        use ntex::util::{Bytes, BytesMut};
+
+        let mut encoder = Encoder::new(4096, 4096);
+
+        let name = Bytes::from_static(b"authorization");
+
+        let h1 = Header::new(&name, Bytes::from("token-one"), true).unwrap();
+        let h2 = Header::new(&name, Bytes::from("token-two"), false).unwrap();
+
+        let headers = vec![
+            match h1 {
+                Header::Field { name, value } => Header::Field {
+                    name: Some(name),
+                    value,
+                },
+                other => other.into(),
+            },
+            match h2 {
+                Header::Field { value, .. } => Header::Field { name: None, value },
+                other => other.into(),
+            },
+        ];
+
+        let mut dst = BytesMut::new();
+        encoder.encode(headers, &mut dst);
     }
 
     fn encode(e: &mut Encoder, hdrs: Vec<Header<Option<HeaderName>>>) -> BytesMut {

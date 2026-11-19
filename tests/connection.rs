@@ -253,7 +253,7 @@ async fn test_client_disconnect_future() {
 ///   error.
 #[ntex::test]
 async fn test_client_pool_connect_failures() {
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .minconn(0)
         .connect_timeout(Millis(10))
         .connector(async |_| {
@@ -271,7 +271,7 @@ async fn test_client_pool_connect_failures() {
     assert_eq!(client.stat_connect_errors(), 1);
     assert!(client.is_ready());
 
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .minconn(0)
         .connector(async |_| {
             Err::<IoBoxed, _>(ntex_error::Error::from(
@@ -365,7 +365,7 @@ async fn test_max_concurrent_streams() {
 async fn test_max_concurrent_streams_pool() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client = Client::builder("localhost");
+    let client = Client::builder("localhost", false);
     assert!(format!("{:?}", client).contains("ClientBuilder"));
 
     let client = client
@@ -418,7 +418,7 @@ async fn test_max_concurrent_streams_pool2() {
 
     let cnt = Rc::new(Cell::new(0));
     let cnt2 = cnt.clone();
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .connection_limit(2)
         .connector(async move |_| {
             cnt2.set(cnt2.get() + 1);
@@ -1766,7 +1766,7 @@ async fn test_max_headers() {
     );
 
     let addr = srv.addr();
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .secure(true)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::default());
@@ -1937,7 +1937,7 @@ async fn test_client_max_headers() {
     });
 
     let addr = srv.addr();
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .secure(true)
         .connector(async move |_| Ok(connect(addr).await))
         .build(SharedCfg::new("CLI").add(ServiceConfig::new().set_max_headers(5)));
@@ -2073,7 +2073,7 @@ async fn test_con_lifetime() {
     );
 
     let addr = srv.addr();
-    let pool = Client::builder("localhost")
+    let pool = Client::builder("localhost", false)
         .secure(true)
         .lifetime(1)
         .connector(async move |_| Ok(connect(addr).await))
@@ -3134,7 +3134,7 @@ async fn test_settings_timeout() {
 async fn test_pool_waiter_woken_on_stream_cancel() {
     let srv = start_server().await;
     let addr = srv.addr();
-    let client = Client::builder("localhost")
+    let client = Client::builder("localhost", false)
         .secure(true)
         .connection_limit(1)
         .connector(async move |_| Ok(connect(addr).await))
