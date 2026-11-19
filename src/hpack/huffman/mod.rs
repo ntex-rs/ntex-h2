@@ -1,4 +1,4 @@
-use ntex_bytes::{BufMut, Bytes, BytesMut};
+use ntex_bytes::{BufMut, Bytes, BytesMut, SpareWriter};
 
 mod table;
 
@@ -81,15 +81,12 @@ const fn build_canonical() -> Canonical {
 }
 
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderError> {
-    // The shortest code is 5 bits
     let start = buf.len();
-    buf.resize(start + src.len() * 8 / 5, 0);
+    // The shortest code is 5 bits
+    let res = decode_into(src, &mut buf.spare_writer(src.len() * 8 / 5));
 
-    match decode_into(src, &mut buf[start..]) {
-        Ok(written) => {
-            buf.truncate(start + written);
-            Ok(buf.take())
-        }
+    match res {
+        Ok(()) => Ok(buf.take()),
         Err(e) => {
             buf.truncate(start);
             Err(e)
@@ -97,11 +94,8 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderErr
     }
 }
 
-/// Decodes `src` into `out`, which must hold `src.len() * 8 / 5` bytes, and
-/// returns the decoded length.
-fn decode_into(src: &[u8], out: &mut [u8]) -> Result<usize, DecoderError> {
-    let mut written = 0;
-
+/// Decodes `src` into `out`.
+fn decode_into(src: &[u8], out: &mut SpareWriter<'_>) -> Result<(), DecoderError> {
     // Pending input bits, most significant first
     let mut acc: u64 = 0;
     let mut bits: u32 = 0;
@@ -131,8 +125,7 @@ fn decode_into(src: &[u8], out: &mut [u8]) -> Result<usize, DecoderError> {
 
         acc <<= len;
         bits -= len;
-        out[written] = sym as u8;
-        written += 1;
+        out.push(sym as u8);
     }
 
     // Remaining bits are padding: at most 7 bits of the EOS prefix (all ones)
@@ -140,7 +133,7 @@ fn decode_into(src: &[u8], out: &mut [u8]) -> Result<usize, DecoderError> {
         return Err(DecoderError::InvalidHuffmanCode);
     }
 
-    Ok(written)
+    Ok(())
 }
 
 /// Decodes a code longer than `PEEK_BITS` from the top of `acc`.

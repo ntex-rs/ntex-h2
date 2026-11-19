@@ -23,14 +23,14 @@ trace = []
 features = []
 
 [dependencies]
-ntex-bytes = "1.15"
+ntex-bytes = "1.16"
 ntex-codec = "2.0"
 ntex-dispatcher = "4.5"
 ntex-error = "3.1"
 ntex-http = "2.0"
 ntex-io = "4.8"
 ntex-net = "4.12"
-ntex-service = "5.8"
+ntex-service = "5.9"
 ntex-util = "4.11"
 
 bitflags = "2"

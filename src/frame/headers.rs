@@ -76,8 +76,10 @@ thread_local! {
 
 /// Takes an empty header map from the per-thread pool, or allocates a new one.
 ///
-/// Return the map with [`release_header_map`], or send it as owned headers or
-/// trailers, encoding recycles it.
+/// Return the map with [`release_header_map`], encoding an owned [`Headers`]
+/// frame recycles it. [`StreamRef::send_response`](crate::StreamRef::send_response)
+/// and [`StreamRef::send_trailers`](crate::StreamRef::send_trailers) do not
+/// take the map, release it after sending.
 pub fn get_header_map() -> HeaderMap {
     HDRS_MAP_POOL
         .try_with(|pool| pool.borrow_mut().pop())
