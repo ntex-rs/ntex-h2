@@ -316,7 +316,9 @@ impl<'a> HeaderRef<'a> {
                     | header::COOKIE
                     | header::SET_COOKIE
             ),
-            HeaderRef::Path(..) => true,
+            HeaderRef::AuthoritySensitive(..) | HeaderRef::Path(..) | HeaderRef::PathSensitive(..) => {
+                true
+            }
             _ => false,
         }
     }

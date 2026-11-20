@@ -312,7 +312,6 @@ fn test_consecutive_sensitive_headers_same_name() {
 
     let mut dst = BytesMut::new();
     encoder.encode(headers, &mut dst);
-    dbg!(&dst);
 
     let mut encoded_bytes = dst.freeze();
     let mut cursor = Cursor::new(&mut encoded_bytes);

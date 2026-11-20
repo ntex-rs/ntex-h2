@@ -35,7 +35,7 @@ pub struct HeadersFlag(u8);
 /// session IDs, or private paths) can be marked as "never indexed" to prevent
 /// compression-based side-channel attacks (e.g., CRIME/BREACH) and to instruct
 /// intermediaries (proxies) not to compress or cache them in the dynamic table.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Sensitive<T> {
     /// Standard header field that may be indexed in the HPACK dynamic table
     /// (RFC 7541 §6.2.1 / §6.2.2).

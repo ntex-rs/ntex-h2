@@ -644,7 +644,7 @@ fn hash_header(header: HeaderRef<'_>) -> HashValue {
 
 /// Checks the static table for the header. If found, returns the index and a
 /// boolean representing if the value matched as well.
-fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
+pub(super) fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
     match header {
         HeaderRef::Field { name, value } => match *name {
             header::ACCEPT_CHARSET => Some((15, false)),
@@ -718,7 +718,11 @@ fn index_static(header: HeaderRef<'_>) -> Option<(usize, bool)> {
             "/index.html" => Some((5, true)),
             _ => Some((4, false)),
         },
-        HeaderRef::PathSensitive(_) => Some((4, false)),
+        HeaderRef::PathSensitive(v) => match &**v {
+            "/" => Some((4, false)),
+            "/index.html" => Some((5, false)),
+            _ => Some((4, false)),
+        },
         HeaderRef::Protocol(..) => None,
         HeaderRef::Status(v) => match u16::from(*v) {
             200 => Some((8, true)),

@@ -1,6 +1,8 @@
 use ntex_bytes::{BufMut, BytesMut};
 use ntex_http::header::HeaderName;
 
+use crate::hpack::table::index_static;
+
 use super::{Header, header::HeaderRef, huffman, table::Index, table::Table};
 
 /// Stateful HPACK header encoder.
@@ -87,9 +89,21 @@ impl Encoder {
 
         for header in headers {
             match header.reify() {
+                // The header has an associated name but is sensitive.
+                // In which case, no value index it in the table.
                 Ok(header) if header.is_sensitive() => {
-                    print!("Flag enconde sensitive");
-                    encode_sensitive(header.as_ref(), dst);
+                    // 0001 xxxx: never-indexed, name as static index if exist; else literal
+                    match index_static(header.as_ref()) {
+                        Some((idx, false)) => {
+                            // 4-bit prefix con continuación, como en encode_not_indexed2
+                            encode_int(idx, 4, 0b0001_0000, dst);
+                        }
+                        _ => {
+                            dst.put_u8(0b0001_0000);
+                            encode_str(header.name().as_slice(), dst);
+                        }
+                    }
+                    encode_str(header.value_slice(), dst);
                 }
                 // The header has an associated name. In which case, try to
                 // index it in the table.
@@ -231,12 +245,6 @@ fn encode_not_indexed2(name: &[u8], value: &[u8], sensitive: bool, dst: &mut Byt
 
     encode_str(name, dst);
     encode_str(value, dst);
-}
-
-fn encode_sensitive(header: HeaderRef<'_>, dst: &mut BytesMut) {
-    dst.put_u8(0b10000);
-    encode_str(header.name().as_slice(), dst);
-    encode_str(header.value_slice(), dst);
 }
 
 fn encode_str(val: &[u8], dst: &mut BytesMut) {
