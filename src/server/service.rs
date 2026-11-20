@@ -426,7 +426,7 @@ mod tests {
     /// - Drive two requests until their stream states are observed, covering dispatcher-held
     ///   and detached call futures.
     /// - Drop the server future and wait until neither weak stream reference can be upgraded.
-    #[ntex::test]
+    #[t::asyn]
     async fn cancellation_releases_open_streams() {
         for use_server in [false, true] {
             for block_calls in [false, true] {
@@ -466,7 +466,7 @@ mod tests {
     ///   `OperationError::Disconnected`, and the stream is failed.
     /// - Assert the reset waiter is ready, then drop retained handles and check the stream
     ///   state is released.
-    #[ntex::test]
+    #[t::asyn]
     async fn cancellation_fails_and_wakes_stream_waiters() {
         for use_server in [false, true] {
             let observed = Rc::new(Observed::default());
@@ -516,7 +516,7 @@ mod tests {
     ///   future.
     /// - Assert the retained stream is failed, send capacity returns
     ///   `OperationError::Disconnected`, and dropping the handle releases the state.
-    #[ntex::test]
+    #[t::asyn]
     async fn cancellation_during_service_shutdown() {
         for use_server in [false, true] {
             let observed = Rc::new(Observed {
@@ -552,7 +552,7 @@ mod tests {
     ///   HPACK tables index entries.
     /// - Keep a strong `StreamRef`, drop the server future, and assert the codec reports
     ///   empty tables and only the inline capacity of an empty decoding buffer.
-    #[ntex::test]
+    #[t::asyn]
     async fn stopped_connection_releases_hpack_state() {
         for use_server in [false, true] {
             let observed = Rc::new(Observed {
@@ -603,7 +603,7 @@ mod tests {
     /// HOW:
     /// - Serve a request through `handle_one2` with a blocking publish call and capture its stream.
     /// - Create a channel in the thread pool, then confirm the connection pool reports it.
-    #[ntex::test]
+    #[t::asyn]
     async fn handle_one2_shares_thread_pool() {
         let observed = Rc::new(Observed {
             block_calls: true,

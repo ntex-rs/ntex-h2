@@ -1,11 +1,13 @@
 use std::error::Error;
 
-use ntex::{SharedCfg, time::Seconds, time::sleep, util::Bytes};
+use ntex_bytes::Bytes;
 use ntex_h2::{MessageKind, client};
 use ntex_http::{HeaderMap, Method, header};
+use ntex_service::cfg::SharedCfg;
+use ntex_util::time::{Seconds, sleep};
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 
-#[ntex::main]
+#[t::example]
 pub async fn main() -> Result<(), Box<dyn Error>> {
     let _ = env_logger::try_init();
 
@@ -30,7 +32,7 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
         .await
         .unwrap();
 
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         while let Some(msg) = recv_stream.recv().await {
             match msg.kind {
                 MessageKind::Headers { pseudo, headers, eof } => {

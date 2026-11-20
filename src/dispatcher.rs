@@ -667,7 +667,7 @@ mod tests {
     ///   the response.
     /// - Poll publication once with a counting waker and assert it completes without
     ///   waking that task.
-    #[ntex::test]
+    #[t::asyn]
     async fn publish_ready_does_not_wake_itself() {
         let (inner, _io, _ctx) = setup(Pipeline::new((), async |msg: Message| {
             msg.stream
@@ -696,7 +696,7 @@ mod tests {
     /// - Poll publication once and assert it completes and drops the original handler.
     /// - Verify the pending and successful cases publish one `LocalReset` message,
     ///   whereas the error case notifies only the control service.
-    #[ntex::test]
+    #[t::asyn]
     async fn publish_reset_during_first_poll() {
         for result in [Poll::Pending, Poll::Ready(Ok(())), Poll::Ready(Err(()))] {
             let dropped = Rc::new(Cell::new(0));
@@ -751,7 +751,7 @@ mod tests {
     /// - Deliver request EOF, observe a wake, and poll again without dropping the handler.
     /// - Reset the stream, observe another wake, and assert publication completes without
     ///   polling the handler again and drops its guard.
-    #[ntex::test]
+    #[t::asyn]
     async fn publish_pending_waits_for_reset() {
         let polls = Rc::new(Cell::new(0));
         let dropped = Rc::new(Cell::new(0));
@@ -797,7 +797,7 @@ mod tests {
     /// - Assert the first publication poll schedules another poll despite the stream
     ///   already being removed from the connection.
     /// - Fail the connection and verify publication completes and drops the handler.
-    #[ntex::test]
+    #[t::asyn]
     async fn publish_io_closed_during_first_poll() {
         let dropped = Rc::new(Cell::new(0));
         let dropped2 = dropped.clone();
@@ -836,7 +836,7 @@ mod tests {
     /// - Fail the connection through `handle_connection_error` and yield.
     /// - Assert all three notifications were delivered and the two non-stalled
     ///   handlers completed and dropped their `StreamRef`.
-    #[ntex::test]
+    #[t::asyn]
     async fn connection_error_notifies_streams_concurrently() {
         let delivered = Rc::new(Cell::new(0));
         let completed = Rc::new(Cell::new(0));
@@ -881,7 +881,7 @@ mod tests {
     /// - On a new connection, process an application error for stream 3 and assert the
     ///   written bytes equal an encoded `GOAWAY(INTERNAL_ERROR)` with last stream 3 and the
     ///   I/O is closed.
-    #[ntex::test]
+    #[t::asyn]
     async fn no_control_service_default_responses() {
         let publish = || Pipeline::new((), async |_: Message| Ok::<_, ()>(()));
 

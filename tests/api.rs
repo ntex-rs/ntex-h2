@@ -218,7 +218,7 @@ fn protocol_control_error_accessors() {
 /// - Acknowledge a reconstructed control as `ExpectResult::Continue`, then fail it with
 ///   `StatusCode::EXPECTATION_FAILED` and assert the stream, status, and empty response
 ///   headers.
-#[ntex::test]
+#[t::asyn]
 async fn expect_control_and_message_accessors() {
     let (client_io, server_io) = IoTest::create();
     client_io.remote_buffer_cap(1024 * 1024);

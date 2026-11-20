@@ -1649,10 +1649,14 @@ impl Pending {
 mod tests {
     use std::time::Duration;
 
-    use ntex::http::{HeaderMap, Method, test};
-    use ntex::service::{Service, fn_service};
-    use ntex::time::{Millis, Seconds, sleep};
-    use ntex::{Pipeline, SharedCfg, io::Io, util::Bytes};
+    use ntex_bytes::Bytes;
+    use ntex_http::{HeaderMap, Method};
+    use ntex_io::Io;
+    use ntex_service::cfg::SharedCfg;
+    use ntex_util::time::{Millis, Seconds, sleep};
+
+    // TODO: Comment for cyclical dependencies with ntex
+    // use ntex::http::test;
 
     use crate::{self as h2, Codec, ServiceConfig, frame, frame::Reason};
 
@@ -1666,7 +1670,8 @@ mod tests {
         }
     }
 
-    fn goaway(frm: frame::Frame) -> frame::GoAway {
+    // TODO: Comment for cyclical dependencies with ntex
+    fn _goaway(frm: frame::Frame) -> frame::GoAway {
         match frm {
             frame::Frame::GoAway(f) => f,
             _ => panic!("Expect Reset frame: {frm:?}"),
@@ -1676,10 +1681,10 @@ mod tests {
     async fn timer_releases_connection(config: ServiceConfig, ack: bool) {
         let cfg = SharedCfg::new("CLI")
             .add(config)
-            .add(ntex::io::IoConfig::new().set_metrics(true))
+            .add(ntex_io::IoConfig::new().set_metrics(true))
             .build();
         for started in [false, true] {
-            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let (wire, _peer) = ntex_io::testing::IoTest::create();
             let io = Io::new(wire, cfg.clone());
             let metrics = io.cfg().metrics();
             let closed = metrics.snapshot().closed.total;
@@ -1690,7 +1695,7 @@ mod tests {
                 cfg.get(),
                 false,
                 false,
-                ntex::channel::pool::new(),
+                ntex_util::channel::pool::new(),
             );
             if ack {
                 con.recv_half().recv_settings(frame::Settings::ack()).unwrap();
@@ -1735,7 +1740,7 @@ mod tests {
     ///   startup.
     /// - Drop the connection and I/O, then verify the weak connection reference expires, the
     ///   shared timer entry and its `Weak` are removed, and the I/O closure metric increases.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_ping_timer_does_not_retain_connection() {
         timer_releases_connection(
             ServiceConfig::new()
@@ -1754,7 +1759,7 @@ mod tests {
     ///   unacknowledged, before and after timer startup.
     /// - Drop the connection and I/O; verify the weak reference expires, the shared timer entry
     ///   and its `Weak` are removed, and the I/O closure metric increases.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_settings_timer_does_not_retain_connection() {
         for ack in [false, true] {
             timer_releases_connection(
@@ -1776,11 +1781,11 @@ mod tests {
     /// - Check each ping payload, the saturated counter, and that the next ping is scheduled.
     /// - Expire the deadline again with the final ping unacknowledged and verify no ping is
     ///   scheduled, the I/O reports a timeout, and the counter remains saturated.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_ping_counter_saturates() {
         use std::task::{Context, Poll, Waker};
 
-        let (wire, peer) = ntex::io::testing::IoTest::create();
+        let (wire, peer) = ntex_io::testing::IoTest::create();
         peer.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
             .add(
@@ -1798,7 +1803,7 @@ mod tests {
             cfg.get(),
             false,
             false,
-            ntex::channel::pool::new(),
+            ntex_util::channel::pool::new(),
         );
         io.flush(true).await.unwrap();
         let _ = client_frames(&peer, &codec);
@@ -1826,7 +1831,7 @@ mod tests {
         assert!(!super::Connection::timer_expired(&weak, false, true));
         assert!(matches!(
             io.poll_status_update(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(ntex::io::IoStatusUpdate::Timeout)
+            Poll::Ready(ntex_io::IoStatusUpdate::Timeout)
         ));
         assert_eq!(con.pings_count(), u16::MAX);
     }
@@ -1840,7 +1845,7 @@ mod tests {
     /// - With only the settings timeout enabled, verify the acknowledgment removes the entry.
     /// - Call `Connection::release` on a connection with both deadlines and verify its entry is
     ///   removed.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_connection_timer_entries() {
         let new = |settings, ping| {
             let cfg = SharedCfg::new("CLI")
@@ -1850,7 +1855,7 @@ mod tests {
                         .set_settings_timeout(settings),
                 )
                 .build();
-            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let (wire, _peer) = ntex_io::testing::IoTest::create();
             let io = Io::new(wire, cfg.clone());
             let con = super::Connection::new(
                 false,
@@ -1859,7 +1864,7 @@ mod tests {
                 cfg.get(),
                 false,
                 false,
-                ntex::channel::pool::new(),
+                ntex_util::channel::pool::new(),
             );
             (io, con)
         };
@@ -1894,7 +1899,7 @@ mod tests {
     /// - Create a connection with a one-second settings timeout and keep-alive disabled.
     /// - Wait past the deadline and verify the `SETTINGS_TIMEOUT` flag and an I/O timeout.
     /// - Verify the connection entry is removed and the shared timer driver stopped.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_settings_deadline_fires() {
         use std::task::{Context, Poll, Waker};
 
@@ -1905,7 +1910,7 @@ mod tests {
                     .set_settings_timeout(Seconds(1)),
             )
             .build();
-        let (wire, _peer) = ntex::io::testing::IoTest::create();
+        let (wire, _peer) = ntex_io::testing::IoTest::create();
         let io = Io::new(wire, cfg.clone());
         let con = super::Connection::new(
             false,
@@ -1914,7 +1919,7 @@ mod tests {
             cfg.get(),
             false,
             false,
-            ntex::channel::pool::new(),
+            ntex_util::channel::pool::new(),
         );
         let id = con.0.timer_id.get();
 
@@ -1922,7 +1927,7 @@ mod tests {
         assert!(con.flags().contains(super::ConnectionFlags::SETTINGS_TIMEOUT));
         assert!(matches!(
             io.poll_status_update(&mut Context::from_waker(Waker::noop())),
-            Poll::Ready(ntex::io::IoStatusUpdate::Timeout)
+            Poll::Ready(ntex_io::IoStatusUpdate::Timeout)
         ));
         assert_eq!(crate::timer::connection_deadlines(id), None);
         assert!(!crate::timer::is_running());
@@ -2038,9 +2043,9 @@ mod tests {
     ///   stream counter is zero.
     /// - Open and complete 512 streams, twice the default concurrency limit, and verify the
     ///   idle map keeps its allocation.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_idle_stream_map_capacity() {
-        let (wire, peer) = ntex::io::testing::IoTest::create();
+        let (wire, peer) = ntex_io::testing::IoTest::create();
         peer.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("SRV")
             .add(
@@ -2058,7 +2063,7 @@ mod tests {
             cfg.get(),
             false,
             false,
-            ntex::channel::pool::new(),
+            ntex_util::channel::pool::new(),
         );
         let recv = con.recv_half();
         let mut next = 1u32;
@@ -2084,7 +2089,7 @@ mod tests {
         };
         let complete = |stream: &crate::StreamRef| {
             stream
-                .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+                .send_response(ntex_http::StatusCode::OK, HeaderMap::new(), true)
                 .unwrap();
         };
 
@@ -2140,9 +2145,9 @@ mod tests {
     ///   history; send late window updates, resets, and data.
     /// - Check that only a `Reset` with `Reason::STREAM_CLOSED` is emitted, the connection
     ///   remains healthy, and `recv_size` stays zero.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_zero_reset_history_stream_lifecycle() {
-        let (wire, peer) = ntex::io::testing::IoTest::create();
+        let (wire, peer) = ntex_io::testing::IoTest::create();
         peer.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("SRV")
             .add(
@@ -2160,7 +2165,7 @@ mod tests {
             cfg.get(),
             false,
             false,
-            ntex::channel::pool::new(),
+            ntex_util::channel::pool::new(),
         );
         let recv = con.recv_half();
         let codec = Codec::default();
@@ -2182,7 +2187,7 @@ mod tests {
                 assert!(stream.reset(Reason::CANCEL));
             } else {
                 stream
-                    .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+                    .send_response(ntex_http::StatusCode::OK, HeaderMap::new(), true)
                     .unwrap();
             }
             assert!(!con.0.streams.borrow().contains_key(&id));
@@ -2222,9 +2227,9 @@ mod tests {
     ///   that only stream 1 gets a `Reset` with `Reason::STREAM_CLOSED`.
     /// - Verify a late `RST_STREAM` on stream 1 counts toward the reset limit, and a late
     ///   `HEADERS` on stream 1 is `ConnectionError::InvalidStreamId`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_late_frames_for_closed_stream() {
-        let (wire, peer) = ntex::io::testing::IoTest::create();
+        let (wire, peer) = ntex_io::testing::IoTest::create();
         peer.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("SRV")
             .add(
@@ -2241,7 +2246,7 @@ mod tests {
             cfg.get(),
             false,
             false,
-            ntex::channel::pool::new(),
+            ntex_util::channel::pool::new(),
         );
         let recv = con.recv_half();
         let codec = Codec::default();
@@ -2262,7 +2267,7 @@ mod tests {
         let (closed, reset) = (frame::StreamId::CLIENT, frame::StreamId::from(3));
         let (stream, _msg) = recv.recv_headers(headers(closed)).unwrap().unwrap();
         stream
-            .send_response(ntex::http::StatusCode::OK, HeaderMap::new(), true)
+            .send_response(ntex_http::StatusCode::OK, HeaderMap::new(), true)
             .unwrap();
         let (stream, _msg) = recv.recv_headers(headers(reset)).unwrap().unwrap();
         assert!(stream.reset(Reason::CANCEL));
@@ -2308,51 +2313,52 @@ mod tests {
     ///   client request.
     /// - Verify the receiver obtains `MessageKind::Eof`, sending payload fails, and the
     ///   connection stream map is empty.
-    #[ntex::test]
-    async fn test_remote_stream_refused() {
-        let srv = test::server_with_config(
-            async |()| {
-                fn_service(async move |io: Io<_>| {
-                    let _ = h2::server::handle_one(
-                        io.into(),
-                        Pipeline::new((), async move |msg: h2::Message| {
-                            msg.stream().reset(Reason::REFUSED_STREAM);
-                            Ok::<_, h2::StreamError>(())
-                        }),
-                        Pipeline::new(
-                            (),
-                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                Ok::<_, ()>(msg.ack())
-                            })
-                            .map_err(|()| unreachable!()),
-                        ),
-                    )
-                    .await;
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_remote_stream_refused() {
+    //     let srv = test::server_with_config(
+    //         async |()| {
+    //             fn_service(async move |io: Io<_>| {
+    //                 let _ = h2::server::handle_one(
+    //                     io.into(),
+    //                     Pipeline::new((), async move |msg: h2::Message| {
+    //                         msg.stream().reset(Reason::REFUSED_STREAM);
+    //                         Ok::<_, h2::StreamError>(())
+    //                     }),
+    //                     Pipeline::new(
+    //                         (),
+    //                         fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                             Ok::<_, ()>(msg.ack())
+    //                         })
+    //                         .map_err(|()| unreachable!()),
+    //                     ),
+    //                 )
+    //                 .await;
 
-                    Ok::<_, ()>(())
-                })
-            },
-            SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
-        );
+    //                 Ok::<_, ()>(())
+    //             })
+    //         },
+    //         SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
+    //     );
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
-        sleep(Millis(150)).await;
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     sleep(Millis(150)).await;
 
-        let (stream, recv_stream) = client
-            .send(Method::GET, "/".into(), HeaderMap::default(), false)
-            .await
-            .unwrap();
-        let msg = recv_stream.recv().await.unwrap();
-        assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
+    //     let (stream, recv_stream) = client
+    //         .send(Method::GET, "/".into(), HeaderMap::default(), false)
+    //         .await
+    //         .unwrap();
+    //     let msg = recv_stream.recv().await.unwrap();
+    //     assert!(matches!(msg.kind(), h2::MessageKind::Eof(_)));
 
-        let res = stream.send_payload(Bytes::from_static(b"hello"), false).await;
-        assert!(res.is_err());
+    //     let res = stream.send_payload(Bytes::from_static(b"hello"), false).await;
+    //     assert!(res.is_err());
 
-        let con = &recv_stream.stream().0.con.0;
-        assert!(con.streams.borrow().is_empty());
-    }
+    //     let con = &recv_stream.stream().0.con.0;
+    //     assert!(con.streams.borrow().is_empty());
+    // }
 
     /// STATEMENT: A sender waiting in its own task resumes when peer settings increase the
     /// initial stream window.
@@ -2362,65 +2368,66 @@ mod tests {
     ///   `Settings` after the first payload byte.
     /// - Send the full request body, verify completion in under 500 milliseconds, and receive
     ///   response headers.
-    #[ntex::test]
-    async fn test_settings_initial_window_wakes_sender() {
-        let srv = test::server(async |()| {
-            fn_service(async move |io: Io<_>| {
-                let codec = Codec::default();
-                let mut preface = [0; 24];
-                io.read_exact(&mut preface).await.unwrap();
-                assert_eq!(preface, PREFACE);
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_settings_initial_window_wakes_sender() {
+    //     let srv = test::server(async |()| {
+    //         fn_service(async move |io: Io<_>| {
+    //             let codec = Codec::default();
+    //             let mut preface = [0; 24];
+    //             io.read_exact(&mut preface).await.unwrap();
+    //             assert_eq!(preface, PREFACE);
 
-                let mut settings = frame::Settings::default();
-                settings.set_initial_window_size(Some(1));
-                io.send(settings.into(), &codec).await.unwrap();
+    //             let mut settings = frame::Settings::default();
+    //             settings.set_initial_window_size(Some(1));
+    //             io.send(settings.into(), &codec).await.unwrap();
 
-                while let Ok(Some(frm)) = io.recv(&codec).await {
-                    if let frame::Frame::Data(data) = frm {
-                        let id = data.stream_id();
-                        if data.payload().as_ref() == b"t" {
-                            // grow the window with SETTINGS only
-                            let mut settings = frame::Settings::default();
-                            settings.set_initial_window_size(Some(65_535));
-                            io.send(settings.into(), &codec).await.unwrap();
-                        } else if data.is_end_stream() {
-                            let hdrs = frame::Headers::new(
-                                id,
-                                frame::PseudoHeaders::response(ntex::http::StatusCode::OK),
-                                HeaderMap::new(),
-                                true,
-                            );
-                            io.send(hdrs.into(), &codec).await.unwrap();
-                        }
-                    }
-                }
-                Ok::<_, ()>(())
-            })
-        });
+    //             while let Ok(Some(frm)) = io.recv(&codec).await {
+    //                 if let frame::Frame::Data(data) = frm {
+    //                     let id = data.stream_id();
+    //                     if data.payload().as_ref() == b"t" {
+    //                         // grow the window with SETTINGS only
+    //                         let mut settings = frame::Settings::default();
+    //                         settings.set_initial_window_size(Some(65_535));
+    //                         io.send(settings.into(), &codec).await.unwrap();
+    //                     } else if data.is_end_stream() {
+    //                         let hdrs = frame::Headers::new(
+    //                             id,
+    //                             frame::PseudoHeaders::response(ntex_http::StatusCode::OK),
+    //                             HeaderMap::new(),
+    //                             true,
+    //                         );
+    //                         io.send(hdrs.into(), &codec).await.unwrap();
+    //                     }
+    //                 }
+    //             }
+    //             Ok::<_, ()>(())
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
 
-        // wait for the server settings
-        sleep(Millis(150)).await;
+    //     // wait for the server settings
+    //     sleep(Millis(150)).await;
 
-        let (snd, rcv) = client
-            .send(Method::POST, "/".into(), HeaderMap::new(), false)
-            .await
-            .unwrap();
-        let start = std::time::Instant::now();
-        snd.send_payload(Bytes::from_static(b"test body"), true)
-            .await
-            .unwrap();
-        assert!(
-            start.elapsed() < Duration::from_millis(500),
-            "sender is not woken"
-        );
+    //     let (snd, rcv) = client
+    //         .send(Method::POST, "/".into(), HeaderMap::new(), false)
+    //         .await
+    //         .unwrap();
+    //     let start = std::time::Instant::now();
+    //     snd.send_payload(Bytes::from_static(b"test body"), true)
+    //         .await
+    //         .unwrap();
+    //     assert!(
+    //         start.elapsed() < Duration::from_millis(500),
+    //         "sender is not woken"
+    //     );
 
-        let msg = rcv.recv().await.unwrap();
-        assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
-    }
+    //     let msg = rcv.recv().await.unwrap();
+    //     assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
+    // }
 
     /// STATEMENT: The client assumes 100 concurrent streams until peer settings remove the
     /// provisional limit.
@@ -2431,60 +2438,61 @@ mod tests {
     /// - Delay settings without a concurrency limit and verify the next request waits at least
     ///   100 milliseconds before succeeding.
     /// - Check that `max_streams` becomes `None` and the client is ready again.
-    #[ntex::test]
-    async fn test_assumed_max_concurrent_streams() {
-        let srv = test::server(async |()| {
-            fn_service(async move |io: Io<_>| {
-                let codec = Codec::default();
-                let mut preface = [0; 24];
-                io.read_exact(&mut preface).await.unwrap();
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_assumed_max_concurrent_streams() {
+    //     let srv = test::server(async |()| {
+    //         fn_service(async move |io: Io<_>| {
+    //             let codec = Codec::default();
+    //             let mut preface = [0; 24];
+    //             io.read_exact(&mut preface).await.unwrap();
 
-                let mut streams = 0;
-                while let Ok(Some(frm)) = io.recv(&codec).await {
-                    if let frame::Frame::Headers(_) = frm {
-                        streams += 1;
-                        if streams == 100 {
-                            // settings without a concurrency limit
-                            sleep(Millis(250)).await;
-                            io.send(frame::Settings::default().into(), &codec).await.unwrap();
-                        }
-                    }
-                }
-                Ok::<_, ()>(())
-            })
-        });
+    //             let mut streams = 0;
+    //             while let Ok(Some(frm)) = io.recv(&codec).await {
+    //                 if let frame::Frame::Headers(_) = frm {
+    //                     streams += 1;
+    //                     if streams == 100 {
+    //                         // settings without a concurrency limit
+    //                         sleep(Millis(250)).await;
+    //                         io.send(frame::Settings::default().into(), &codec).await.unwrap();
+    //                     }
+    //                 }
+    //             }
+    //             Ok::<_, ()>(())
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
-        assert_eq!(client.max_streams(), Some(100));
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     assert_eq!(client.max_streams(), Some(100));
 
-        let mut streams = Vec::new();
-        for _ in 0..100 {
-            streams.push(
-                client
-                    .send(Method::GET, "/".into(), HeaderMap::new(), true)
-                    .await
-                    .unwrap(),
-            );
-        }
-        assert!(!client.is_ready());
+    //     let mut streams = Vec::new();
+    //     for _ in 0..100 {
+    //         streams.push(
+    //             client
+    //                 .send(Method::GET, "/".into(), HeaderMap::new(), true)
+    //                 .await
+    //                 .unwrap(),
+    //         );
+    //     }
+    //     assert!(!client.is_ready());
 
-        // waits for the peer's settings
-        let start = std::time::Instant::now();
-        let stream = ntex::time::timeout(
-            Millis(2_000),
-            client.send(Method::GET, "/".into(), HeaderMap::new(), true),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(start.elapsed() >= Duration::from_millis(100));
-        streams.push(stream);
+    //     // waits for the peer's settings
+    //     let start = std::time::Instant::now();
+    //     let stream = ntex_util::time::timeout(
+    //         Millis(2_000),
+    //         client.send(Method::GET, "/".into(), HeaderMap::new(), true),
+    //     )
+    //     .await
+    //     .unwrap()
+    //     .unwrap();
+    //     assert!(start.elapsed() >= Duration::from_millis(100));
+    //     streams.push(stream);
 
-        assert_eq!(client.max_streams(), None);
-        assert!(client.is_ready());
-    }
+    //     assert_eq!(client.max_streams(), None);
+    //     assert!(client.is_ready());
+    // }
 
     /// STATEMENT: A client treats `SETTINGS_ENABLE_PUSH=1` from the server as a connection
     /// protocol error.
@@ -2494,50 +2502,51 @@ mod tests {
     ///   `GoAway`.
     /// - Verify `Reason::PROTOCOL_ERROR` with the diagnostic "Server enabled push", then
     ///   confirm a new request fails.
-    #[ntex::test]
-    async fn test_client_rejects_enable_push() {
-        use std::sync::{Arc, Mutex};
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_client_rejects_enable_push() {
+    //     use std::sync::{Arc, Mutex};
 
-        let goaway = Arc::new(Mutex::new(None));
-        let goaway2 = goaway.clone();
-        let srv = test::server(async move |()| {
-            let goaway = goaway2.clone();
-            fn_service(move |io: Io<_>| {
-                let goaway = goaway.clone();
-                async move {
-                    let codec = Codec::default();
-                    let mut preface = [0; 24];
-                    io.read_exact(&mut preface).await.unwrap();
-                    let mut settings = frame::Settings::default();
-                    settings.set_enable_push(true);
-                    io.send(settings.into(), &codec).await.unwrap();
+    //     let goaway = Arc::new(Mutex::new(None));
+    //     let goaway2 = goaway.clone();
+    //     let srv = test::server(async move |()| {
+    //         let goaway = goaway2.clone();
+    //         fn_service(move |io: Io<_>| {
+    //             let goaway = goaway.clone();
+    //             async move {
+    //                 let codec = Codec::default();
+    //                 let mut preface = [0; 24];
+    //                 io.read_exact(&mut preface).await.unwrap();
+    //                 let mut settings = frame::Settings::default();
+    //                 settings.set_enable_push(true);
+    //                 io.send(settings.into(), &codec).await.unwrap();
 
-                    while let Ok(Some(frm)) = io.recv(&codec).await {
-                        if let frame::Frame::GoAway(frm) = frm {
-                            *goaway.lock().unwrap() = Some((frm.reason(), frm.data().clone()));
-                        }
-                    }
-                    Ok::<_, ()>(())
-                }
-            })
-        });
+    //                 while let Ok(Some(frm)) = io.recv(&codec).await {
+    //                     if let frame::Frame::GoAway(frm) = frm {
+    //                         *goaway.lock().unwrap() = Some((frm.reason(), frm.data().clone()));
+    //                     }
+    //                 }
+    //                 Ok::<_, ()>(())
+    //             }
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
-        sleep(Millis(150)).await;
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     sleep(Millis(150)).await;
 
-        assert_eq!(
-            goaway.lock().unwrap().take(),
-            Some((Reason::PROTOCOL_ERROR, Bytes::from_static(b"Server enabled push")))
-        );
-        assert!(
-            client
-                .send(Method::GET, "/".into(), HeaderMap::new(), true)
-                .await
-                .is_err()
-        );
-    }
+    //     assert_eq!(
+    //         goaway.lock().unwrap().take(),
+    //         Some((Reason::PROTOCOL_ERROR, Bytes::from_static(b"Server enabled push")))
+    //     );
+    //     assert!(
+    //         client
+    //             .send(Method::GET, "/".into(), HeaderMap::new(), true)
+    //             .await
+    //             .is_err()
+    //     );
+    // }
 
     /// STATEMENT: Oversized request headers fail locally without consuming a stream ID.
     ///
@@ -2548,60 +2557,61 @@ mod tests {
     ///   request successfully.
     /// - Have the peer verify that the successful request still uses `StreamId::CLIENT` and
     ///   return response headers.
-    #[ntex::test]
-    async fn test_client_max_header_list_size() {
-        let srv = test::server(async |()| {
-            fn_service(async move |io: Io<_>| {
-                let codec = Codec::default();
-                let mut preface = [0; 24];
-                io.read_exact(&mut preface).await.unwrap();
-                let mut settings = frame::Settings::default();
-                settings.set_max_header_list_size(Some(200));
-                io.send(settings.into(), &codec).await.unwrap();
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_client_max_header_list_size() {
+    //     let srv = test::server(async |()| {
+    //         fn_service(async move |io: Io<_>| {
+    //             let codec = Codec::default();
+    //             let mut preface = [0; 24];
+    //             io.read_exact(&mut preface).await.unwrap();
+    //             let mut settings = frame::Settings::default();
+    //             settings.set_max_header_list_size(Some(200));
+    //             io.send(settings.into(), &codec).await.unwrap();
 
-                while let Ok(Some(frm)) = io.recv(&codec).await {
-                    if let frame::Frame::Headers(hdrs) = frm {
-                        assert_eq!(hdrs.stream_id(), frame::StreamId::CLIENT);
-                        let pseudo = frame::PseudoHeaders::response(ntex::http::StatusCode::OK);
-                        let hdrs = frame::Headers::new(hdrs.stream_id(), pseudo, HeaderMap::new(), true);
-                        io.send(hdrs.into(), &codec).await.unwrap();
-                    }
-                }
-                Ok::<_, ()>(())
-            })
-        });
+    //             while let Ok(Some(frm)) = io.recv(&codec).await {
+    //                 if let frame::Frame::Headers(hdrs) = frm {
+    //                     assert_eq!(hdrs.stream_id(), frame::StreamId::CLIENT);
+    //                     let pseudo = frame::PseudoHeaders::response(ntex_http::StatusCode::OK);
+    //                     let hdrs = frame::Headers::new(hdrs.stream_id(), pseudo, HeaderMap::new(), true);
+    //                     io.send(hdrs.into(), &codec).await.unwrap();
+    //                 }
+    //             }
+    //             Ok::<_, ()>(())
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
-        sleep(Millis(150)).await;
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     sleep(Millis(150)).await;
 
-        let mut large = HeaderMap::new();
-        large.insert(
-            ntex::http::header::USER_AGENT,
-            ntex::http::header::HeaderValue::from_static(concat!(
-                "0123456789012345678901234567890123456789012345678901234567890123456789",
-                "0123456789012345678901234567890123456789012345678901234567890123456789",
-            )),
-        );
-        let err = client
-            .send(Method::GET, "/".into(), large, true)
-            .await
-            .err()
-            .unwrap();
-        assert!(
-            matches!(*err, h2::OperationError::HeaderListTooLarge { max: 200, .. }),
-            "{err:?}"
-        );
+    //     let mut large = HeaderMap::new();
+    //     large.insert(
+    //         ntex_http::header::USER_AGENT,
+    //         ntex_http::header::HeaderValue::from_static(concat!(
+    //             "0123456789012345678901234567890123456789012345678901234567890123456789",
+    //             "0123456789012345678901234567890123456789012345678901234567890123456789",
+    //         )),
+    //     );
+    //     let err = client
+    //         .send(Method::GET, "/".into(), large, true)
+    //         .await
+    //         .err()
+    //         .unwrap();
+    //     assert!(
+    //         matches!(*err, h2::OperationError::HeaderListTooLarge { max: 200, .. }),
+    //         "{err:?}"
+    //     );
 
-        // the stream id is not used, the next request gets the first id
-        let (_snd, rcv) = client
-            .send(Method::GET, "/".into(), HeaderMap::new(), true)
-            .await
-            .unwrap();
-        let msg = rcv.recv().await.unwrap();
-        assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
-    }
+    //     // the stream id is not used, the next request gets the first id
+    //     let (_snd, rcv) = client
+    //         .send(Method::GET, "/".into(), HeaderMap::new(), true)
+    //         .await
+    //         .unwrap();
+    //     let msg = rcv.recv().await.unwrap();
+    //     assert!(matches!(msg.kind(), h2::MessageKind::Headers { .. }), "{msg:?}");
+    // }
 
     /// STATEMENT: Responses and trailers above the peer header-list limit fail locally without
     /// closing the stream.
@@ -2612,89 +2622,90 @@ mod tests {
     /// - Attempt oversized and empty response headers, then oversized and empty trailers;
     ///   verify the success flags are false, true, false, true.
     /// - Receive exactly two `Headers` frames through end-of-stream without a reset.
-    #[ntex::test]
-    async fn test_server_max_header_list_size() {
-        use std::sync::{Arc, Mutex};
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_server_max_header_list_size() {
+    //     use std::sync::{Arc, Mutex};
 
-        let results = Arc::new(Mutex::new(Vec::new()));
-        let results2 = results.clone();
-        let srv = test::server(async move |()| {
-            let results = results2.clone();
-            fn_service(move |io: Io<_>| {
-                let results = results.clone();
-                async move {
-                    let _ = h2::server::handle_one(
-                        io.into(),
-                        Pipeline::new((), async move |msg: h2::Message| {
-                            if let h2::MessageKind::Headers { .. } = msg.kind {
-                                let mut large = HeaderMap::new();
-                                large.insert(
-                                    ntex::http::header::SERVER,
-                                    ntex::http::header::HeaderValue::from_static(concat!(
-                                        "01234567890123456789012345678901234567890123456789",
-                                        "01234567890123456789012345678901234567890123456789",
-                                    )),
-                                );
-                                let st = ntex::http::StatusCode::OK;
-                                let mut res = results.lock().unwrap();
-                                res.push(msg.stream.send_response(st, large.clone(), false).is_ok());
-                                res.push(msg.stream.send_response(st, HeaderMap::new(), false).is_ok());
-                                res.push(msg.stream.send_trailers(large).is_ok());
-                                res.push(msg.stream.send_trailers(HeaderMap::new()).is_ok());
-                            }
-                            Ok::<_, h2::StreamError>(())
-                        }),
-                        Pipeline::new(
-                            (),
-                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                Ok::<_, ()>(msg.ack())
-                            })
-                            .map_err(|()| unreachable!()),
-                        ),
-                    )
-                    .await;
-                    Ok::<_, ()>(())
-                }
-            })
-        });
+    //     let results = Arc::new(Mutex::new(Vec::new()));
+    //     let results2 = results.clone();
+    //     let srv = test::server(async move |()| {
+    //         let results = results2.clone();
+    //         fn_service(move |io: Io<_>| {
+    //             let results = results.clone();
+    //             async move {
+    //                 let _ = h2::server::handle_one(
+    //                     io.into(),
+    //                     Pipeline::new((), async move |msg: h2::Message| {
+    //                         if let h2::MessageKind::Headers { .. } = msg.kind {
+    //                             let mut large = HeaderMap::new();
+    //                             large.insert(
+    //                                 ntex_http::header::SERVER,
+    //                                 ntex_http::header::HeaderValue::from_static(concat!(
+    //                                     "01234567890123456789012345678901234567890123456789",
+    //                                     "01234567890123456789012345678901234567890123456789",
+    //                                 )),
+    //                             );
+    //                             let st = ntex_http::StatusCode::OK;
+    //                             let mut res = results.lock().unwrap();
+    //                             res.push(msg.stream.send_response(st, large.clone(), false).is_ok());
+    //                             res.push(msg.stream.send_response(st, HeaderMap::new(), false).is_ok());
+    //                             res.push(msg.stream.send_trailers(large).is_ok());
+    //                             res.push(msg.stream.send_trailers(HeaderMap::new()).is_ok());
+    //                         }
+    //                         Ok::<_, h2::StreamError>(())
+    //                     }),
+    //                     Pipeline::new(
+    //                         (),
+    //                         fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                             Ok::<_, ()>(msg.ack())
+    //                         })
+    //                         .map_err(|()| unreachable!()),
+    //                     ),
+    //                 )
+    //                 .await;
+    //                 Ok::<_, ()>(())
+    //             }
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
-        let mut settings = frame::Settings::default();
-        settings.set_max_header_list_size(Some(120));
-        io.encode(settings.into(), &codec).unwrap();
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     let mut settings = frame::Settings::default();
+    //     settings.set_max_header_list_size(Some(120));
+    //     io.encode(settings.into(), &codec).unwrap();
 
-        let pseudo = frame::PseudoHeaders {
-            method: Some(Method::GET),
-            scheme: Some("https".into()),
-            authority: Some("localhost".into()),
-            path: Some("/".into()),
-            ..Default::default()
-        };
-        let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo, HeaderMap::new(), true);
-        io.send(hdrs.into(), &codec).await.unwrap();
+    //     let pseudo = frame::PseudoHeaders {
+    //         method: Some(Method::GET),
+    //         scheme: Some("https".into()),
+    //         authority: Some("localhost".into()),
+    //         path: Some("/".into()),
+    //         ..Default::default()
+    //     };
+    //     let hdrs = frame::Headers::new(frame::StreamId::CLIENT, pseudo, HeaderMap::new(), true);
+    //     io.send(hdrs.into(), &codec).await.unwrap();
 
-        let mut headers = 0;
-        loop {
-            match io.recv(&codec).await.unwrap().unwrap() {
-                frame::Frame::Headers(hdrs) => {
-                    headers += 1;
-                    if hdrs.is_end_stream() {
-                        break;
-                    }
-                }
-                frame::Frame::Settings(s) if !s.is_ack() => {
-                    io.encode(frame::Settings::ack().into(), &codec).unwrap();
-                }
-                frame::Frame::Reset(rst) => panic!("unexpected reset: {rst:?}"),
-                _ => {}
-            }
-        }
-        assert_eq!(headers, 2);
-        assert_eq!(*results.lock().unwrap(), [false, true, false, true]);
-    }
+    //     let mut headers = 0;
+    //     loop {
+    //         match io.recv(&codec).await.unwrap().unwrap() {
+    //             frame::Frame::Headers(hdrs) => {
+    //                 headers += 1;
+    //                 if hdrs.is_end_stream() {
+    //                     break;
+    //                 }
+    //             }
+    //             frame::Frame::Settings(s) if !s.is_ack() => {
+    //                 io.encode(frame::Settings::ack().into(), &codec).unwrap();
+    //             }
+    //             frame::Frame::Reset(rst) => panic!("unexpected reset: {rst:?}"),
+    //             _ => {}
+    //         }
+    //     }
+    //     assert_eq!(headers, 2);
+    //     assert_eq!(*results.lock().unwrap(), [false, true, false, true]);
+    // }
 
     /// STATEMENT: Malformed response pseudo-headers fail only their streams and leave the
     /// connection usable.
@@ -2706,67 +2717,68 @@ mod tests {
     ///   observed resets use `Reason::PROTOCOL_ERROR`.
     /// - Send a valid request on the same connection and verify response headers contain status
     ///   200.
-    #[ntex::test]
-    async fn test_malformed_response_pseudo() {
-        let srv = test::server(async |()| {
-            fn_service(async move |io: Io<_>| {
-                let codec = Codec::default();
-                let mut preface = [0; 24];
-                io.read_exact(&mut preface).await.unwrap();
-                io.send(frame::Settings::default().into(), &codec).await.unwrap();
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_malformed_response_pseudo() {
+    //     let srv = test::server(async |()| {
+    //         fn_service(async move |io: Io<_>| {
+    //             let codec = Codec::default();
+    //             let mut preface = [0; 24];
+    //             io.read_exact(&mut preface).await.unwrap();
+    //             io.send(frame::Settings::default().into(), &codec).await.unwrap();
 
-                while let Ok(Some(frm)) = io.recv(&codec).await {
-                    match frm {
-                        frame::Frame::Headers(hdrs) => {
-                            let id = hdrs.stream_id();
-                            let pseudo = match hdrs.pseudo().path.as_deref() {
-                                Some("/no-status") => frame::PseudoHeaders::default(),
-                                Some("/path") => frame::PseudoHeaders {
-                                    status: Some(ntex::http::StatusCode::OK),
-                                    path: Some("/".into()),
-                                    ..Default::default()
-                                },
-                                _ => frame::PseudoHeaders::response(ntex::http::StatusCode::OK),
-                            };
-                            let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), true);
-                            io.send(hdrs.into(), &codec).await.unwrap();
-                        }
-                        frame::Frame::Reset(rst) => {
-                            assert_eq!(rst.reason(), Reason::PROTOCOL_ERROR);
-                        }
-                        _ => {}
-                    }
-                }
-                Ok::<_, ()>(())
-            })
-        });
+    //             while let Ok(Some(frm)) = io.recv(&codec).await {
+    //                 match frm {
+    //                     frame::Frame::Headers(hdrs) => {
+    //                         let id = hdrs.stream_id();
+    //                         let pseudo = match hdrs.pseudo().path.as_deref() {
+    //                             Some("/no-status") => frame::PseudoHeaders::default(),
+    //                             Some("/path") => frame::PseudoHeaders {
+    //                                 status: Some(ntex_http::StatusCode::OK),
+    //                                 path: Some("/".into()),
+    //                                 ..Default::default()
+    //                             },
+    //                             _ => frame::PseudoHeaders::response(ntex_http::StatusCode::OK),
+    //                         };
+    //                         let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), true);
+    //                         io.send(hdrs.into(), &codec).await.unwrap();
+    //                     }
+    //                     frame::Frame::Reset(rst) => {
+    //                         assert_eq!(rst.reason(), Reason::PROTOCOL_ERROR);
+    //                     }
+    //                     _ => {}
+    //                 }
+    //             }
+    //             Ok::<_, ()>(())
+    //         })
+    //     });
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let client = h2::client::SimpleClient::new(io, false, "localhost".into());
-        sleep(Millis(150)).await;
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let client = h2::client::SimpleClient::new(io, false, "localhost".into());
+    //     sleep(Millis(150)).await;
 
-        for (path, expected) in [
-            ("/no-status", Some(h2::StreamError::MissingPseudo("status"))),
-            ("/path", Some(h2::StreamError::UnexpectedPseudo("path"))),
-            ("/", None),
-        ] {
-            let (_snd, rcv) = client
-                .send(Method::GET, path.into(), HeaderMap::new(), true)
-                .await
-                .unwrap();
-            let msg = rcv.recv().await.unwrap();
-            match (msg.kind, expected) {
-                (h2::MessageKind::Eof(h2::StreamEof::Error(err)), Some(expected)) => {
-                    assert_eq!(*err, expected);
-                }
-                (h2::MessageKind::Headers { pseudo, .. }, None) => {
-                    assert_eq!(pseudo.status, Some(ntex::http::StatusCode::OK));
-                }
-                (kind, _) => panic!("unexpected message for {path}: {kind:?}"),
-            }
-        }
-    }
+    //     for (path, expected) in [
+    //         ("/no-status", Some(h2::StreamError::MissingPseudo("status"))),
+    //         ("/path", Some(h2::StreamError::UnexpectedPseudo("path"))),
+    //         ("/", None),
+    //     ] {
+    //         let (_snd, rcv) = client
+    //             .send(Method::GET, path.into(), HeaderMap::new(), true)
+    //             .await
+    //             .unwrap();
+    //         let msg = rcv.recv().await.unwrap();
+    //         match (msg.kind, expected) {
+    //             (h2::MessageKind::Eof(h2::StreamEof::Error(err)), Some(expected)) => {
+    //                 assert_eq!(*err, expected);
+    //             }
+    //             (h2::MessageKind::Headers { pseudo, .. }, None) => {
+    //                 assert_eq!(pseudo.status, Some(ntex_http::StatusCode::OK));
+    //             }
+    //             (kind, _) => panic!("unexpected message for {path}: {kind:?}"),
+    //         }
+    //     }
+    // }
 
     /// STATEMENT: Local resets publish a final error message while the stream receive side
     /// remains open.
@@ -2778,112 +2790,113 @@ mod tests {
     ///   times out; verify both wire resets use `Reason::CANCEL`.
     /// - Check that server EOF events identify the streams with `StreamError::LocalReset` and
     ///   `StreamError::CapacityTimeout`, respectively.
-    #[ntex::test]
-    async fn test_local_reset_publishes_eof() {
-        use std::sync::{Arc, Mutex};
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_local_reset_publishes_eof() {
+    //     use std::sync::{Arc, Mutex};
 
-        let events = Arc::new(Mutex::new(Vec::new()));
-        let events2 = events.clone();
-        let srv = test::server_with_config(
-            async move |()| {
-                let events = events2.clone();
-                fn_service(move |io: Io<_>| {
-                    let events = events.clone();
-                    async move {
-                        let _ = h2::server::handle_one(
-                            io.into(),
-                            Pipeline::new((), async move |msg: h2::Message| {
-                                match msg.kind {
-                                    h2::MessageKind::Headers { pseudo, .. } => {
-                                        if pseudo.path.as_deref() == Some("/reset") {
-                                            msg.stream.reset(Reason::CANCEL);
-                                        } else {
-                                            msg.stream
-                                                .send_response(
-                                                    ntex::http::StatusCode::OK,
-                                                    HeaderMap::default(),
-                                                    false,
-                                                )
-                                                .unwrap();
-                                            let _ = msg.stream.send_payload("data", true).await;
-                                        }
-                                    }
-                                    h2::MessageKind::Eof(h2::StreamEof::Error(err)) => {
-                                        events.lock().unwrap().push((msg.stream.id(), *err));
-                                    }
-                                    _ => {}
-                                }
-                                Ok::<_, h2::StreamError>(())
-                            }),
-                            Pipeline::new(
-                                (),
-                                fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                    Ok::<_, ()>(msg.ack())
-                                })
-                                .map_err(|()| unreachable!()),
-                            ),
-                        )
-                        .await;
+    //     let events = Arc::new(Mutex::new(Vec::new()));
+    //     let events2 = events.clone();
+    //     let srv = test::server_with_config(
+    //         async move |()| {
+    //             let events = events2.clone();
+    //             fn_service(move |io: Io<_>| {
+    //                 let events = events.clone();
+    //                 async move {
+    //                     let _ = h2::server::handle_one(
+    //                         io.into(),
+    //                         Pipeline::new((), async move |msg: h2::Message| {
+    //                             match msg.kind {
+    //                                 h2::MessageKind::Headers { pseudo, .. } => {
+    //                                     if pseudo.path.as_deref() == Some("/reset") {
+    //                                         msg.stream.reset(Reason::CANCEL);
+    //                                     } else {
+    //                                         msg.stream
+    //                                             .send_response(
+    //                                                 ntex_http::StatusCode::OK,
+    //                                                 HeaderMap::default(),
+    //                                                 false,
+    //                                             )
+    //                                             .unwrap();
+    //                                         let _ = msg.stream.send_payload("data", true).await;
+    //                                     }
+    //                                 }
+    //                                 h2::MessageKind::Eof(h2::StreamEof::Error(err)) => {
+    //                                     events.lock().unwrap().push((msg.stream.id(), *err));
+    //                                 }
+    //                                 _ => {}
+    //                             }
+    //                             Ok::<_, h2::StreamError>(())
+    //                         }),
+    //                         Pipeline::new(
+    //                             (),
+    //                             fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                                 Ok::<_, ()>(msg.ack())
+    //                             })
+    //                             .map_err(|()| unreachable!()),
+    //                         ),
+    //                     )
+    //                     .await;
 
-                        Ok::<_, ()>(())
-                    }
-                })
-            },
-            SharedCfg::new("SRV").add(
-                ServiceConfig::new()
-                    .set_ping_timeout(Seconds::ZERO)
-                    .set_capacity_timeout(Seconds(1)),
-            ),
-        );
+    //                     Ok::<_, ()>(())
+    //                 }
+    //             })
+    //         },
+    //         SharedCfg::new("SRV").add(
+    //             ServiceConfig::new()
+    //                 .set_ping_timeout(Seconds::ZERO)
+    //                 .set_capacity_timeout(Seconds(1)),
+    //         ),
+    //     );
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
-        // no send window for the server
-        let mut settings = frame::Settings::default();
-        settings.set_initial_window_size(Some(0));
-        io.encode(settings.into(), &codec).unwrap();
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     // no send window for the server
+    //     let mut settings = frame::Settings::default();
+    //     settings.set_initial_window_size(Some(0));
+    //     io.encode(settings.into(), &codec).unwrap();
 
-        let open = async |id, path: &'static str| {
-            let pseudo = frame::PseudoHeaders {
-                method: Some(Method::POST),
-                scheme: Some("HTTPS".into()),
-                authority: Some("localhost".into()),
-                path: Some(path.into()),
-                ..Default::default()
-            };
-            let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
-            io.send(hdrs.into(), &codec).await.unwrap();
-            loop {
-                match io.recv(&codec).await.unwrap().unwrap() {
-                    frame::Frame::Reset(rst) => return rst,
-                    frame::Frame::Settings(s) if !s.is_ack() => {
-                        io.encode(frame::Settings::ack().into(), &codec).unwrap();
-                    }
-                    _ => {}
-                }
-            }
-        };
+    //     let open = async |id, path: &'static str| {
+    //         let pseudo = frame::PseudoHeaders {
+    //             method: Some(Method::POST),
+    //             scheme: Some("HTTPS".into()),
+    //             authority: Some("localhost".into()),
+    //             path: Some(path.into()),
+    //             ..Default::default()
+    //         };
+    //         let hdrs = frame::Headers::new(id, pseudo, HeaderMap::new(), false);
+    //         io.send(hdrs.into(), &codec).await.unwrap();
+    //         loop {
+    //             match io.recv(&codec).await.unwrap().unwrap() {
+    //                 frame::Frame::Reset(rst) => return rst,
+    //                 frame::Frame::Settings(s) if !s.is_ack() => {
+    //                     io.encode(frame::Settings::ack().into(), &codec).unwrap();
+    //                 }
+    //                 _ => {}
+    //             }
+    //         }
+    //     };
 
-        let id = frame::StreamId::CLIENT;
-        let rst = open(id, "/reset").await;
-        assert_eq!(rst.reason(), Reason::CANCEL);
+    //     let id = frame::StreamId::CLIENT;
+    //     let rst = open(id, "/reset").await;
+    //     assert_eq!(rst.reason(), Reason::CANCEL);
 
-        let id2 = id.next_id().unwrap();
-        let rst = open(id2, "/timeout").await;
-        assert_eq!(rst.reason(), Reason::CANCEL);
+    //     let id2 = id.next_id().unwrap();
+    //     let rst = open(id2, "/timeout").await;
+    //     assert_eq!(rst.reason(), Reason::CANCEL);
 
-        sleep(Millis(100)).await;
-        let events = events.lock().unwrap().clone();
-        assert_eq!(
-            events,
-            vec![
-                (id, h2::StreamError::LocalReset(Reason::CANCEL)),
-                (id2, h2::StreamError::CapacityTimeout)
-            ]
-        );
-    }
+    //     sleep(Millis(100)).await;
+    //     let events = events.lock().unwrap().clone();
+    //     assert_eq!(
+    //         events,
+    //         vec![
+    //             (id, h2::StreamError::LocalReset(Reason::CANCEL)),
+    //             (id2, h2::StreamError::CapacityTimeout)
+    //         ]
+    //     );
+    // }
 
     /// STATEMENT: Shutdown refuses new streams without exhausting the reset limit or disrupting
     /// the connection.
@@ -2894,81 +2907,82 @@ mod tests {
     /// - Open 32 later streams, verify each receives `Reason::REFUSED_STREAM`, and send late
     ///   data for each refused stream.
     /// - Send a `Ping` and verify its acknowledgment still arrives.
-    #[ntex::test]
-    async fn test_shutdown_refuses_new_streams() {
-        let srv = test::server_with_config(
-            async |()| {
-                fn_service(async move |io: Io<_>| {
-                    let _ = h2::server::handle_one(
-                        io.into(),
-                        Pipeline::new((), async move |_: h2::Message| {
-                            ServiceConfig::shutdown();
-                            sleep(Millis(10_000)).await;
-                            Ok::<_, h2::StreamError>(())
-                        }),
-                        Pipeline::new(
-                            (),
-                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                Ok::<_, ()>(msg.ack())
-                            })
-                            .map_err(|()| unreachable!()),
-                        ),
-                    )
-                    .await;
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_shutdown_refuses_new_streams() {
+    //     let srv = test::server_with_config(
+    //         async |()| {
+    //             fn_service(async move |io: Io<_>| {
+    //                 let _ = h2::server::handle_one(
+    //                     io.into(),
+    //                     Pipeline::new((), async move |_: h2::Message| {
+    //                         ServiceConfig::shutdown();
+    //                         sleep(Millis(10_000)).await;
+    //                         Ok::<_, h2::StreamError>(())
+    //                     }),
+    //                     Pipeline::new(
+    //                         (),
+    //                         fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                             Ok::<_, ()>(msg.ack())
+    //                         })
+    //                         .map_err(|()| unreachable!()),
+    //                     ),
+    //                 )
+    //                 .await;
 
-                    Ok::<_, ()>(())
-                })
-            },
-            SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
-        );
+    //                 Ok::<_, ()>(())
+    //             })
+    //         },
+    //         SharedCfg::new("SRV").add(ServiceConfig::new().set_ping_timeout(Seconds::ZERO)),
+    //     );
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
-        io.encode(frame::Settings::default().into(), &codec).unwrap();
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     io.encode(frame::Settings::default().into(), &codec).unwrap();
 
-        // settings & window
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
+    //     // settings & window
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
 
-        let pseudo = frame::PseudoHeaders {
-            method: Some(Method::POST),
-            scheme: Some("HTTPS".into()),
-            authority: Some("localhost".into()),
-            path: Some("/".into()),
-            ..Default::default()
-        };
-        let mut id = frame::StreamId::CLIENT;
-        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
-        io.send(hdrs.into(), &codec).await.unwrap();
+    //     let pseudo = frame::PseudoHeaders {
+    //         method: Some(Method::POST),
+    //         scheme: Some("HTTPS".into()),
+    //         authority: Some("localhost".into()),
+    //         path: Some("/".into()),
+    //         ..Default::default()
+    //     };
+    //     let mut id = frame::StreamId::CLIENT;
+    //     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    //     io.send(hdrs.into(), &codec).await.unwrap();
 
-        // shutdown is announced, the open stream is processed
-        let frm = goaway(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(frm.reason(), Reason::NO_ERROR);
-        assert_eq!(frm.last_stream_id(), id);
+    //     // shutdown is announced, the open stream is processed
+    //     let frm = goaway(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(frm.reason(), Reason::NO_ERROR);
+    //     assert_eq!(frm.last_stream_id(), id);
 
-        for _ in 0..32 {
-            id = id.next_id().unwrap();
-            let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
-            io.send(hdrs.into(), &codec).await.unwrap();
-            assert_eq!(
-                io.recv(&codec).await.unwrap().unwrap(),
-                frame::Frame::Reset(frame::Reset::new(id, Reason::REFUSED_STREAM))
-            );
-            // data sent before the reset is seen is ignored
-            io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
-                .await
-                .unwrap();
-        }
+    //     for _ in 0..32 {
+    //         id = id.next_id().unwrap();
+    //         let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    //         io.send(hdrs.into(), &codec).await.unwrap();
+    //         assert_eq!(
+    //             io.recv(&codec).await.unwrap().unwrap(),
+    //             frame::Frame::Reset(frame::Reset::new(id, Reason::REFUSED_STREAM))
+    //         );
+    //         // data sent before the reset is seen is ignored
+    //         io.send(frame::Data::new(id, Bytes::from_static(b"data")).into(), &codec)
+    //             .await
+    //             .unwrap();
+    //     }
 
-        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
-        match io.recv(&codec).await.unwrap().unwrap() {
-            frame::Frame::Ping(ping) => assert!(ping.is_ack()),
-            frm => panic!("unexpected frame: {frm:?}"),
-        }
-    }
+    //     io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    //     match io.recv(&codec).await.unwrap().unwrap() {
+    //         frame::Frame::Ping(ping) => assert!(ping.is_ack()),
+    //         frm => panic!("unexpected frame: {frm:?}"),
+    //     }
+    // }
 
     /// STATEMENT: Reset history temporarily ignores late data, then treats forgotten-stream
     /// data as a stream error.
@@ -2981,146 +2995,147 @@ mod tests {
     ///   triggers `Reason::PROTOCOL_ERROR`.
     /// - On a second connection, acknowledge a local reset with a peer reset and verify
     ///   subsequent data immediately receives `Reason::STREAM_CLOSED`.
-    #[ntex::test]
-    async fn test_delay_reset_queue() {
-        let srv = test::server_with_config(
-            async |()| {
-                fn_service(async move |io: Io<_>| {
-                    let _ = h2::server::handle_one(
-                        io.into(),
-                        Pipeline::new((), async move |msg: h2::Message| {
-                            msg.stream().reset(Reason::NO_ERROR);
-                            Ok::<_, h2::StreamError>(())
-                        }),
-                        Pipeline::new(
-                            (),
-                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                Ok::<_, ()>(msg.ack())
-                            })
-                            .map_err(|()| unreachable!()),
-                        ),
-                    )
-                    .await;
+    // TODO: Comment for cyclical dependencies with ntex
+    // #[t::asyn]
+    // async fn test_delay_reset_queue() {
+    //     let srv = test::server_with_config(
+    //         async |()| {
+    //             fn_service(async move |io: Io<_>| {
+    //                 let _ = h2::server::handle_one(
+    //                     io.into(),
+    //                     Pipeline::new((), async move |msg: h2::Message| {
+    //                         msg.stream().reset(Reason::NO_ERROR);
+    //                         Ok::<_, h2::StreamError>(())
+    //                     }),
+    //                     Pipeline::new(
+    //                         (),
+    //                         fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                             Ok::<_, ()>(msg.ack())
+    //                         })
+    //                         .map_err(|()| unreachable!()),
+    //                     ),
+    //                 )
+    //                 .await;
 
-                    Ok::<_, ()>(())
-                })
-            },
-            SharedCfg::new("SRV").add(
-                ServiceConfig::new()
-                    .set_ping_timeout(Seconds::ZERO)
-                    .set_reset_stream_duration(Seconds(1)),
-            ),
-        );
+    //                 Ok::<_, ()>(())
+    //             })
+    //         },
+    //         SharedCfg::new("SRV").add(
+    //             ServiceConfig::new()
+    //                 .set_ping_timeout(Seconds::ZERO)
+    //                 .set_reset_stream_duration(Seconds(1)),
+    //         ),
+    //     );
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr.clone()).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr.clone()).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
-        let settings = frame::Settings::default();
-        io.encode(settings.into(), &codec).unwrap();
+    //     let settings = frame::Settings::default();
+    //     io.encode(settings.into(), &codec).unwrap();
 
-        // settings & window
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
+    //     // settings & window
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
 
-        let id = frame::StreamId::CLIENT;
-        let pseudo = frame::PseudoHeaders {
-            method: Some(Method::GET),
-            scheme: Some("HTTPS".into()),
-            authority: Some("localhost".into()),
-            path: Some("/".into()),
-            ..Default::default()
-        };
-        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
-        io.send(hdrs.into(), &codec).await.unwrap();
+    //     let id = frame::StreamId::CLIENT;
+    //     let pseudo = frame::PseudoHeaders {
+    //         method: Some(Method::GET),
+    //         scheme: Some("HTTPS".into()),
+    //         authority: Some("localhost".into()),
+    //         path: Some("/".into()),
+    //         ..Default::default()
+    //     };
+    //     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    //     io.send(hdrs.into(), &codec).await.unwrap();
 
-        // server resets stream
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::NO_ERROR);
+    //     // server resets stream
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // server should keep reseted streams for some time,
-        // data for such streams is ignored
-        let pl = frame::Data::new(id, Bytes::from_static(b"data"));
-        io.send(pl.clone().into(), &codec).await.unwrap();
-        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
-        let res = io.recv(&codec).await.unwrap().unwrap();
-        assert!(
-            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
-            "{res:?}"
-        );
+    //     // server should keep reseted streams for some time,
+    //     // data for such streams is ignored
+    //     let pl = frame::Data::new(id, Bytes::from_static(b"data"));
+    //     io.send(pl.clone().into(), &codec).await.unwrap();
+    //     io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    //     let res = io.recv(&codec).await.unwrap().unwrap();
+    //     assert!(
+    //         matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+    //         "{res:?}"
+    //     );
 
-        // reset queue cleared in 1 sec (for test)
-        sleep(Millis(1100)).await;
+    //     // reset queue cleared in 1 sec (for test)
+    //     sleep(Millis(1100)).await;
 
-        let id2 = id.next_id().unwrap();
-        let hdrs = frame::Headers::new(id2, pseudo.clone(), HeaderMap::new(), false);
-        io.send(hdrs.into(), &codec).await.unwrap();
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::NO_ERROR);
+    //     let id2 = id.next_id().unwrap();
+    //     let hdrs = frame::Headers::new(id2, pseudo.clone(), HeaderMap::new(), false);
+    //     io.send(hdrs.into(), &codec).await.unwrap();
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // prev closed stream, stream error only
-        io.send(pl.into(), &codec).await.unwrap();
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.stream_id(), id);
-        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+    //     // prev closed stream, stream error only
+    //     io.send(pl.into(), &codec).await.unwrap();
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.stream_id(), id);
+    //     assert_eq!(res.reason(), Reason::STREAM_CLOSED);
 
-        // late window update for the closed stream is ignored
-        io.send(frame::WindowUpdate::new(id, 10).into(), &codec)
-            .await
-            .unwrap();
-        io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
-        let res = io.recv(&codec).await.unwrap().unwrap();
-        assert!(
-            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
-            "{res:?}"
-        );
+    //     // late window update for the closed stream is ignored
+    //     io.send(frame::WindowUpdate::new(id, 10).into(), &codec)
+    //         .await
+    //         .unwrap();
+    //     io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
+    //     let res = io.recv(&codec).await.unwrap().unwrap();
+    //     assert!(
+    //         matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+    //         "{res:?}"
+    //     );
 
-        // idle stream
-        let pl = frame::Data::new(101.into(), Bytes::from_static(b"data"));
-        io.send(pl.into(), &codec).await.unwrap();
-        let res = goaway(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
+    //     // idle stream
+    //     let pl = frame::Data::new(101.into(), Bytes::from_static(b"data"));
+    //     io.send(pl.into(), &codec).await.unwrap();
+    //     let res = goaway(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.reason(), Reason::PROTOCOL_ERROR);
 
-        // SECOND connection
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     // SECOND connection
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
 
-        let settings = frame::Settings::default();
-        io.encode(settings.into(), &codec).unwrap();
+    //     let settings = frame::Settings::default();
+    //     io.encode(settings.into(), &codec).unwrap();
 
-        // settings & window
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
+    //     // settings & window
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
 
-        let id = frame::StreamId::CLIENT;
-        let pseudo = frame::PseudoHeaders {
-            method: Some(Method::GET),
-            scheme: Some("HTTPS".into()),
-            authority: Some("localhost".into()),
-            path: Some("/".into()),
-            ..Default::default()
-        };
-        let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
-        io.send(hdrs.into(), &codec).await.unwrap();
+    //     let id = frame::StreamId::CLIENT;
+    //     let pseudo = frame::PseudoHeaders {
+    //         method: Some(Method::GET),
+    //         scheme: Some("HTTPS".into()),
+    //         authority: Some("localhost".into()),
+    //         path: Some("/".into()),
+    //         ..Default::default()
+    //     };
+    //     let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    //     io.send(hdrs.into(), &codec).await.unwrap();
 
-        // server resets stream
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::NO_ERROR);
+    //     // server resets stream
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // after server receives remote reset, next frame is a stream error
-        io.send(frame::Reset::new(id, Reason::NO_ERROR).into(), &codec)
-            .await
-            .unwrap();
+    //     // after server receives remote reset, next frame is a stream error
+    //     io.send(frame::Reset::new(id, Reason::NO_ERROR).into(), &codec)
+    //         .await
+    //         .unwrap();
 
-        let pl = frame::Data::new(id, Bytes::from_static(b"data"));
-        io.send(pl.clone().into(), &codec).await.unwrap();
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
-    }
+    //     let pl = frame::Data::new(id, Bytes::from_static(b"data"));
+    //     io.send(pl.clone().into(), &codec).await.unwrap();
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+    // }
 
     /// STATEMENT: Late frames for streams purged from reset history do not cause connection
     /// errors (F5).
@@ -3131,96 +3146,96 @@ mod tests {
     ///   ping is acknowledged.
     /// - Send late data for stream 1, verify `Reason::STREAM_CLOSED` on that stream, and
     ///   confirm another ping is acknowledged.
-    #[ntex::test]
-    async fn test_late_frames_for_forgotten_streams() {
-        let srv = test::server_with_config(
-            async |()| {
-                fn_service(async move |io: Io<_>| {
-                    let _ = h2::server::handle_one(
-                        io.into(),
-                        Pipeline::new((), async move |msg: h2::Message| {
-                            if matches!(msg.kind(), h2::MessageKind::Headers { .. }) {
-                                msg.stream().reset(Reason::NO_ERROR);
-                            }
-                            Ok::<_, h2::StreamError>(())
-                        }),
-                        Pipeline::new(
-                            (),
-                            fn_service(async move |msg: h2::Control<h2::StreamError>| {
-                                Ok::<_, ()>(msg.ack())
-                            })
-                            .map_err(|()| unreachable!()),
-                        ),
-                    )
-                    .await;
-                    Ok::<_, ()>(())
-                })
-            },
-            SharedCfg::new("SRV").add(
-                ServiceConfig::new()
-                    .set_ping_timeout(Seconds::ZERO)
-                    .set_max_concurrent_reset_streams(1),
-            ),
-        );
+    // #[t::asyn]
+    // async fn test_late_frames_for_forgotten_streams() {
+    //     let srv = test::server_with_config(
+    //         async |()| {
+    //             fn_service(async move |io: Io<_>| {
+    //                 let _ = h2::server::handle_one(
+    //                     io.into(),
+    //                     Pipeline::new((), async move |msg: h2::Message| {
+    //                         if matches!(msg.kind(), h2::MessageKind::Headers { .. }) {
+    //                             msg.stream().reset(Reason::NO_ERROR);
+    //                         }
+    //                         Ok::<_, h2::StreamError>(())
+    //                     }),
+    //                     Pipeline::new(
+    //                         (),
+    //                         fn_service(async move |msg: h2::Control<h2::StreamError>| {
+    //                             Ok::<_, ()>(msg.ack())
+    //                         })
+    //                         .map_err(|()| unreachable!()),
+    //                     ),
+    //                 )
+    //                 .await;
+    //                 Ok::<_, ()>(())
+    //             })
+    //         },
+    //         SharedCfg::new("SRV").add(
+    //             ServiceConfig::new()
+    //                 .set_ping_timeout(Seconds::ZERO)
+    //                 .set_max_concurrent_reset_streams(1),
+    //         ),
+    //     );
 
-        let addr = ntex::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
-        let io = ntex::connect::connect(addr).await.unwrap();
-        let codec = Codec::default();
-        let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
-        io.encode(frame::Settings::default().into(), &codec).unwrap();
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
-        let _ = io.recv(&codec).await;
+    //     let addr = ntex_net::connect::Connect::new("localhost").set_addr(Some(srv.addr()));
+    //     let io = ntex_net::connect::connect(addr).await.unwrap();
+    //     let codec = Codec::default();
+    //     let _ = io.with_write_src(|buf| buf.extend_from_slice(&PREFACE));
+    //     io.encode(frame::Settings::default().into(), &codec).unwrap();
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
+    //     let _ = io.recv(&codec).await;
 
-        let pseudo = frame::PseudoHeaders {
-            method: Some(Method::GET),
-            scheme: Some("HTTPS".into()),
-            authority: Some("localhost".into()),
-            path: Some("/".into()),
-            ..Default::default()
-        };
+    //     let pseudo = frame::PseudoHeaders {
+    //         method: Some(Method::GET),
+    //         scheme: Some("HTTPS".into()),
+    //         authority: Some("localhost".into()),
+    //         path: Some("/".into()),
+    //         ..Default::default()
+    //     };
 
-        // stream 1 and 3 are reset, stream 1 is purged from the reset queue
-        let id1 = frame::StreamId::CLIENT;
-        let id3 = id1.next_id().unwrap();
-        for id in [id1, id3] {
-            let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
-            io.send(hdrs.into(), &codec).await.unwrap();
-            let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-            assert_eq!(res.reason(), Reason::NO_ERROR);
-        }
+    //     // stream 1 and 3 are reset, stream 1 is purged from the reset queue
+    //     let id1 = frame::StreamId::CLIENT;
+    //     let id3 = id1.next_id().unwrap();
+    //     for id in [id1, id3] {
+    //         let hdrs = frame::Headers::new(id, pseudo.clone(), HeaderMap::new(), false);
+    //         io.send(hdrs.into(), &codec).await.unwrap();
+    //         let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //         assert_eq!(res.reason(), Reason::NO_ERROR);
+    //     }
 
-        // trailers for the reset stream are ignored
-        let hdrs = frame::Headers::trailers(id3, HeaderMap::new());
-        io.send(hdrs.into(), &codec).await.unwrap();
+    //     // trailers for the reset stream are ignored
+    //     let hdrs = frame::Headers::trailers(id3, HeaderMap::new());
+    //     io.send(hdrs.into(), &codec).await.unwrap();
 
-        // late window update is ignored
-        io.send(frame::WindowUpdate::new(id1, 10).into(), &codec)
-            .await
-            .unwrap();
-        io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
-        let res = io.recv(&codec).await.unwrap().unwrap();
-        assert!(
-            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
-            "{res:?}"
-        );
+    //     // late window update is ignored
+    //     io.send(frame::WindowUpdate::new(id1, 10).into(), &codec)
+    //         .await
+    //         .unwrap();
+    //     io.send(frame::Ping::new([1; 8]).into(), &codec).await.unwrap();
+    //     let res = io.recv(&codec).await.unwrap().unwrap();
+    //     assert!(
+    //         matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+    //         "{res:?}"
+    //     );
 
-        // late data is a stream error
-        let pl = frame::Data::new(id1, Bytes::from_static(b"data"));
-        io.send(pl.into(), &codec).await.unwrap();
-        let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
-        assert_eq!(res.stream_id(), id1);
-        assert_eq!(res.reason(), Reason::STREAM_CLOSED);
-        io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
-        let res = io.recv(&codec).await.unwrap().unwrap();
-        assert!(
-            matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
-            "{res:?}"
-        );
-    }
+    //     // late data is a stream error
+    //     let pl = frame::Data::new(id1, Bytes::from_static(b"data"));
+    //     io.send(pl.into(), &codec).await.unwrap();
+    //     let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
+    //     assert_eq!(res.stream_id(), id1);
+    //     assert_eq!(res.reason(), Reason::STREAM_CLOSED);
+    //     io.send(frame::Ping::new([2; 8]).into(), &codec).await.unwrap();
+    //     let res = io.recv(&codec).await.unwrap().unwrap();
+    //     assert!(
+    //         matches!(res, frame::Frame::Ping(ping) if ping.is_ack()),
+    //         "{res:?}"
+    //     );
+    // }
 
-    async fn zero_window_client() -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
-        let (io, srv) = ntex::io::testing::IoTest::create();
+    async fn zero_window_client() -> (h2::client::SimpleClient, ntex_io::testing::IoTest) {
+        let (io, srv) = ntex_io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_capacity_timeout(Seconds(1)))
@@ -3240,7 +3255,7 @@ mod tests {
     ///   `on_reset`.
     /// - Check the task remains pending, inject a peer reset, and verify both the task and
     ///   stream report the reset within 500 milliseconds.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_on_reset_remote_reset() {
         let (client, srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3250,7 +3265,7 @@ mod tests {
         assert!(!stream.is_reset());
 
         let st = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move {
+        let fut = ntex_rt::spawn(async move {
             st.on_reset().await;
             st.is_reset()
         });
@@ -3258,7 +3273,7 @@ mod tests {
         assert!(!fut.is_finished());
 
         srv.write([0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8]);
-        let res = ntex::time::timeout(Millis(500), fut).await;
+        let res = ntex_util::time::timeout(Millis(500), fut).await;
         assert!(res.unwrap().unwrap());
         assert!(stream.is_reset());
     }
@@ -3269,7 +3284,7 @@ mod tests {
     /// - Open a zero-window stream and spawn a task awaiting `on_reset`.
     /// - Close the peer transport and verify the task finishes within 500 milliseconds with
     ///   `is_reset` true.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_on_reset_connection_closed() {
         let (client, srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3278,14 +3293,14 @@ mod tests {
             .unwrap();
 
         let st = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move {
+        let fut = ntex_rt::spawn(async move {
             st.on_reset().await;
             st.is_reset()
         });
         sleep(Millis(50)).await;
 
         srv.close().await;
-        let res = ntex::time::timeout(Millis(500), fut).await;
+        let res = ntex_util::time::timeout(Millis(500), fut).await;
         assert!(res.unwrap().unwrap());
     }
 
@@ -3297,7 +3312,7 @@ mod tests {
     ///   one, as a dispatcher does when it spawns a call that was first polled inline.
     /// - Verify both polls are pending without a panic, inject a stream window update of 4, and
     ///   verify only the second waker is woken and the next poll yields capacity 4.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_wait_moves_between_tasks() {
         use std::{sync::Arc, task::Context, task::Poll, task::Waker};
 
@@ -3332,7 +3347,7 @@ mod tests {
     /// - Open a zero-window stream and poll `poll_send_capacity` twice from the same task,
     ///   verifying both results are pending.
     /// - Reset the stream with `Reason::CANCEL` and verify the next capacity poll is ready.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_waiter_repoll() {
         let (client, _srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3342,17 +3357,21 @@ mod tests {
 
         let st = stream.stream();
         assert!(
-            ntex::util::lazy(|cx| st.poll_send_capacity(cx))
+            ntex_util::future::lazy(|cx| st.poll_send_capacity(cx))
                 .await
                 .is_pending()
         );
         assert!(
-            ntex::util::lazy(|cx| st.poll_send_capacity(cx))
+            ntex_util::future::lazy(|cx| st.poll_send_capacity(cx))
                 .await
                 .is_pending()
         );
         assert!(stream.reset(Reason::CANCEL));
-        assert!(ntex::util::lazy(|cx| st.poll_send_capacity(cx)).await.is_ready());
+        assert!(
+            ntex_util::future::lazy(|cx| st.poll_send_capacity(cx))
+                .await
+                .is_ready()
+        );
     }
 
     /// STATEMENT: Resetting a stream unregisters its capacity timer and fails its pending
@@ -3363,7 +3382,7 @@ mod tests {
     ///   registered.
     /// - Reset the stream with `Reason::CANCEL`, verify the timer is unregistered, and check
     ///   the waiter returns an error.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_timer_stopped_on_close() {
         let (client, _srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3373,7 +3392,7 @@ mod tests {
 
         // pending capacity wait starts the timer
         let waiter = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        let fut = ntex_rt::spawn(async move { waiter.send_capacity().await });
         sleep(Millis(50)).await;
         assert!(crate::timer::is_registered(stream.stream()));
 
@@ -3391,7 +3410,7 @@ mod tests {
     ///   registered.
     /// - Disconnect the receive half of the connection, verify the timer is unregistered, and
     ///   check the waiter returns an error.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_timer_stopped_on_failure() {
         let (client, _srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3400,7 +3419,7 @@ mod tests {
             .unwrap();
 
         let waiter = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        let fut = ntex_rt::spawn(async move { waiter.send_capacity().await });
         sleep(Millis(50)).await;
         assert!(crate::timer::is_registered(stream.stream()));
 
@@ -3418,7 +3437,7 @@ mod tests {
     ///   timer.
     /// - Call `timer::cancel` to simulate timer-task cancellation and verify the stream is no
     ///   longer registered.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_timer_released_on_timer_cancel() {
         let (client, _srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3427,7 +3446,7 @@ mod tests {
             .unwrap();
 
         let waiter = stream.stream().clone();
-        let _fut = ntex::rt::spawn(async move { waiter.send_capacity().await });
+        let _fut = ntex_rt::spawn(async move { waiter.send_capacity().await });
         sleep(Millis(50)).await;
         assert!(crate::timer::is_registered(stream.stream()));
 
@@ -3444,7 +3463,7 @@ mod tests {
     ///   timer is unregistered.
     /// - Wait beyond the configured capacity timeout, inject a stream window update, and verify
     ///   payload can still be sent.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_dropped_capacity_wait_stops_timer() {
         let (client, srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3454,7 +3473,7 @@ mod tests {
 
         // the waiter gives up before the capacity timeout
         assert!(
-            ntex::time::timeout(Millis(100), stream.send_capacity())
+            ntex_util::time::timeout(Millis(100), stream.send_capacity())
                 .await
                 .is_err()
         );
@@ -3475,7 +3494,7 @@ mod tests {
     ///   the ID is removed.
     /// - Inject another reset for the forgotten stream; verify the client remains open and
     ///   accepts a new request.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_rst_stream_for_unknown_stream_ignored() {
         let (client, srv) = zero_window_client().await;
         let (stream, _recv) = client
@@ -3513,10 +3532,10 @@ mod tests {
     /// - Verify resets for closed streams 1 and 3 return `Ok`.
     /// - Verify resets for idle client stream 5 and idle server stream 2 return
     ///   `ConnectionError::UnknownStream`, or `Ok` when unknown streams are skipped.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_rst_stream_for_idle_stream() {
         for skip in [false, true] {
-            let (wire, _peer) = ntex::io::testing::IoTest::create();
+            let (wire, _peer) = ntex_io::testing::IoTest::create();
             let cfg = SharedCfg::new("SRV").add(ServiceConfig::new()).build();
             let io = Io::new(wire, cfg.clone());
             let con = super::Connection::new(
@@ -3526,7 +3545,7 @@ mod tests {
                 cfg.get(),
                 false,
                 skip,
-                ntex::channel::pool::new(),
+                ntex_util::channel::pool::new(),
             );
             con.0.last_id.set(3.into());
             let con = con.recv_half();
@@ -3551,10 +3570,10 @@ mod tests {
     }
 
     /// Sum of connection level window updates sent by the client
-    fn conn_window_updates(srv: &ntex::io::testing::IoTest, codec: &Codec) -> i32 {
+    fn conn_window_updates(srv: &ntex_io::testing::IoTest, codec: &Codec) -> i32 {
         use ntex_codec::Decoder;
 
-        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[..]);
+        let mut buf = ntex_bytes::BytesMut::from(&srv.read_any()[..]);
         let mut size = 0;
         while let Some(frm) = codec.decode(&mut buf).unwrap() {
             if let frame::Frame::WindowUpdate(upd) = frm
@@ -3574,9 +3593,9 @@ mod tests {
     ///   retain them.
     /// - Verify no connection window update is sent while the messages are retained, then drop
     ///   them and verify updates total 30,000 bytes.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_connection_window_released_on_consume() {
-        let (io, srv) = ntex::io::testing::IoTest::create();
+        let (io, srv) = ntex_io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
@@ -3626,9 +3645,9 @@ mod tests {
     ///   on each of two streams.
     /// - Retain both `StreamEof::Data` messages and verify no connection window update is sent.
     /// - Drop the messages and verify connection window updates total 30,000 bytes.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_connection_window_released_on_eof_data_consume() {
-        let (io, srv) = ntex::io::testing::IoTest::create();
+        let (io, srv) = ntex_io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_initial_connection_window_size(100_000))
@@ -3681,7 +3700,7 @@ mod tests {
     async fn stream_window_updates(reset: bool) -> i32 {
         use ntex_codec::Decoder;
 
-        let (io, srv) = ntex::io::testing::IoTest::create();
+        let (io, srv) = ntex_io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let client =
             h2::client::SimpleClient::new(Io::new(io, SharedCfg::default()), false, "localhost".into());
@@ -3718,7 +3737,7 @@ mod tests {
         sleep(Millis(50)).await;
 
         let codec = Codec::default();
-        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[..]);
+        let mut buf = ntex_bytes::BytesMut::from(&srv.read_any()[..]);
         let mut size = 0;
         while let Some(frm) = codec.decode(&mut buf).unwrap() {
             if let frame::Frame::WindowUpdate(upd) = frm
@@ -3738,7 +3757,7 @@ mod tests {
     ///   verify a positive stream window update.
     /// - Repeat with a peer reset before consumption and verify no stream window update is
     ///   emitted.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_no_window_update_for_closed_stream() {
         assert!(stream_window_updates(false).await > 0);
         assert_eq!(stream_window_updates(true).await, 0);
@@ -3752,7 +3771,7 @@ mod tests {
     ///   `StreamError::CapacityTimeout` and a zero `rst_count`.
     /// - Decode outgoing frames and verify a `Reset` targets the timed-out stream with
     ///   `Reason::CANCEL`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_timeout_not_counted_as_reset() {
         use ntex_codec::Decoder;
 
@@ -3772,7 +3791,7 @@ mod tests {
         // the stream is cancelled
         sleep(Millis(50)).await;
         let codec = Codec::default();
-        let mut buf = ntex::util::BytesMut::from(&srv.read_any()[PREFACE.len()..]);
+        let mut buf = ntex_bytes::BytesMut::from(&srv.read_any()[PREFACE.len()..]);
         let rst = loop {
             if let frame::Frame::Reset(rst) = codec.decode(&mut buf).unwrap().unwrap() {
                 break rst;
@@ -3797,15 +3816,15 @@ mod tests {
     }
 
     /// Client without capacity timeout, the peer sets the initial stream window
-    async fn window_client(window: u32) -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
+    async fn window_client(window: u32) -> (h2::client::SimpleClient, ntex_io::testing::IoTest) {
         window_client_with(window, Seconds::ZERO).await
     }
 
     async fn window_client_with(
         window: u32,
         capacity_timeout: Seconds,
-    ) -> (h2::client::SimpleClient, ntex::io::testing::IoTest) {
-        let (io, srv) = ntex::io::testing::IoTest::create();
+    ) -> (h2::client::SimpleClient, ntex_io::testing::IoTest) {
+        let (io, srv) = ntex_io::testing::IoTest::create();
         srv.remote_buffer_cap(1024 * 1024);
         let cfg = SharedCfg::new("CLI")
             .add(ServiceConfig::new().set_capacity_timeout(capacity_timeout))
@@ -3817,12 +3836,12 @@ mod tests {
     }
 
     /// Decodes the frames written by the client since the last call
-    fn client_frames(srv: &ntex::io::testing::IoTest, codec: &Codec) -> Vec<frame::Frame> {
+    fn client_frames(srv: &ntex_io::testing::IoTest, codec: &Codec) -> Vec<frame::Frame> {
         use ntex_codec::Decoder;
 
         let data = srv.read_any();
         let data = data.strip_prefix(&PREFACE[..]).unwrap_or(&data);
-        let mut buf = ntex::util::BytesMut::from(data);
+        let mut buf = ntex_bytes::BytesMut::from(data);
         let mut frames = Vec::new();
         while let Some(frm) = codec.decode(&mut buf).unwrap() {
             frames.push(frm);
@@ -3832,7 +3851,7 @@ mod tests {
     }
 
     /// Sizes and `END_STREAM` flags of the DATA frames written by the client
-    fn client_data(srv: &ntex::io::testing::IoTest, codec: &Codec) -> Vec<(usize, bool)> {
+    fn client_data(srv: &ntex_io::testing::IoTest, codec: &Codec) -> Vec<(usize, bool)> {
         client_frames(srv, codec)
             .into_iter()
             .filter_map(|frm| match frm {
@@ -3843,7 +3862,7 @@ mod tests {
     }
 
     /// Sum of the window updates written by the client for the stream `id`
-    fn client_window_updates(srv: &ntex::io::testing::IoTest, codec: &Codec, id: frame::StreamId) -> i32 {
+    fn client_window_updates(srv: &ntex_io::testing::IoTest, codec: &Codec, id: frame::StreamId) -> i32 {
         client_frames(srv, codec)
             .into_iter()
             .filter_map(|frm| match frm {
@@ -3863,7 +3882,7 @@ mod tests {
     ///   ten without end-of-stream.
     /// - Add 100 bytes of window, verify the final five bytes carry end-of-stream, and check
     ///   the task succeeds with 95 bytes of capacity left.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_limited_by_stream_window() {
         let (client, srv) = window_client(10).await;
         let codec = Codec::default();
@@ -3875,7 +3894,7 @@ mod tests {
         let _ = client_frames(&srv, &codec);
 
         let s = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 25]), true).await });
+        let fut = ntex_rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 25]), true).await });
         sleep(Millis(50)).await;
         assert_eq!(client_data(&srv, &codec), [(10, false)]);
         assert_eq!(stream.stream().available_send_capacity(), 0);
@@ -3901,7 +3920,7 @@ mod tests {
     /// - Increase only the stream window and verify no data or usable capacity appears.
     /// - Increase the connection window by 10,000, verify the remaining payload ends the
     ///   stream, and check the sender succeeds with the expected capacity.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_limited_by_connection_window() {
         let (client, srv) = window_client(1_000_000).await;
         let codec = Codec::default();
@@ -3917,7 +3936,7 @@ mod tests {
 
         let s = stream.stream().clone();
         let fut =
-            ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 70_000]), true).await });
+            ntex_rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 70_000]), true).await });
         sleep(Millis(50)).await;
         let frames = client_data(&srv, &codec);
         assert!(
@@ -3955,7 +3974,7 @@ mod tests {
     ///   verify partial updates, including negative-to-zero, do not wake or cancel the timer.
     /// - Once both windows open, verify one wake, timer removal, ten bytes of ready capacity,
     ///   and a successful payload send.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_window_updates_wake_after_both_windows_open() {
         use std::sync::{Arc, atomic::AtomicUsize, atomic::Ordering};
         use std::task::{Context, Poll, Wake, Waker};
@@ -4053,7 +4072,7 @@ mod tests {
     /// Senders blocked on an exhausted connection window, polled with counting wakers
     struct BlockedSenders {
         client: h2::client::SimpleClient,
-        srv: ntex::io::testing::IoTest,
+        srv: ntex_io::testing::IoTest,
         streams: Vec<h2::client::SendStream>,
         _recv: Vec<h2::client::RecvStream>,
         wakers: Vec<(std::sync::Arc<WakeCount>, std::task::Waker)>,
@@ -4132,7 +4151,7 @@ mod tests {
     ///   woken, the third with the five bytes left after the first two stream windows.
     /// - Send from the woken senders until the window is exhausted, then open it by ten bytes
     ///   and verify the fourth sender is woken.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_connection_window_update_wakes_blocked_senders_in_order() {
         let s = BlockedSenders::new(4, 10, Seconds::ZERO).await;
         assert!(s.poll(3).is_pending());
@@ -4168,7 +4187,7 @@ mod tests {
     ///   seven bytes left.
     /// - Drop the second sender's wait before it runs and verify the third sender is woken.
     /// - Repeat with a woken sender that is reset before it runs.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_unused_connection_capacity_passed_to_blocked_senders() {
         let s = BlockedSenders::new(3, 10, Seconds::ZERO).await;
         let st = s.stream(1).clone();
@@ -4206,7 +4225,7 @@ mod tests {
     /// - Block a new sender and verify the queue keeps only the two open streams.
     /// - Open the connection window and verify the first open sender is woken.
     /// - Close the connection and verify the queue and claims are cleared.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_blocked_senders_queue_bounded() {
         let s = BlockedSenders::new(41, 10, Seconds::ZERO).await;
         let (stream, _recv) = s
@@ -4248,7 +4267,7 @@ mod tests {
     ///   stream.
     /// - Expire it again without connection progress and verify the stream is reset with
     ///   `CapacityTimeout`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_queued_sender_capacity_timeout_extended_by_connection_progress() {
         let s = BlockedSenders::new(2, 10, Seconds(30)).await;
         s.connection_update(10);
@@ -4280,7 +4299,7 @@ mod tests {
     ///   first one, which never runs and keeps its claim.
     /// - Expire the second sender's timer and verify it is woken, not reset, and gets
     ///   capacity.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_capacity_timeout_wakes_queued_sender_with_capacity() {
         let s = BlockedSenders::new(2, 10, Seconds(30)).await;
         s.connection_update(10);
@@ -4300,7 +4319,7 @@ mod tests {
     /// - Verify the send remains unfinished with ample flow-control capacity still available.
     /// - Restore peer reads, collect exactly one megabyte through end-of-stream, and verify the
     ///   send completes successfully.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_waits_for_write_backpressure() {
         const SIZE: usize = 1024 * 1024;
 
@@ -4323,7 +4342,7 @@ mod tests {
         let done = std::rc::Rc::new(std::cell::Cell::new(false));
         let done2 = done.clone();
         let s = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move {
+        let fut = ntex_rt::spawn(async move {
             let res = s.send_payload(Bytes::from(vec![b'x'; SIZE]), true).await;
             done2.set(true);
             res
@@ -4359,7 +4378,7 @@ mod tests {
     ///   send.
     /// - Verify the task remains pending, reset the stream with `Reason::CANCEL`, and check the
     ///   task returns an error within 500 milliseconds.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_write_backpressure_wait_fails_on_reset() {
         let (client, srv) = window_client(i32::MAX as u32).await;
         let codec = Codec::default();
@@ -4377,14 +4396,14 @@ mod tests {
         srv.remote_buffer_cap(0);
         let s = stream.stream().clone();
         let fut =
-            ntex::rt::spawn(
+            ntex_rt::spawn(
                 async move { s.send_payload(Bytes::from(vec![b'x'; 1024 * 1024]), true).await },
             );
         sleep(Millis(100)).await;
         assert!(!fut.is_finished());
 
         stream.stream().reset(Reason::CANCEL);
-        let res = ntex::time::timeout(Millis(500), fut).await;
+        let res = ntex_util::time::timeout(Millis(500), fut).await;
         assert!(res.unwrap().unwrap().is_err());
     }
 
@@ -4398,7 +4417,7 @@ mod tests {
     ///   client is disconnecting but not closed.
     /// - Complete stream 1 in both directions, verify its final data and headers, and check the
     ///   connection then closes.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_go_away_last_stream_id() {
         use crate::error::{ConnectionError, OperationError};
 
@@ -4455,7 +4474,7 @@ mod tests {
     /// - Open a stream, inject a graceful `GoAway`, and verify the client is disconnecting.
     /// - Inject a zero-increment connection window update, then verify closure and an outgoing
     ///   `GoAway` with `Reason::PROTOCOL_ERROR`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_go_away_then_protocol_error() {
         let (client, srv) = window_client(1024).await;
         let codec = Codec::default();
@@ -4491,7 +4510,7 @@ mod tests {
     ///   add two and verify exactly two bytes are sent.
     /// - Raise the initial window to 20, verify the final byte is sent with 14 bytes remaining,
     ///   and check a new stream starts with capacity 20.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_window_adjusted_by_settings() {
         let (client, srv) = window_client(10).await;
         let codec = Codec::default();
@@ -4512,7 +4531,7 @@ mod tests {
         assert_eq!(stream.stream().available_send_capacity(), 0);
 
         let s = stream.stream().clone();
-        let fut = ntex::rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 3]), true).await });
+        let fut = ntex_rt::spawn(async move { s.send_payload(Bytes::from(vec![b'x'; 3]), true).await });
 
         // window is 0
         srv.write(window_update_frame(1, 5));
@@ -4550,7 +4569,7 @@ mod tests {
     ///   frames or capacity consumption.
     /// - Send an empty final payload and verify a zero-length `Data` frame carries end-of-
     ///   stream.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_empty_payload_zero_window() {
         let (client, srv) = window_client(0).await;
         let codec = Codec::default();
@@ -4560,7 +4579,7 @@ mod tests {
             .unwrap();
         let _ = client_frames(&srv, &codec);
 
-        let res = ntex::time::timeout(Millis(500), stream.send_payload(Bytes::new(), false)).await;
+        let res = ntex_util::time::timeout(Millis(500), stream.send_payload(Bytes::new(), false)).await;
         assert!(res.unwrap().is_ok());
 
         srv.write(window_update_frame(1, 10));
@@ -4586,7 +4605,7 @@ mod tests {
     ///   three seconds.
     /// - Verify the sender has finished with `StreamError::CapacityTimeout` rather than
     ///   continuing to wait.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_stream_updates_do_not_extend_capacity_timeout() {
         let (client, srv) = window_client_with(1_000_000, Seconds(1)).await;
         let (stream, _recv) = client
@@ -4603,14 +4622,14 @@ mod tests {
         assert_eq!(stream.stream().available_send_capacity(), 0);
 
         let s = stream.stream().clone();
-        let waiter = ntex::rt::spawn(async move { s.send_payload("x", true).await });
+        let waiter = ntex_rt::spawn(async move { s.send_payload("x", true).await });
 
         // the peer trickles stream window updates only
         for _ in 0..10 {
             sleep(Millis(300)).await;
             srv.write(window_update_frame(1, 1));
         }
-        let res = ntex::time::timeout(Millis(100), waiter).await;
+        let res = ntex_util::time::timeout(Millis(100), waiter).await;
         let res = res.expect("capacity timeout is extended").unwrap();
         assert!(matches!(
             &*res.unwrap_err(),
@@ -4627,7 +4646,7 @@ mod tests {
     /// - End another stream with one byte and verify a capacity wait fails with the same error
     ///   despite two bytes remaining.
     /// - Check the last data frame is the one-byte final frame, with no later data.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_send_capacity_after_send_close() {
         let (client, srv) = window_client(3).await;
         let codec = Codec::default();
@@ -4639,10 +4658,13 @@ mod tests {
             .unwrap();
         stream.send_payload("abc", false).await.unwrap();
         let s = stream.stream().clone();
-        let waiter = ntex::rt::spawn(async move { s.send_capacity().await });
+        let waiter = ntex_rt::spawn(async move { s.send_capacity().await });
         sleep(Millis(50)).await;
         stream.send_trailers(HeaderMap::default()).unwrap();
-        let res = ntex::time::timeout(Millis(500), waiter).await.unwrap().unwrap();
+        let res = ntex_util::time::timeout(Millis(500), waiter)
+            .await
+            .unwrap()
+            .unwrap();
         assert!(matches!(&*res.unwrap_err(), h2::OperationError::Closed(None)));
 
         // closed with available window
@@ -4711,7 +4733,7 @@ mod tests {
     ///   update; dropping the final 5,000 stays below the threshold.
     /// - Send three more 16,383-byte chunks, verify all arrive, and check the connection
     ///   remains open.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_recv_capacity_consume() {
         let (client, srv) = window_client(65_535).await;
         let codec = Codec::default();
@@ -4797,9 +4819,9 @@ mod tests {
     fn response(id: frame::StreamId, status: u16, len: Option<&str>, eof: bool) -> frame::Headers {
         let mut hdrs = HeaderMap::new();
         if let Some(len) = len {
-            hdrs.insert(ntex::http::header::CONTENT_LENGTH, len.try_into().unwrap());
+            hdrs.insert(ntex_http::header::CONTENT_LENGTH, len.try_into().unwrap());
         }
-        let status = ntex::http::StatusCode::from_u16(status).unwrap();
+        let status = ntex_http::StatusCode::from_u16(status).unwrap();
         frame::Headers::new(id, frame::PseudoHeaders::response(status), hdrs, eof)
     }
 
@@ -4810,7 +4832,7 @@ mod tests {
     /// - Inject response headers for server-initiated stream 2 into an otherwise idle client
     ///   connection.
     /// - Verify the client closes and sends `GoAway` with `Reason::PROTOCOL_ERROR`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_client_rejects_server_initiated_stream() {
         let (client, srv) = window_client(1024).await;
         let codec = Codec::default();
@@ -4836,7 +4858,7 @@ mod tests {
     ///   `WrongPayloadLength` EOF error.
     /// - End a 304 response with content length ten and no body; verify final headers are
     ///   accepted and the client remains open.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_content_length_without_data() {
         let (client, srv) = window_client(1024).await;
         let enc = Codec::default();
@@ -4902,7 +4924,7 @@ mod tests {
     /// - Seed a connection with 100,000 streams and 40,000 resets, then update its reset count.
     /// - Verify the stream count drops below `RESET_RATIO_WINDOW` and fewer than half a window
     ///   of further resets succeeds before an error.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_rst_count_decays() {
         let (client, _srv) = window_client(1024).await;
         let (stream, _recv) = client
@@ -4934,7 +4956,7 @@ mod tests {
     ///   status pseudo-header.
     /// - Verify the initial headers arrive, then EOF reports `UnexpectedPseudo("status")` and a
     ///   matching stream reset uses `Reason::PROTOCOL_ERROR`.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_pseudo_header_in_trailers() {
         let (client, srv) = window_client(1024).await;
         let enc = Codec::default();
@@ -4972,14 +4994,14 @@ mod tests {
     ///   state is closed.
     /// - Reset another stream through `StreamRef` with `Reason::CANCEL` and verify its receiver
     ///   also finishes.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_recv_woken_on_local_reset() {
         use std::{cell::Cell, rc::Rc};
 
         async fn waiting_recv(r: h2::client::RecvStream) -> Rc<Cell<bool>> {
             let done = Rc::new(Cell::new(false));
             let done2 = done.clone();
-            ntex::rt::spawn(async move {
+            ntex_rt::spawn(async move {
                 assert!(r.recv().await.is_none());
                 done2.set(true);
             });
@@ -5033,18 +5055,18 @@ mod tests {
     /// - Open a stream and spawn a task awaiting its next received message.
     /// - Close the peer transport and verify the task returns
     ///   `Some(MessageKind::Disconnect(_))` within 500 milliseconds.
-    #[ntex::test]
+    #[t::asyn]
     async fn test_recv_waits_for_disconnect_message() {
         let (client, srv) = window_client(1024).await;
         let (_s, r) = client
             .send(Method::POST, "/".into(), HeaderMap::default(), false)
             .await
             .unwrap();
-        let fut = ntex::rt::spawn(async move { r.recv().await });
+        let fut = ntex_rt::spawn(async move { r.recv().await });
         sleep(Millis(50)).await;
 
         srv.close().await;
-        let msg = ntex::time::timeout(Millis(500), fut).await.unwrap().unwrap();
+        let msg = ntex_util::time::timeout(Millis(500), fut).await.unwrap().unwrap();
         assert!(matches!(
             msg.map(|m| m.kind),
             Some(h2::MessageKind::Disconnect(_))

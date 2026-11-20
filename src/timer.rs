@@ -451,7 +451,7 @@ mod tests {
     ///   the driver running.
     /// - Move the current tick to a multiple of `SHRINK_TICKS` so the next tick shrinks.
     /// - Wait for one tick and verify the map capacity dropped below `SHRINK_MIN_CAPACITY`.
-    #[ntex::test]
+    #[t::asyn]
     async fn burst_connection_map_is_shrunk() {
         let ids: Vec<_> = (0..2000)
             .map(|_| register_connection(Weak::new(), Seconds::ZERO, Seconds(600)))
@@ -480,7 +480,7 @@ mod tests {
     ///   deadline, then unregister them all, as when capacity recovers.
     /// - Wait until both deadlines expire and the timer task stops.
     /// - Verify the cache holds only the small bucket, within `MAX_CACHED_CAPACITY`.
-    #[ntex::test]
+    #[t::asyn]
     async fn burst_bucket_is_released() {
         // connection deadlines would keep the shared driver running
         let cfg = SharedCfg::new("SRV")

@@ -1,16 +1,16 @@
 //! Stream state and validation over an in-memory transport.
 use std::{cell::RefCell, future::poll_fn, panic, pin::Pin};
 
-use ntex::http::header::{self, HeaderValue};
-use ntex::http::{HeaderMap, Method, StatusCode};
-use ntex::io::{Io, testing::IoTest};
-use ntex::service::cfg::SharedCfg;
-use ntex::time::{Millis, sleep, timeout};
-use ntex::util::{BytePages, Bytes, BytesMut};
+use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_h2::client::{RecvStream, SendStream, SimpleClient};
 use ntex_h2::frame::{self, Frame, Reason, StreamId};
 use ntex_h2::{Codec, Message, MessageKind, OperationError, StreamEof, StreamError, server};
+use ntex_http::header::{self, HeaderValue};
+use ntex_http::{HeaderMap, Method, StatusCode};
+use ntex_io::{Io, testing::IoTest};
+use ntex_service::cfg::SharedCfg;
+use ntex_util::time::{Millis, sleep, timeout};
 
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -131,7 +131,7 @@ fn content_length(val: &'static str) -> HeaderMap {
 ///   a response on a fresh client.
 /// - Assert `StreamError::UnexpectedPseudo` names the header, stream 1 receives
 ///   `Reason::PROTOCOL_ERROR`, and the client stays open.
-#[ntex::test]
+#[t::asyn]
 async fn response_with_request_pseudo_headers() {
     type SetPseudo = fn(&mut frame::PseudoHeaders);
     let cases: [(&str, SetPseudo); 5] = [
@@ -168,7 +168,7 @@ async fn response_with_request_pseudo_headers() {
 ///   `StreamError::WrongPayloadLength` for each.
 /// - Send exactly three bytes over two data frames and assert headers, body data, final data,
 ///   and an open client connection.
-#[ntex::test]
+#[t::asyn]
 async fn response_content_length() {
     // not a number
     let (client, srv) = client().await;
@@ -221,7 +221,7 @@ async fn response_content_length() {
 /// - Send a `HEAD` request, response headers declaring five bytes, and a five-byte final data
 ///   frame.
 /// - Assert `StreamError::NonEmptyPayload` and a stream reset with `Reason::PROTOCOL_ERROR`.
-#[ntex::test]
+#[t::asyn]
 async fn head_response_with_body() {
     let (client, srv) = client().await;
     let (_snd, rcv) = request(&client, Method::HEAD, true).await;
@@ -240,7 +240,7 @@ async fn head_response_with_body() {
 /// - Finish response headers while keeping each request open, then send additional headers or
 ///   data and assert `Reason::STREAM_CLOSED` resets.
 /// - Assert the client connection remains open.
-#[ntex::test]
+#[t::asyn]
 async fn frames_in_wrong_state() {
     let (client, srv) = client().await;
 
@@ -273,7 +273,7 @@ async fn frames_in_wrong_state() {
 /// - Send trailers without end-of-stream and assert `StreamError::TrailersWithoutEos`.
 /// - Send valid final trailers and assert headers, body data, and `StreamEof::Trailers`
 ///   containing `grpc-status: 0`, with the client still open.
-#[ntex::test]
+#[t::asyn]
 async fn response_trailers() {
     let (client, srv) = client().await;
 
@@ -315,7 +315,7 @@ async fn response_trailers() {
 /// - Overflow another stream window and assert `StreamError::WindowOverflowed` with
 ///   `Reason::FLOW_CONTROL_ERROR`.
 /// - Assert the client connection stays open.
-#[ntex::test]
+#[t::asyn]
 async fn stream_window_update_errors() {
     let (client, srv) = client().await;
 
@@ -339,7 +339,7 @@ async fn stream_window_update_errors() {
 /// - Decode data frames and assert stream ID 1, payload lengths at most 16,384 bytes, and no
 ///   data after end-of-stream.
 /// - Assert an end-of-stream frame was seen and concatenated payloads equal the original pages.
-#[ntex::test]
+#[t::asyn]
 async fn send_pages_are_split() {
     let (client, srv) = client().await;
     let (snd, _rcv) = request(&client, Method::POST, false).await;
@@ -377,7 +377,7 @@ async fn send_pages_are_split() {
 /// - Send response headers and final body data, then poll the receive stream for headers, EOF
 ///   data, and termination.
 /// - Reset the stream from the peer, await `on_reset`, and assert reset and failure state.
-#[ntex::test]
+#[t::asyn]
 async fn client_stream_api() {
     let (client, srv) = client().await;
     let (snd, mut rcv) = request(&client, Method::POST, false).await;
@@ -393,16 +393,16 @@ async fn client_stream_api() {
 
     srv.response(1, HeaderMap::new(), false);
     srv.data(1, "body", true);
-    let msg = poll_fn(|cx| ntex::util::Stream::poll_next(Pin::new(&mut rcv), cx))
+    let msg = poll_fn(|cx| ntex_util::Stream::poll_next(Pin::new(&mut rcv), cx))
         .await
         .unwrap();
     assert!(matches!(msg.kind, MessageKind::Headers { eof: false, .. }));
-    let msg = poll_fn(|cx| ntex::util::Stream::poll_next(Pin::new(&mut rcv), cx))
+    let msg = poll_fn(|cx| ntex_util::Stream::poll_next(Pin::new(&mut rcv), cx))
         .await
         .unwrap();
     assert!(matches!(msg.kind, MessageKind::Eof(StreamEof::Data(..))));
     assert!(
-        poll_fn(|cx| ntex::util::Stream::poll_next(Pin::new(&mut rcv), cx))
+        poll_fn(|cx| ntex_util::Stream::poll_next(Pin::new(&mut rcv), cx))
             .await
             .is_none()
     );
@@ -422,7 +422,7 @@ async fn client_stream_api() {
 /// - Open two request streams and obtain an empty capacity value from each.
 /// - Use `catch_unwind` to assert both addition and add-assignment panic when combining those
 ///   values.
-#[ntex::test]
+#[t::asyn]
 async fn capacity_from_different_streams() {
     let (client, _srv) = client().await;
     let (snd1, _rcv1) = request(&client, Method::POST, false).await;
@@ -446,7 +446,7 @@ async fn capacity_from_different_streams() {
 /// - Mark either the send or receive half with `disconnect_on_drop` in separate runs, then drop
 ///   both halves.
 /// - Wait for the client to close and assert the peer receives a reset with `Reason::CANCEL`.
-#[ntex::test]
+#[t::asyn]
 async fn disconnect_on_drop() {
     for recv_side in [false, true] {
         let (client, srv) = client().await;
@@ -486,13 +486,13 @@ async fn disconnect_on_drop() {
 /// - Send final body data and assert subsequent response and informational calls fail with
 ///   `OperationError::Closed(None)`.
 /// - Assert the client receives the original headers and final body `done`.
-#[ntex::test]
+#[t::asyn]
 async fn server_response_state_errors() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
 
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let _ = server::Server::new(async |msg: Message| {
             if !matches!(msg.kind, MessageKind::Headers { .. }) {
                 return Ok(());
@@ -540,13 +540,13 @@ async fn server_response_state_errors() {
 ///   using a reference to it.
 /// - Assert the original map retains its value and the client receives that status, header, and
 ///   end-of-stream.
-#[ntex::test]
+#[t::asyn]
 async fn server_response_borrowed_headers() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
 
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let _ = server::Server::new(async |msg: Message| {
             if !matches!(msg.kind, MessageKind::Headers { .. }) {
                 return Ok(());
@@ -591,7 +591,7 @@ async fn server_response_borrowed_headers() {
 /// - Assert only the smaller window produces `Reason::FLOW_CONTROL_ERROR`; otherwise receive
 ///   all data and consume its capacity.
 /// - Assert the client remains open in both cases.
-#[ntex::test]
+#[t::asyn]
 async fn settings_ack_updates_stream_windows() {
     for (window, sent, reset) in [
         (1_000_000, 80_000, None),
@@ -660,7 +660,7 @@ async fn settings_ack_updates_stream_windows() {
 /// - Acknowledge settings and assert a reset with `Reason::FLOW_CONTROL_ERROR` and
 ///   `StreamError::WindowOverflowed`.
 /// - Assert the client connection stays open.
-#[ntex::test]
+#[t::asyn]
 async fn settings_ack_overflows_stream_window() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
