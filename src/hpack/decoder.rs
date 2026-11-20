@@ -11,7 +11,9 @@ pub struct Decoder {
     // Protocol indicated that the max table size will update
     max_size_update: Option<usize>,
     last_max_update: usize,
-    table: Table,
+    // For testing
+    #[allow(private_interfaces)]
+    pub(super) table: Table,
     buffer: BytesMut,
 }
 
@@ -157,7 +159,7 @@ enum Representation {
 }
 
 #[derive(Debug)]
-struct Table {
+pub(super) struct Table {
     entries: VecDeque<Header>,
     size: usize,
     max_size: usize,
@@ -235,7 +237,7 @@ impl Decoder {
                 Representation::LiteralWithIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
                     can_resize = false;
-                    let entry = self.decode_literal(src, true)?;
+                    let entry = self.decode_literal(src, true, false)?;
 
                     // Insert the header into the table
                     self.table.insert(entry.clone());
@@ -246,17 +248,15 @@ impl Decoder {
                 Representation::LiteralWithoutIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?;
+                    let entry = self.decode_literal(src, false, false)?;
                     consume(src);
                     f(entry);
                 }
                 Representation::LiteralNeverIndexed => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?;
+                    let entry = self.decode_literal(src, false, true)?;
                     consume(src);
-
-                    // TODO: Track that this should never be indexed
 
                     f(entry);
                 }
@@ -303,6 +303,7 @@ impl Decoder {
         &mut self,
         buf: &mut Cursor<&mut Bytes>,
         index: bool,
+        sensitive: bool,
     ) -> Result<Header, DecoderError> {
         let prefix = if index { 6 } else { 4 };
 
@@ -318,7 +319,7 @@ impl Decoder {
             // Read the name as a literal
             let name = name_marker.consume(buf);
             let value = value_marker.consume(buf);
-            Header::new(&name, value)
+            Header::new(&name, value, sensitive)
         } else {
             // validate the index before reading the value
             self.table.check_index(table_idx)?;
@@ -529,7 +530,7 @@ impl Table {
         }
     }
 
-    fn size(&self) -> usize {
+    pub(super) fn size(&self) -> usize {
         self.size
     }
 
@@ -884,6 +885,8 @@ pub(super) fn get_static(idx: usize) -> Header {
 
 #[cfg(test)]
 mod test {
+    use crate::hpack::header::HeaderRef;
+
     use super::*;
 
     /// STATEMENT: `peek_u8` observes the next byte without consuming it and returns `None` at
@@ -1086,13 +1089,13 @@ mod test {
         assert_eq!(
             res,
             vec![
-                Header::new(&foo, Bytes::from_static(b"bar")).unwrap(),
-                Header::new(&foo, Bytes::from_static(b"baz")).unwrap(),
+                Header::new(&foo, Bytes::from_static(b"bar"), false).unwrap(),
+                Header::new(&foo, Bytes::from_static(b"baz"), false).unwrap(),
             ]
         );
         assert_eq!(
             de.table.get(62).unwrap(),
-            Header::new(&foo, Bytes::from_static(b"bar")).unwrap()
+            Header::new(&foo, Bytes::from_static(b"bar"), false).unwrap()
         );
     }
 
@@ -1149,7 +1152,8 @@ mod test {
                 }
                 data.extend_from_slice(&[0xbe, 0x84]);
 
-                let field = Header::new(&Bytes::from_static(b"foo"), Bytes::from_static(b"bar")).unwrap();
+                let field =
+                    Header::new(&Bytes::from_static(b"foo"), Bytes::from_static(b"bar"), false).unwrap();
                 let expected = vec![
                     Header::Method(Method::GET),
                     field.clone(),
@@ -1228,6 +1232,377 @@ mod test {
                 assert_eq!(value, "bar");
             }
             _ => panic!(),
+        }
+    }
+
+    /// STATEMENT: A pseudo-header `:authority` or `:path` created with sensitive=true
+    /// properly decodes into its corresponding sensible variant.
+    ///
+    /// HOW:
+    /// - Create an `:authority` header with sensitive flag set to true using `Header::new`.
+    /// - Assert it resolves to `Header::AuthoritySensible` containing the correct value.
+    /// - Repeat the check for `:path` with sensitive=true to ensure it resolves to `Header::PathSensible`.
+    #[test]
+    fn test_sensitive_pseudo_headers_creation() {
+        let name_auth = Bytes::from_static(b":authority");
+        let val_auth = Bytes::from("example.com");
+
+        let header_auth = Header::new(&name_auth, val_auth.clone(), true).unwrap();
+        match header_auth {
+            Header::AuthoritySensitive(v) => assert_eq!(v.as_str(), "example.com"),
+            _ => panic!("Expected Header::AuthoritySensible"),
+        }
+
+        let name_path = Bytes::from_static(b":path");
+        let val_path = Bytes::from("/secret-path");
+
+        let header_path = Header::new(&name_path, val_path.clone(), true).unwrap();
+        match header_path {
+            Header::PathSensitive(v) => assert_eq!(v.as_str(), "/secret-path"),
+            _ => panic!("Expected Header::PathSensible"),
+        }
+    }
+
+    /// STATEMENT: Header reference correctly identifies sensitive pseudo-headers
+    /// and standard fields.
+    ///
+    /// HOW:
+    /// - Construct both sensitive and non-sensitive variants of pseudo-headers.
+    /// - Call `is_sensitive()` via `HeaderRef`.
+    /// - Assert that sensitive pseudo-headers return true while normal ones return false.
+    #[test]
+    fn test_header_ref_sensitivity_check() {
+        let auth_sensible = Header::new(
+            &Bytes::from_static(b":authority"),
+            Bytes::from("secure.local"),
+            true,
+        )
+        .unwrap();
+
+        assert!(auth_sensible.as_ref().is_sensitive());
+
+        let auth_normal = Header::new(
+            &Bytes::from_static(b":authority"),
+            Bytes::from("secure.local"),
+            false,
+        )
+        .unwrap();
+
+        assert!(!auth_normal.as_ref().is_sensitive());
+    }
+    /// STATEMENT: A standard pseudo-header `:authority` or `:path` created with
+    /// sensitive=false defaults to its non-sensitive variant.
+    ///
+    /// HOW:
+    /// - Create an `:authority` header with `sensitive: false` using `Header::new`.
+    /// - Assert it resolves to the standard `Header::Authority` variant.
+    /// - Perform the same verification for `:path` with `sensitive: false`.
+    #[test]
+    fn test_non_sensitive_pseudo_headers_default() {
+        let name_auth = Bytes::from_static(b":authority");
+        let val_auth = Bytes::from("api.example.com");
+
+        let header_auth = Header::new(&name_auth, val_auth, false).unwrap();
+        match header_auth {
+            Header::Authority(v) => assert_eq!(v.as_str(), "api.example.com"),
+            _ => panic!("Expected Header::Authority"),
+        }
+
+        let name_path = Bytes::from_static(b":path");
+        let val_path = Bytes::from("/healthz");
+
+        let header_path = Header::new(&name_path, val_path, false).unwrap();
+        match header_path {
+            Header::Path(v) => assert_eq!(v.as_str(), "/healthz"),
+            _ => panic!("Expected Header::Path"),
+        }
+    }
+
+    /// STATEMENT: Regular field headers correctly propagate the sensitive flag
+    /// when created via `Header::new`.
+    ///
+    /// HOW:
+    /// - Create a custom field header (e.g., `authorization`) with `sensitive: true`.
+    /// - Assert that the underlying `HeaderValue` has its sensitivity flag set to true.
+    /// - Verify that with `sensitive: false`, the sensitivity flag remains false.
+    #[test]
+    fn test_field_header_sensitivity_flag() {
+        let name_field = Bytes::from_static(b"authorization");
+        let val_field = Bytes::from("Bearer token123");
+
+        let header_sensitive = Header::new(&name_field, val_field.clone(), true).unwrap();
+        if let Header::Field { value, .. } = header_sensitive {
+            assert!(value.is_sensitive());
+        } else {
+            panic!("Expected Header::Field");
+        }
+
+        let header_normal = Header::new(&name_field, val_field, false).unwrap();
+        if let Header::Field { value, .. } = header_normal {
+            assert!(!value.is_sensitive());
+        } else {
+            panic!("Expected Header::Field");
+        }
+    }
+
+    /// STATEMENT: Malformed or unexpected pseudo-headers return an `InvalidPseudoheader` error.
+    ///
+    /// HOW:
+    /// - Pass an unknown pseudo-header name starting with `:` (e.g., `:unknown`) to `Header::new`.
+    /// - Assert that the result evaluates to `Err(DecoderError::InvalidPseudoheader)`.
+    #[test]
+    fn test_invalid_pseudo_header_error() {
+        let invalid_name = Bytes::from_static(b":unknown");
+        let value = Bytes::from("value");
+
+        let result = Header::new(&invalid_name, value, false);
+        assert!(matches!(result, Err(DecoderError::InvalidPseudoheader)));
+    }
+
+    /// STATEMENT: Header reference correctly calculates the HPACK table entry size
+    /// for both standard and sensitive pseudo-headers and fields.
+    ///
+    /// HOW:
+    /// - Create an `AuthoritySensible` header reference and check its calculated `len()`.
+    /// - Create a standard field header reference and verify its size calculation.
+    /// - Assert that sizes account correctly for the 32-byte overhead plus name and value lengths.
+    #[test]
+    fn test_header_ref_length_calculation() {
+        let auth_val = ByteString::from("example.com");
+        let ref_sensible = HeaderRef::AuthoritySensitive(&auth_val);
+
+        // 32 bytes overhead + 10 bytes name length (":authority") + value length (11)
+        assert_eq!(ref_sensible.len(), 32 + 10 + 11);
+
+        let path_val = ByteString::from("/");
+        let ref_path_sensible = HeaderRef::PathSensitive(&path_val);
+
+        // 32 bytes overhead + 5 bytes name length (":path") + value length (1)
+        assert_eq!(ref_path_sensible.len(), 32 + 5 + 1);
+    }
+
+    /// STATEMENT: Header reference properly identifies the correct pseudo-header or field name type.
+    ///
+    /// HOW:
+    /// - Construct references for `AuthoritySensible` and `PathSensible`.
+    /// - Call `HeaderRef::name()` on them.
+    /// - Assert they map to `Name::Authority` and `Name::Path` respectively.
+    #[test]
+    fn test_header_ref_name_mapping() {
+        use crate::hpack::header::Name;
+
+        let auth_val = ByteString::from("test.com");
+        let ref_auth = HeaderRef::AuthoritySensitive(&auth_val);
+        assert_eq!(ref_auth.name(), Name::Authority);
+
+        let path_val = ByteString::from("/home");
+        let ref_path = HeaderRef::PathSensitive(&path_val);
+        assert_eq!(ref_path.name(), Name::Path);
+    }
+
+    /// STATEMENT: Cloning a header reference successfully produces an owned `Header` instance
+    /// matching the original sensitive pseudo-header variant.
+    ///
+    /// HOW:
+    /// - Create a `Header::AuthoritySensible` and get its `HeaderRef`.
+    /// - Call `.to_owned()` (or the conversion implementation) on the reference.
+    /// - Assert the resulting owned header is correctly preserved as `Header::AuthoritySensible`.
+    #[test]
+    fn test_header_ref_cloning_to_owned() {
+        let original = Header::new(
+            &Bytes::from_static(b":authority"),
+            Bytes::from("auth.local"),
+            true,
+        )
+        .unwrap();
+
+        let reference = original.as_ref();
+        let cloned_header = reference.to_owned();
+
+        match cloned_header {
+            Header::AuthoritySensitive(v) => assert_eq!(v.as_str(), "auth.local"),
+            _ => panic!("Expected cloned header to remain AuthoritySensible"),
+        }
+    }
+
+    /// STATEMENT: `Decoder::decode` properly handles literal representation flags
+    /// (without indexing vs never-indexed) to correctly emit sensitive versus
+    /// non-sensitive headers across authority, path, and regular fields.
+    ///
+    /// HOW:
+    /// - Test literal header fields starting with `0x00` (Without Indexing / non-sensitive)
+    ///   and `0x10` (Never Indexed / sensitive).
+    /// - Pass byte sequences for `:authority`, `:path`, and standard custom fields
+    ///   into `decoder.decode` using a `Cursor<&mut Bytes>`.
+    /// - Verify that `0x00` produces standard variants (`Header::Authority`, `Header::Path`,
+    ///   `Header::Field` with `is_sensitive() == false`) and `0x10` produces sensitive
+    ///   variants (`Header::AuthoritySensible`, `Header::PathSensible`, `Header::Field` with `is_sensitive() == true`).
+    #[test]
+    fn test_decoder_decode_literal_with_sensitivity_all_cases() {
+        use crate::hpack::{Decoder, header::Header};
+        use ntex::util::Bytes;
+        use std::io::Cursor;
+
+        // Test cases: (byte prefix, header name, value, variant validator)
+        let test_cases = [
+            // 1. :authority without indexing (non-sensitive)
+            (
+                0x40u8,
+                &b":authority"[..],
+                &b"localhost"[..],
+                Box::new(|h: Header| match h {
+                    Header::Authority(v) => assert_eq!(v.as_str(), "localhost"),
+                    other => panic!("Expected Header::Authority, got {:?}", other),
+                }) as Box<dyn Fn(Header)>,
+            ),
+            // 2. :authority without indexing (non-sensitive)
+            (
+                0u8,
+                &b":authority"[..],
+                &b"localhost"[..],
+                Box::new(|h: Header| match h {
+                    Header::Authority(v) => assert_eq!(v.as_str(), "localhost"),
+                    other => panic!("Expected Header::Authority, got {:?}", other),
+                }) as Box<dyn Fn(Header)>,
+            ),
+            // 3. :authority never indexed (sensitive)
+            (
+                0x10u8,
+                &b":authority"[..],
+                &b"secure.local"[..],
+                Box::new(|h: Header| match h {
+                    Header::AuthoritySensitive(v) => assert_eq!(v.as_str(), "secure.local"),
+                    other => panic!("Expected Header::AuthoritySensible, got {:?}", other),
+                }),
+            ),
+            // 4. :path without indexing (non-sensitive)
+            (
+                0x40u8,
+                &b":path"[..],
+                &b"/index.html"[..],
+                Box::new(|h: Header| match h {
+                    Header::Path(v) => assert_eq!(v.as_str(), "/index.html"),
+                    other => panic!("Expected Header::Path, got {:?}", other),
+                }),
+            ),
+            // 5. :path without indexing (non-sensitive)
+            (
+                0u8,
+                &b":path"[..],
+                &b"/index.html"[..],
+                Box::new(|h: Header| match h {
+                    Header::Path(v) => assert_eq!(v.as_str(), "/index.html"),
+                    other => panic!("Expected Header::Path, got {:?}", other),
+                }),
+            ),
+            // 4. :path never indexed (sensitive)
+            (
+                0x10u8,
+                &b":path"[..],
+                &b"/secret-doc"[..],
+                Box::new(|h: Header| match h {
+                    Header::PathSensitive(v) => assert_eq!(v.as_str(), "/secret-doc"),
+                    other => panic!("Expected Header::PathSensible, got {:?}", other),
+                }),
+            ),
+            // 5. Regular field without indexing (non-sensitive)
+            (
+                0x40u8,
+                &b"x-custom-header"[..],
+                &b"standard-value"[..],
+                Box::new(|h: Header| match h {
+                    Header::Field { name, value } => {
+                        assert_eq!(name.as_str(), "x-custom-header");
+                        assert_eq!(value.to_str().unwrap(), "standard-value");
+                        assert!(!value.is_sensitive());
+                    }
+                    other => panic!("Expected Header::Field, got {:?}", other),
+                }),
+            ),
+            // 5. Regular field without indexing (non-sensitive)
+            (
+                0u8,
+                &b"x-custom-header"[..],
+                &b"standard-value"[..],
+                Box::new(|h: Header| match h {
+                    Header::Field { name, value } => {
+                        assert_eq!(name.as_str(), "x-custom-header");
+                        assert_eq!(value.to_str().unwrap(), "standard-value");
+                        assert!(!value.is_sensitive());
+                    }
+                    other => panic!("Expected Header::Field, got {:?}", other),
+                }),
+            ),
+            // 6. Regular field never indexed (sensitive)
+            (
+                0x10u8,
+                &b"authorization"[..],
+                &b"Bearer secret-token"[..],
+                Box::new(|h: Header| match h {
+                    Header::Field { name, value } => {
+                        assert_eq!(name.as_str(), "authorization");
+                        assert_eq!(value.to_str().unwrap(), "Bearer secret-token");
+                        assert!(value.is_sensitive());
+                    }
+                    other => panic!("Expected sensitive Header::Field, got {:?}", other),
+                }),
+            ),
+        ];
+
+        for (byte, name_bytes, val_bytes, validator) in test_cases {
+            let mut decoder = Decoder::new(4096);
+
+            // Dynamically build the HPACK byte buffer for the literal field
+            let mut data_vec = Vec::new();
+            data_vec.push(byte);
+
+            // Length and name
+            data_vec.push(name_bytes.len() as u8);
+            data_vec.extend_from_slice(name_bytes);
+
+            // Length and value
+            data_vec.push(val_bytes.len() as u8);
+            data_vec.extend_from_slice(val_bytes);
+
+            let mut data = Bytes::from(data_vec);
+            let mut cursor = Cursor::new(&mut data);
+
+            let mut decoded_header = None;
+            let result = decoder.decode(&mut cursor, |h| {
+                decoded_header = Some(h);
+            });
+
+            assert!(result.is_ok(), "Failed to decode stream for prefix {:#x}", byte);
+            let header = decoded_header.expect("Expected header to be emitted by decoder");
+            validator(header);
+        }
+    }
+
+    /// STATEMENT: `Decoder::decode` correctly handles incomplete streams (underflow)
+    /// returning a `NeedMore` decoder error when buffer data runs out.
+    ///
+    /// HOW:
+    /// - Pass a truncated byte sequence to `decoder.decode` via a `Cursor`.
+    /// - Assert that the result evaluates to an `Err` containing `DecoderError::NeedMore`.
+    #[test]
+    fn test_decoder_decode_underflow_error() {
+        use crate::hpack::Decoder;
+        use ntex::util::Bytes;
+        use std::io::Cursor;
+
+        let mut decoder = Decoder::new(4096);
+
+        // Incomplete data (declared length greater than available bytes)
+        let mut data = Bytes::from_static(&[
+            0x40, // Literal header field with incremental indexing
+            0xFF, // Exaggerated length without sufficient name/value bytes
+        ]);
+        let mut cursor = Cursor::new(&mut data);
+
+        let result = decoder.decode(&mut cursor, |_| {});
+        match result {
+            Err(DecoderError::NeedMore(_)) => (),
+            other => panic!("Expected NeedMore error, but got {:?}", other),
         }
     }
 }

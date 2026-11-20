@@ -10,6 +10,7 @@ use ntex_util::{channel::pool, time::timeout_checked};
 
 use crate::client::{ClientError, SimpleClient, stream::InflightStorage};
 use crate::config::ServiceConfig;
+use crate::frame::Sensitive;
 
 #[derive(Debug)]
 /// Service that establishes an HTTP/2 client connection.
@@ -89,7 +90,8 @@ where
         req: A,
         ctx: Ctx<'_, Self, SharedCfg>,
     ) -> impl Future<Output = Result<Self::Res, Self::Error>> {
-        let authority = ByteString::from(req.host());
+        // TODO: Sensitive from req
+        let authority = Sensitive::Normal(ByteString::from(req.host()));
 
         let cfg = ctx.st().get::<ServiceConfig>();
         let timeout = cfg.handshake_timeout;

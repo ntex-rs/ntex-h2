@@ -12,7 +12,7 @@ use ntex_util::time::now;
 use ntex_util::{HashMap, HashSet, channel::pool, future::Either};
 
 use crate::error::{ConnectionError, OperationError, StreamError, StreamErrorInner};
-use crate::frame::{self, Headers, PseudoHeaders, StreamId, WindowSize, WindowUpdate};
+use crate::frame::{self, Headers, PseudoHeaders, Sensitive, StreamId, WindowSize, WindowUpdate};
 use crate::stream::{Stream, StreamRef};
 use crate::{codec::Codec, config::ServiceConfig, consts, message::Message, timer, window::Window};
 
@@ -489,9 +489,9 @@ impl Connection {
     #[allow(clippy::manual_async_fn)]
     pub(crate) fn send_request(
         &self,
-        authority: ByteString,
+        authority: Sensitive<ByteString>,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> impl Future<Output = Result<Stream, Error<OperationError>>> {
@@ -551,9 +551,9 @@ impl Connection {
     /// Reserved stream can be opened while graceful disconnect is in progress.
     pub(crate) fn send_reserved_request(
         &self,
-        authority: ByteString,
+        authority: Sensitive<ByteString>,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, Error<OperationError>> {
@@ -573,11 +573,12 @@ impl Connection {
     }
 
     // stream must be counted in `active_local_streams`
+    // TODO: sensitive
     fn open_stream(
         &self,
-        authority: ByteString,
+        authority: Sensitive<ByteString>,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> Result<Stream, Error<OperationError>> {
@@ -2720,8 +2721,8 @@ mod tests {
                         frame::Frame::Headers(hdrs) => {
                             let id = hdrs.stream_id();
                             let pseudo = match hdrs.pseudo().path.as_deref() {
-                                Some("/no-status") => frame::PseudoHeaders::default(),
-                                Some("/path") => frame::PseudoHeaders {
+                                Some(t) if t == "/no-status" => frame::PseudoHeaders::default(),
+                                Some(t) if t == "/path" => frame::PseudoHeaders {
                                     status: Some(ntex::http::StatusCode::OK),
                                     path: Some("/".into()),
                                     ..Default::default()
@@ -2795,7 +2796,7 @@ mod tests {
                             Pipeline::new((), async move |msg: h2::Message| {
                                 match msg.kind {
                                     h2::MessageKind::Headers { pseudo, .. } => {
-                                        if pseudo.path.as_deref() == Some("/reset") {
+                                        if matches!(pseudo.path.as_deref(), Some(p) if p == "/reset") {
                                             msg.stream.reset(Reason::CANCEL);
                                         } else {
                                             msg.stream

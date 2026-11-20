@@ -12,6 +12,8 @@ use ntex_service::{IntoService, Pipeline, Service, cfg::SharedCfg};
 use ntex_util::time::{Millis, Seconds, system_time, timeout_checked};
 use ntex_util::{channel::Canceled, channel::oneshot, channel::pool, future::BoxFuture};
 
+use crate::frame::Sensitive;
+
 use super::stream::{InflightStorage, RecvStream, SendStream};
 use super::{ClientError, simple::SimpleClient};
 
@@ -65,12 +67,12 @@ fn notify(waiters: &mut VecDeque<pool::Sender<()>>) {
 impl Client {
     #[inline]
     /// Creates a client-pool builder for a remote address.
-    pub fn builder<A, U>(addr: U) -> ClientBuilder<A, DefaultConnector<A>>
+    pub fn builder<A, U>(addr: U, sensitive: bool) -> ClientBuilder<A, DefaultConnector<A>>
     where
         A: Address + Clone,
         Connect<A>: From<U>,
     {
-        ClientBuilder::new(addr)
+        ClientBuilder::new(addr, sensitive)
     }
 
     /// Sends a request using an available connection.
@@ -82,7 +84,7 @@ impl Client {
     pub fn send(
         &self,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> impl Future<Output = Result<(SendStream, RecvStream), Error<ClientError>>> {
@@ -336,7 +338,7 @@ struct InnerConfig {
     max_streams: u32,
     skip_unknown_streams: bool,
     secure: bool,
-    authority: ByteString,
+    authority: Sensitive<ByteString>,
     connecting: Cell<bool>,
     connections: RefCell<Vec<SimpleClient>>,
     total_connections: Cell<usize>,
@@ -349,12 +351,16 @@ where
     A: Address + Clone,
 {
     /// Creates a builder using the default transport connector.
-    pub fn new<U>(addr: U) -> Self
+    pub fn new<U>(addr: U, sensitive: bool) -> Self
     where
         Connect<A>: From<U>,
     {
         let connect = Connect::from(addr);
-        let authority = ByteString::from(connect.host());
+        let authority = if sensitive {
+            Sensitive::Sensitive(ByteString::from(connect.host()))
+        } else {
+            Sensitive::Normal(ByteString::from(connect.host()))
+        };
 
         ClientBuilder {
             connect,
@@ -569,7 +575,7 @@ mod tests {
     #[test]
     fn cancelled_waiters_are_removed() {
         for ready in [false, true] {
-            let pool = Client::builder("localhost")
+            let pool = Client::builder("localhost", false)
                 .minconn(0)
                 .connection_limit(0)
                 .build(SharedCfg::default());
@@ -604,7 +610,7 @@ mod tests {
     /// - Poll again and assert `ClientError::Disconnected` is returned and no waiters remain.
     #[test]
     fn cancelled_waiter_channel_reports_error() {
-        let pool = Client::builder("localhost")
+        let pool = Client::builder("localhost", false)
             .minconn(0)
             .connection_limit(0)
             .build(SharedCfg::default());

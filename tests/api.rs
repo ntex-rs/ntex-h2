@@ -1,3 +1,4 @@
+use ntex_bytes::ByteString;
 use ntex_error::ErrorDiagnostic;
 use ntex_h2::control::ExpectResult;
 use ntex_h2::frame::{FrameError, Reason, StreamId};
@@ -258,7 +259,10 @@ async fn expect_control_and_message_accessors() {
         panic!("unexpected control event")
     };
     assert_eq!(expect.stream().id(), id);
-    assert_eq!(expect.pseudo().path.as_deref(), Some("/upload"));
+    assert_eq!(
+        expect.pseudo().path.as_deref().map(ByteString::as_str),
+        Some("/upload")
+    );
     assert!(expect.headers().is_empty());
 
     expect.headers_mut().insert(
@@ -267,7 +271,7 @@ async fn expect_control_and_message_accessors() {
     );
     let (stream, pseudo, headers) = expect.clone().into_parts();
     assert_eq!(stream.id(), id);
-    assert_eq!(pseudo.path.as_deref(), Some("/upload"));
+    assert_eq!(pseudo.path.as_deref().map(ByteString::as_str), Some("/upload"));
     assert_eq!(headers.get("x-test").unwrap(), "value");
 
     let ack = Control::<()>::expect(stream, pseudo, headers).ack();

@@ -1,3 +1,4 @@
+use std::ops::Deref;
 use std::{cell::RefCell, cmp, fmt, io::Cursor};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
@@ -27,6 +28,86 @@ pub struct Headers {
 #[derive(Copy, Clone, Eq, PartialEq)]
 pub struct HeadersFlag(u8);
 
+/// Represents the HPACK indexing sensitivity of a header field value as defined in
+/// [RFC 7541 §6.2](https://httpwg.org/specs/rfc7541.html#literal.header.field.representation).
+///
+/// In HTTP/2, headers containing sensitive data (such as authentication tokens,
+/// session IDs, or private paths) can be marked as "never indexed" to prevent
+/// compression-based side-channel attacks (e.g., CRIME/BREACH) and to instruct
+/// intermediaries (proxies) not to compress or cache them in the dynamic table.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Sensitive<T> {
+    /// Standard header field that may be indexed in the HPACK dynamic table
+    /// (RFC 7541 §6.2.1 / §6.2.2).
+    Normal(T),
+
+    /// Sensitive header field that must be encoded as a "Literal Header Field Never Indexed"
+    /// (RFC 7541 §6.2.3). Intermediaries must preserve this flag when forwarding the field.
+    Sensitive(T),
+}
+
+impl<T> Sensitive<T> {
+    /// Checks if the inner value is marked as sensitive (`Never Indexed`).
+    pub fn is_sensitive(&self) -> bool {
+        matches!(self, Self::Sensitive(_))
+    }
+
+    /// Transforms the value into a sensitive (`Never Indexed`) variant.
+    #[must_use]
+    pub fn sensitive(self) -> Self {
+        match self {
+            Self::Normal(v) | Self::Sensitive(v) => Self::Sensitive(v),
+        }
+    }
+
+    /// Transforms the value into a normal (indexable) variant.
+    #[must_use]
+    pub fn normal(self) -> Self {
+        match self {
+            Self::Normal(v) | Self::Sensitive(v) => Self::Normal(v),
+        }
+    }
+}
+
+impl<T> AsRef<T> for Sensitive<T> {
+    fn as_ref(&self) -> &T {
+        match self {
+            Sensitive::Normal(v) | Sensitive::Sensitive(v) => v,
+        }
+    }
+}
+
+impl<T> Deref for Sensitive<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Normal(v) | Self::Sensitive(v) => v,
+        }
+    }
+}
+
+impl From<&str> for Sensitive<ByteString> {
+    fn from(value: &str) -> Self {
+        Sensitive::Normal(value.into())
+    }
+}
+
+impl PartialEq<str> for Sensitive<ByteString> {
+    #[inline]
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl PartialEq<&str> for Sensitive<ByteString> {
+    #[inline]
+    #[allow(clippy::op_ref)]
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
 /// Decoded HTTP/2 pseudo-header fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PseudoHeaders {
@@ -35,9 +116,9 @@ pub struct PseudoHeaders {
     /// Request `:scheme`.
     pub scheme: Option<ByteString>,
     /// Request `:authority`.
-    pub authority: Option<ByteString>,
+    pub authority: Option<Sensitive<ByteString>>,
     /// Request `:path`.
-    pub path: Option<ByteString>,
+    pub path: Option<Sensitive<ByteString>>,
     /// Extended CONNECT `:protocol` (RFC 8441).
     pub protocol: Option<Protocol>,
     /// Response `:status`.
@@ -455,6 +536,9 @@ impl HeaderBlock {
                     self.pseudo.$field = Some($val.into());
                 }
             }};
+            ($field:ident, $val:expr, $variant:ident) => {{
+                set_pseudo!($field, Sensitive::$variant($val));
+            }};
         }
 
         let mut cursor = Cursor::new(src);
@@ -503,7 +587,10 @@ impl HeaderBlock {
                     }
                 }
                 Header::Authority(v) => {
-                    set_pseudo!(authority, v);
+                    set_pseudo!(authority, v, Normal);
+                }
+                Header::AuthoritySensitive(v) => {
+                    set_pseudo!(authority, v, Sensitive);
                 }
                 Header::Method(v) => {
                     set_pseudo!(method, v);
@@ -512,7 +599,10 @@ impl HeaderBlock {
                     set_pseudo!(scheme, v);
                 }
                 Header::Path(v) => {
-                    set_pseudo!(path, v);
+                    set_pseudo!(path, v, Normal);
+                }
+                Header::PathSensitive(v) => {
+                    set_pseudo!(path, v, Sensitive);
                 }
                 Header::Protocol(v) => {
                     set_pseudo!(protocol, v);
@@ -590,11 +680,23 @@ fn encode_block(
         if let Some(ref v) = pseudo.scheme {
             encoder.encode_ref(HeaderRef::Scheme(v), hpack);
         }
-        if let Some(ref v) = pseudo.authority {
-            encoder.encode_ref(HeaderRef::Authority(v), hpack);
+        match pseudo.authority {
+            Some(Sensitive::Normal(ref v)) => {
+                encoder.encode_ref(HeaderRef::Authority(v), hpack);
+            }
+            Some(Sensitive::Sensitive(ref v)) => {
+                encoder.encode_ref(HeaderRef::AuthoritySensitive(v), hpack);
+            }
+            None => (),
         }
-        if let Some(ref v) = pseudo.path {
-            encoder.encode_ref(HeaderRef::Path(v), hpack);
+        match pseudo.path {
+            Some(Sensitive::Normal(ref v)) => {
+                encoder.encode_ref(HeaderRef::Path(v), hpack);
+            }
+            Some(Sensitive::Sensitive(ref v)) => {
+                encoder.encode_ref(HeaderRef::PathSensitive(v), hpack);
+            }
+            None => (),
         }
         if let Some(ref v) = pseudo.protocol {
             encoder.encode_ref(HeaderRef::Protocol(v.as_bytestring()), hpack);
@@ -970,5 +1072,192 @@ mod tests {
              pseudo: PseudoHeaders { method: Some(CONNECT), scheme: None, authority: None, \
              path: None, protocol: Some(\"websocket\"), status: None } }"
         );
+    }
+    /// STATEMENT: A never-indexed regular field stays sensitive through `HEADERS` frame decoding
+    /// and re-encoding, while a literal without indexing stays non-sensitive.
+    ///
+    /// HOW:
+    /// - Decode a `HEADERS` block with a never-indexed (`0x10`) `x-secret` field and a literal
+    ///   without indexing (`0x00`) `x-plain` field, both with literal names.
+    /// - Check only `x-secret` in `fields()` reports `is_sensitive()`.
+    /// - Re-encode the decoded fields with a fresh encoder, decode them again, and check the
+    ///   same sensitivity, so the encoder emitted `x-secret` as never-indexed.
+    #[test]
+    fn never_indexed_field_round_trips() {
+        let mut block = BytesMut::new();
+        // :method GET, :scheme https, :path /
+        block.extend_from_slice(&[0x82, 0x87, 0x84]);
+        // never indexed, literal name
+        block.extend_from_slice(b"\x10\x08x-secret\x02s1");
+        // without indexing, literal name
+        block.extend_from_slice(b"\x00\x07x-plain\x02p1");
+        let mut src = block.freeze();
+
+        let head = Head::new(Kind::Headers, END_HEADERS | END_STREAM, StreamId::from(1));
+        let mut hdrs = Headers::load(head, &mut src).unwrap();
+        hdrs.load_hpack(&mut src, &mut hpack::Decoder::new(4096), 100, 16_384)
+            .unwrap();
+        assert!(hdrs.fields().get("x-secret").unwrap().is_sensitive());
+        assert!(!hdrs.fields().get("x-plain").unwrap().is_sensitive());
+
+        let hdrs = decode(hdrs.into_fields());
+        assert!(hdrs.fields().get("x-secret").unwrap().is_sensitive());
+        assert!(!hdrs.fields().get("x-plain").unwrap().is_sensitive());
+    }
+
+    /// STATEMENT: Normal values must not be marked as sensitive.
+    ///
+    /// HOW:
+    /// - Create a Normal value.
+    /// - Verify that is_sensitive() returns false.
+    #[test]
+    fn test_normal_is_not_sensitive() {
+        let value = Sensitive::Normal(ByteString::from("token"));
+
+        assert!(!value.is_sensitive());
+    }
+
+    /// STATEMENT: Sensitive values must be marked as sensitive.
+    ///
+    /// HOW:
+    /// - Create a Sensitive value.
+    /// - Verify that is_sensitive() returns true.
+    #[test]
+    fn test_sensitive_is_sensitive() {
+        let value = Sensitive::Sensitive(ByteString::from("token"));
+
+        assert!(value.is_sensitive());
+    }
+
+    /// STATEMENT: Normal values can be converted into Sensitive values.
+    ///
+    /// HOW:
+    /// - Create a Normal value.
+    /// - Call sensitive().
+    /// - Verify that the resulting value is sensitive.
+    #[test]
+    fn test_sensitive_conversion() {
+        let value = Sensitive::Normal(ByteString::from("token")).sensitive();
+
+        assert!(value.is_sensitive());
+    }
+
+    /// STATEMENT: Converting an already sensitive value into Sensitive
+    /// must preserve its value and sensitivity.
+    ///
+    /// HOW:
+    /// - Create a Sensitive value.
+    /// - Call sensitive().
+    /// - Verify that sensitivity and the inner value are preserved.
+    #[test]
+    fn test_sensitive_conversion_is_idempotent() {
+        let value = Sensitive::Sensitive(ByteString::from("token")).sensitive();
+
+        assert!(value.is_sensitive());
+        assert_eq!(value.as_ref(), "token");
+    }
+
+    /// STATEMENT: Sensitive values can be converted into Normal values.
+    ///
+    /// HOW:
+    /// - Create a Sensitive value.
+    /// - Call normal().
+    /// - Verify that the resulting value is not sensitive.
+    #[test]
+    fn test_normal_conversion() {
+        let value = Sensitive::Sensitive(ByteString::from("token")).normal();
+
+        assert!(!value.is_sensitive());
+    }
+
+    /// STATEMENT: Converting an already normal value into Normal
+    /// must preserve its value and indexing state.
+    ///
+    /// HOW:
+    /// - Create a Normal value.
+    /// - Call normal().
+    /// - Verify that sensitivity and the inner value are preserved.
+    #[test]
+    fn test_normal_conversion_is_idempotent() {
+        let value = Sensitive::Normal(ByteString::from("token")).normal();
+
+        assert!(!value.is_sensitive());
+        assert_eq!(value.as_ref(), "token");
+    }
+
+    /// STATEMENT: AsRef must expose the inner value regardless of sensitivity.
+    ///
+    /// HOW:
+    /// - Create Normal and Sensitive values.
+    /// - Call as_ref() on both variants.
+    /// - Verify that the inner values are returned.
+    #[test]
+    fn test_as_ref() {
+        let normal = Sensitive::Normal(ByteString::from("normal"));
+        let sensitive = Sensitive::Sensitive(ByteString::from("sensitive"));
+
+        assert_eq!(normal.as_ref(), "normal");
+        assert_eq!(sensitive.as_ref(), "sensitive");
+    }
+
+    /// STATEMENT: Deref must provide access to the inner value regardless
+    /// of sensitivity.
+    ///
+    /// HOW:
+    /// - Create Normal and Sensitive values.
+    /// - Access their inner values through Deref.
+    /// - Verify that both values are accessible.
+    #[test]
+    fn test_deref() {
+        let normal = Sensitive::Normal(ByteString::from("normal"));
+        let sensitive = Sensitive::Sensitive(ByteString::from("sensitive"));
+
+        assert_eq!(normal.as_str(), "normal");
+        assert_eq!(sensitive.as_str(), "sensitive");
+    }
+
+    /// STATEMENT: Converting a string slice must produce a Normal value.
+    ///
+    /// HOW:
+    /// - Convert a &str into Sensitive<ByteString>.
+    /// - Verify that the value is not sensitive.
+    /// - Verify that the inner value is preserved.
+    #[test]
+    fn test_from_str() {
+        let value: Sensitive<ByteString> = "token".into();
+
+        assert!(!value.is_sensitive());
+        assert_eq!(value.as_ref(), "token");
+    }
+
+    /// STATEMENT: Sensitive<ByteString> must support comparison with str.
+    ///
+    /// HOW:
+    /// - Create a Normal value.
+    /// - Compare it with matching and non-matching strings.
+    /// - Verify equality and inequality.
+    #[test]
+    fn test_partial_eq_str() {
+        let value = Sensitive::Normal(ByteString::from("token"));
+
+        assert_eq!(value, "token");
+        assert_ne!(value, "other");
+    }
+
+    /// STATEMENT: Equality must compare both the variant and inner value.
+    ///
+    /// HOW:
+    /// - Create two identical Normal values.
+    /// - Create a Sensitive value with the same inner value.
+    /// - Verify that identical variants are equal and different variants
+    ///   are not equal.
+    #[test]
+    fn test_equality() {
+        let normal1 = Sensitive::Normal(ByteString::from("token"));
+        let normal2 = Sensitive::Normal(ByteString::from("token"));
+        let sensitive = Sensitive::Sensitive(ByteString::from("token"));
+
+        assert_eq!(normal1, normal2);
+        assert_ne!(normal1, sensitive);
     }
 }

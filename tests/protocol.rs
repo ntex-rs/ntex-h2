@@ -5,6 +5,7 @@ use ntex::io::{Io, IoConfig, testing::IoTest};
 use ntex::service::cfg::SharedCfg;
 use ntex::time::{Millis, Seconds, sleep, timeout};
 use ntex::util::{Bytes, BytesMut};
+use ntex_bytes::ByteString;
 use ntex_codec::Decoder;
 use ntex_h2::control::Reason as CtlReason;
 use ntex_h2::frame::{self, Frame, Reason, StreamId};
@@ -134,7 +135,7 @@ async fn start(cfg: SharedCfg, over: Option<Reason>) -> Peer {
                 }
                 _ => return Ok(()),
             };
-            match pseudo.path.as_ref().map(AsRef::as_ref) {
+            match pseudo.path.as_deref().map(ByteString::as_str) {
                 Some("/fail") => Err(()),
                 Some("/big") => {
                     let stream = msg.stream();

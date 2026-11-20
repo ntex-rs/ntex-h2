@@ -102,7 +102,7 @@ fn test_story(story: &Value) {
                 .expect
                 .iter()
                 .map(|(name, value)| {
-                    Header::new(&name.clone().into(), value.clone().into())
+                    Header::new(&name.clone().into(), value.clone().into(), false)
                         .unwrap()
                         .into()
                 })
@@ -132,10 +132,10 @@ struct Case {
 fn key_str(e: &Header) -> &str {
     match *e {
         Header::Field { ref name, .. } => name.as_str(),
-        Header::Authority(..) => ":authority",
+        Header::Authority(..) | Header::AuthoritySensitive(..) => ":authority",
         Header::Method(..) => ":method",
         Header::Scheme(..) => ":scheme",
-        Header::Path(..) => ":path",
+        Header::Path(..) | Header::PathSensitive(..) => ":path",
         Header::Protocol(..) => ":protocol",
         Header::Status(..) => ":status",
     }
@@ -144,7 +144,11 @@ fn key_str(e: &Header) -> &str {
 fn value_str(e: &Header) -> &str {
     match *e {
         Header::Field { ref value, .. } => value.to_str().unwrap(),
-        Header::Authority(ref v) | Header::Scheme(ref v) | Header::Path(ref v) => v,
+        Header::Authority(ref v)
+        | Header::AuthoritySensitive(ref v)
+        | Header::Scheme(ref v)
+        | Header::Path(ref v)
+        | Header::PathSensitive(ref v) => v,
         Header::Method(ref m) => m.as_str(),
         Header::Protocol(ref v) => v.as_str(),
         Header::Status(ref v) => v.as_str(),

@@ -15,12 +15,16 @@ pub enum Header<T = HeaderName> {
     },
     /// `:authority` pseudo-header.
     Authority(ByteString),
+    /// `:authority` pseudo-header with sensitive flag
+    AuthoritySensitive(ByteString),
     /// `:method` pseudo-header.
     Method(Method),
     /// `:scheme` pseudo-header.
     Scheme(ByteString),
     /// `:path` pseudo-header.
     Path(ByteString),
+    /// `:path` pseudo-header with sensitive flag
+    PathSensitive(ByteString),
     /// `:protocol` pseudo-header.
     Protocol(ByteString),
     /// `:status` pseudo-header.
@@ -58,9 +62,11 @@ impl Header<Option<HeaderName>> {
             Header::Field { name: Some(n), value } => Header::Field { name: n, value },
             Header::Field { name: None, value } => return Err(value),
             Header::Authority(v) => Header::Authority(v),
+            Header::AuthoritySensitive(v) => Header::AuthoritySensitive(v),
             Header::Method(v) => Header::Method(v),
             Header::Scheme(v) => Header::Scheme(v),
             Header::Path(v) => Header::Path(v),
+            Header::PathSensitive(v) => Header::PathSensitive(v),
             Header::Protocol(v) => Header::Protocol(v),
             Header::Status(v) => Header::Status(v),
         })
@@ -88,6 +94,10 @@ impl Header {
                 v.trimdown();
                 Header::Authority(v)
             }
+            Header::AuthoritySensitive(mut v) => {
+                v.trimdown();
+                Header::AuthoritySensitive(v)
+            }
             Header::Scheme(mut v) => {
                 v.trimdown();
                 Header::Scheme(v)
@@ -95,6 +105,10 @@ impl Header {
             Header::Path(mut v) => {
                 v.trimdown();
                 Header::Path(v)
+            }
+            Header::PathSensitive(mut v) => {
+                v.trimdown();
+                Header::PathSensitive(v)
             }
             Header::Protocol(mut v) => {
                 v.trimdown();
@@ -104,17 +118,36 @@ impl Header {
         }
     }
 
-    /// Parses a header name and value.
-    pub fn new(name: &Bytes, value: Bytes) -> Result<Header, DecoderError> {
+    /// Parses a header name and value, marking it as sensitive if specified.
+    ///
+    /// - `name`: The raw bytes of the header name.
+    /// - `value`: The raw bytes of the header value.
+    /// - `sensitive`: A boolean flag indicating whether the header value should be treated as sensitive (never-indexed).
+    pub fn new(name: &Bytes, value: Bytes, sensitive: bool) -> Result<Header, DecoderError> {
         if name.is_empty() {
             return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
         }
+
         if name[0] == b':' {
             match &name[1..] {
-                b"authority" => Ok(Header::Authority(ByteString::try_from(value)?)),
+                b"authority" => {
+                    let val = ByteString::try_from(value)?;
+                    Ok(if sensitive {
+                        Header::AuthoritySensitive(val)
+                    } else {
+                        Header::Authority(val)
+                    })
+                }
                 b"method" => Ok(Header::Method(Method::from_bytes(&value)?)),
                 b"scheme" => Ok(Header::Scheme(ByteString::try_from(value)?)),
-                b"path" => Ok(Header::Path(ByteString::try_from(value)?)),
+                b"path" => {
+                    let val = ByteString::try_from(value)?;
+                    Ok(if sensitive {
+                        Header::PathSensitive(val)
+                    } else {
+                        Header::Path(val)
+                    })
+                }
                 b"protocol" => Ok(Header::Protocol(ByteString::try_from(value)?)),
                 b"status" => Ok(Header::Status(StatusCode::from_bytes(&value)?)),
                 _ => Err(DecoderError::InvalidPseudoheader),
@@ -122,12 +155,12 @@ impl Header {
         } else {
             // HTTP/2 requires lower case header names
             let name = HeaderName::from_lowercase(name)?;
-            let value = HeaderValue::from_shared(value)?;
+            let mut value = HeaderValue::from_shared(value)?;
+            value.set_sensitive(sensitive);
 
             Ok(Header::Field { name, value })
         }
     }
-
     /// Returns the HPACK table size of this header.
     #[inline]
     #[allow(clippy::len_without_is_empty)]
@@ -169,9 +202,11 @@ impl Header {
         match self {
             Header::Field { name, value } => HeaderRef::Field { name, value },
             Header::Authority(v) => HeaderRef::Authority(v),
+            Header::AuthoritySensitive(v) => HeaderRef::AuthoritySensitive(v),
             Header::Method(v) => HeaderRef::Method(v),
             Header::Scheme(v) => HeaderRef::Scheme(v),
             Header::Path(v) => HeaderRef::Path(v),
+            Header::PathSensitive(v) => HeaderRef::PathSensitive(v),
             Header::Protocol(v) => HeaderRef::Protocol(v),
             Header::Status(v) => HeaderRef::Status(v),
         }
@@ -186,9 +221,11 @@ pub(crate) enum HeaderRef<'a> {
         value: &'a HeaderValue,
     },
     Authority(&'a ByteString),
+    AuthoritySensitive(&'a ByteString),
     Method(&'a Method),
     Scheme(&'a ByteString),
     Path(&'a ByteString),
+    PathSensitive(&'a ByteString),
     Protocol(&'a ByteString),
     Status(&'a StatusCode),
 }
@@ -199,10 +236,10 @@ impl<'a> HeaderRef<'a> {
     pub(crate) fn len(self) -> usize {
         match self {
             HeaderRef::Field { name, value } => len(name, value),
-            HeaderRef::Authority(v) => 32 + 10 + v.len(),
+            HeaderRef::Authority(v) | HeaderRef::AuthoritySensitive(v) => 32 + 10 + v.len(),
             HeaderRef::Method(v) => 32 + 7 + v.as_ref().len(),
             HeaderRef::Scheme(v) => 32 + 7 + v.len(),
-            HeaderRef::Path(v) => 32 + 5 + v.len(),
+            HeaderRef::Path(v) | HeaderRef::PathSensitive(v) => 32 + 5 + v.len(),
             HeaderRef::Protocol(v) => 32 + 9 + v.len(),
             HeaderRef::Status(_) => 32 + 7 + 3,
         }
@@ -213,10 +250,10 @@ impl<'a> HeaderRef<'a> {
     pub(crate) fn name(self) -> Name<'a> {
         match self {
             HeaderRef::Field { name, .. } => Name::Field(name),
-            HeaderRef::Authority(..) => Name::Authority,
+            HeaderRef::Authority(..) | HeaderRef::AuthoritySensitive(..) => Name::Authority,
             HeaderRef::Method(..) => Name::Method,
             HeaderRef::Scheme(..) => Name::Scheme,
-            HeaderRef::Path(..) => Name::Path,
+            HeaderRef::Path(..) | HeaderRef::PathSensitive(..) => Name::Path,
             HeaderRef::Protocol(..) => Name::Protocol,
             HeaderRef::Status(..) => Name::Status,
         }
@@ -228,8 +265,10 @@ impl<'a> HeaderRef<'a> {
         match self {
             HeaderRef::Field { value, .. } => value.as_ref(),
             HeaderRef::Authority(v)
+            | HeaderRef::AuthoritySensitive(v)
             | HeaderRef::Scheme(v)
             | HeaderRef::Path(v)
+            | HeaderRef::PathSensitive(v)
             | HeaderRef::Protocol(v) => v.as_bytes(),
             HeaderRef::Method(v) => v.as_str().as_bytes(),
             HeaderRef::Status(v) => v.as_str().as_bytes(),
@@ -253,11 +292,10 @@ impl<'a> HeaderRef<'a> {
     /// Returns whether the header value is marked sensitive.
     #[inline]
     pub(crate) fn is_sensitive(self) -> bool {
-        if let HeaderRef::Field { value, .. } = self {
-            value.is_sensitive()
-        } else {
-            // TODO: Technically these other header values can be sensitive too.
-            false
+        match self {
+            HeaderRef::Field { value, .. } => value.is_sensitive(),
+            HeaderRef::AuthoritySensitive(..) | HeaderRef::PathSensitive(..) => true,
+            _ => false,
         }
     }
 
@@ -278,7 +316,9 @@ impl<'a> HeaderRef<'a> {
                     | header::COOKIE
                     | header::SET_COOKIE
             ),
-            HeaderRef::Path(..) => true,
+            HeaderRef::AuthoritySensitive(..) | HeaderRef::Path(..) | HeaderRef::PathSensitive(..) => {
+                true
+            }
             _ => false,
         }
     }
@@ -291,9 +331,11 @@ impl<'a> HeaderRef<'a> {
                 value: value.clone(),
             },
             HeaderRef::Authority(v) => Header::Authority(v.clone()),
+            HeaderRef::AuthoritySensitive(v) => Header::AuthoritySensitive(v.clone()),
             HeaderRef::Method(v) => Header::Method(v.clone()),
             HeaderRef::Scheme(v) => Header::Scheme(v.clone()),
             HeaderRef::Path(v) => Header::Path(v.clone()),
+            HeaderRef::PathSensitive(v) => Header::PathSensitive(v.clone()),
             HeaderRef::Protocol(v) => Header::Protocol(v.clone()),
             HeaderRef::Status(v) => Header::Status(*v),
         }
@@ -309,9 +351,11 @@ impl From<Header> for Header<Option<HeaderName>> {
                 name: Some(name),
             },
             Header::Authority(v) => Header::Authority(v),
+            Header::AuthoritySensitive(v) => Header::AuthoritySensitive(v),
             Header::Method(v) => Header::Method(v),
             Header::Scheme(v) => Header::Scheme(v),
             Header::Path(v) => Header::Path(v),
+            Header::PathSensitive(v) => Header::PathSensitive(v),
             Header::Protocol(v) => Header::Protocol(v),
             Header::Status(v) => Header::Status(v),
         }

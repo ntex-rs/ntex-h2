@@ -9,6 +9,7 @@ use ntex_io::{IoBoxed, IoRef, Waiter};
 use ntex_service::{Pipeline, cfg::Cfg};
 use ntex_util::{channel::pool, time::Millis, time::Sleep, time::system_time};
 
+use crate::frame::Sensitive;
 use crate::{OperationError, ServiceConfig, codec::Codec, stream::Stream};
 use crate::{connection::Connection, dispatcher::Dispatcher};
 
@@ -25,7 +26,7 @@ pub struct SimpleClient(Rc<ClientRef>);
 struct ClientRef {
     id: ByteString,
     con: Connection,
-    authority: ByteString,
+    authority: Sensitive<ByteString>,
     storage: InflightStorage,
     created: SystemTime,
 }
@@ -37,7 +38,7 @@ impl SimpleClient {
     /// [`ServiceConfig`] is taken from the transport's shared configuration,
     /// `authority` is sent as the `:authority` pseudo-header of requests, if
     /// `secure` is `true` requests use the `https` `:scheme`, `http` otherwise.
-    pub fn new<T>(io: T, secure: bool, authority: ByteString) -> Self
+    pub fn new<T>(io: T, secure: bool, authority: Sensitive<ByteString>) -> Self
     where
         IoBoxed: From<T>,
     {
@@ -58,7 +59,7 @@ impl SimpleClient {
         io: IoBoxed,
         cfg: Cfg<ServiceConfig>,
         secure: bool,
-        authority: ByteString,
+        authority: Sensitive<ByteString>,
         skip_unknown_streams: bool,
         storage: InflightStorage,
         pool: pool::Pool<()>,
@@ -129,7 +130,7 @@ impl SimpleClient {
     pub fn send(
         &self,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> impl Future<Output = Result<(SendStream, RecvStream), Error<OperationError>>> {
@@ -218,7 +219,7 @@ impl SimpleClient {
 
     #[inline]
     /// Returns the authority used for requests.
-    pub fn authority(&self) -> &ByteString {
+    pub fn authority(&self) -> &Sensitive<ByteString> {
         &self.0.authority
     }
 
@@ -285,7 +286,7 @@ impl StreamReservation {
     pub fn send(
         mut self,
         method: Method,
-        path: ByteString,
+        path: Sensitive<ByteString>,
         headers: HeaderMap,
         eof: bool,
     ) -> Result<(SendStream, RecvStream), Error<OperationError>> {
