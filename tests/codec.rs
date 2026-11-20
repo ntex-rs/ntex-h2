@@ -1,3 +1,4 @@
+#[macro_use]
 mod support;
 
 use ntex_bytes::BytesMut;
@@ -147,7 +148,7 @@ fn read_data_stream_id_zero() {
 /// - Have the server send a large header set with status `StatusCode::OK` and verify the
 ///   request path and end-of-stream flag.
 /// - Assert the client receives the expected status and the complete header map.
-#[ntex::test]
+#[t::asyn]
 async fn read_continuation_frames() {
     let (cli, srv) = IoTest::create();
 
@@ -253,7 +254,7 @@ fn read_goaway_with_debug_data() {
 /// - Assert the server receives the full map, request path, and end-of-stream flag before
 ///   sending a response.
 /// - Assert the client receives `StatusCode::NO_CONTENT` with its end-of-stream flag set.
-#[ntex::test]
+#[t::asyn]
 async fn write_continuation_frames() {
     let (cli, srv) = IoTest::create();
     let large = build_large_headers();
@@ -321,7 +322,7 @@ fn frame_payload(buf: &[u8], kind: u8, stream_id: u32) -> &[u8] {
 ///   setting.
 /// - Send a request and inspect the stream-1 header payload for the leading zero-size update
 ///   byte `0x20`.
-#[ntex::test]
+#[t::asyn]
 async fn client_settings_header_table_size() {
     let (cli, srv) = IoTest::create();
     srv.remote_buffer_cap(1024 * 1024);
@@ -349,7 +350,7 @@ async fn client_settings_header_table_size() {
 /// - Send the connection preface and `SETTINGS_HEADER_TABLE_SIZE = 0` to an in-memory server.
 /// - Acknowledge its settings, send a request, and respond with an `a: b` header.
 /// - Inspect the response header payload for the leading zero-size update byte `0x20`.
-#[ntex::test]
+#[t::asyn]
 async fn server_settings_header_table_size() {
     let (srv, cli) = IoTest::create();
     srv.remote_buffer_cap(1024 * 1024);

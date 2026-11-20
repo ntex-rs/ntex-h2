@@ -1,14 +1,14 @@
 //! Connection level protocol handling over an in-memory transport.
-use ntex::channel::{mpsc, oneshot};
-use ntex::http::{HeaderMap, Method, StatusCode};
-use ntex::io::{Io, IoConfig, testing::IoTest};
-use ntex::service::cfg::SharedCfg;
-use ntex::time::{Millis, Seconds, sleep, timeout};
-use ntex::util::{Bytes, BytesMut};
+use ntex_bytes::{Bytes, BytesMut};
 use ntex_codec::Decoder;
 use ntex_h2::control::Reason as CtlReason;
 use ntex_h2::frame::{self, Frame, Reason, StreamId};
 use ntex_h2::{Codec, Control, ControlAck, Message, MessageKind, server};
+use ntex_http::{HeaderMap, Method, StatusCode};
+use ntex_io::{Io, IoConfig, testing::IoTest};
+use ntex_service::cfg::SharedCfg;
+use ntex_util::channel::{mpsc, oneshot};
+use ntex_util::time::{Millis, Seconds, sleep, timeout};
 
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const END_STREAM: u8 = 0x1;
@@ -123,7 +123,7 @@ async fn start(cfg: SharedCfg, over: Option<Reason>) -> Peer {
     let (tx, events) = mpsc::channel();
     let (dis_tx, disconnects) = mpsc::channel();
     let (done_tx, done) = oneshot::channel();
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let _ = server::Server::new(async move |msg: Message| {
             let pseudo = match &msg.kind {
                 MessageKind::Headers { pseudo, .. } => pseudo,
@@ -210,7 +210,7 @@ async fn start_default() -> Peer {
 /// - Repeat those headers and assert `GoAway` has `Reason::PROTOCOL_ERROR` and last stream ID
 ///   1.
 /// - Check the control event contains `InvalidStreamId` and the server stops.
-#[ntex::test]
+#[t::asyn]
 async fn invalid_headers_frame() {
     let peer = start_default().await;
 
@@ -239,7 +239,7 @@ async fn invalid_headers_frame() {
 /// - Send headers for stream 1 and assert `GoAway` has `Reason::PROTOCOL_ERROR` and last stream
 ///   ID 3.
 /// - Check the control event contains `InvalidStreamId` and the server stops.
-#[ntex::test]
+#[t::asyn]
 async fn headers_for_closed_stream() {
     let peer = start_default().await;
 
@@ -264,7 +264,7 @@ async fn headers_for_closed_stream() {
 /// - Confirm a ping succeeds before each invalid frame, then send the frame.
 /// - Assert the expected `GoAway` reason and control-event text, then wait for the server to
 ///   stop.
-#[ntex::test]
+#[t::asyn]
 async fn connection_frame_errors() {
     let cases: [(&[u8], Reason, &str); 5] = [
         // connection window overflow
@@ -317,7 +317,7 @@ async fn connection_frame_errors() {
 /// - Open stream 1, send a valid priority frame followed by a self-dependent one, and assert a
 ///   `Reset` with `Reason::PROTOCOL_ERROR` for stream 1.
 /// - Confirm a ping still succeeds.
-#[ntex::test]
+#[t::asyn]
 async fn priority_frames_are_ignored() {
     let peer = start_default().await;
 
@@ -345,7 +345,7 @@ async fn priority_frames_are_ignored() {
 /// - Send a four-byte priority frame for stream 1 and assert `GoAway` has
 ///   `Reason::FRAME_SIZE_ERROR` and last stream ID 1.
 /// - Check the control event contains `InvalidPayloadLength` and the server stops.
-#[ntex::test]
+#[t::asyn]
 async fn invalid_priority_for_closed_stream() {
     let peer = start_default().await;
 
@@ -372,7 +372,7 @@ async fn invalid_priority_for_closed_stream() {
 /// - Advertise a 32,768-byte frame limit and request the 40,000-byte response.
 /// - Collect data-frame lengths until end-of-stream and assert their sum is 40,000.
 /// - Assert at least one frame exceeds 16,384 bytes and no frame exceeds 32,768 bytes.
-#[ntex::test]
+#[t::asyn]
 async fn peer_max_frame_size() {
     let mut peer = start_default().await;
     let mut settings = frame::Settings::default();
@@ -409,7 +409,7 @@ async fn peer_max_frame_size() {
 /// - Send a stream-zero reset and assert the overridden `Reason::ENHANCE_YOUR_CALM` and a
 ///   protocol-error control event.
 /// - Wait for each server to stop.
-#[ntex::test]
+#[t::asyn]
 async fn control_overrides_goaway_reason() {
     // publish service error
     let peer = start(SharedCfg::new("SRV").build(), Some(Reason::CANCEL)).await;
@@ -443,7 +443,7 @@ async fn control_overrides_goaway_reason() {
 ///   reason.
 /// - Close a separate peer and assert a peer-gone event is received; wait for both servers to
 ///   stop.
-#[ntex::test]
+#[t::asyn]
 async fn control_remote_events() {
     let peer = start_default().await;
     peer.ping().await;
@@ -467,7 +467,7 @@ async fn control_remote_events() {
 /// - Flush a partial frame header and assert `GoAway` has `Reason::NO_ERROR` and the control
 ///   event contains `ReadTimeout`.
 /// - Wait for the server to stop.
-#[ntex::test]
+#[t::asyn]
 async fn read_timeout() {
     let cfg = SharedCfg::new("SRV")
         .add(IoConfig::new().set_frame_read_rate(Seconds(1), Seconds(1), 256))
@@ -494,7 +494,7 @@ async fn read_timeout() {
 ///   contains `WriteTimeout`.
 /// - Assert the stream disconnect and failed response both report `WriteTimeout`, not
 ///   `ReadTimeout`, and wait for server shutdown.
-#[ntex::test]
+#[t::asyn]
 async fn write_timeout() {
     let cfg = SharedCfg::new("SRV")
         .add(
@@ -554,7 +554,7 @@ fn simple_client() -> (ntex_h2::client::SimpleClient, IoTest) {
 /// - Start an in-memory client and send self-dependent headers for server stream 2.
 /// - Wait for the client to close, decode its output, and assert `GoAway` has
 ///   `Reason::PROTOCOL_ERROR`.
-#[ntex::test]
+#[t::asyn]
 async fn client_invalid_headers_for_server_stream() {
     let (client, srv) = simple_client();
     sleep(Millis(50)).await;
@@ -582,7 +582,7 @@ async fn client_invalid_headers_for_server_stream() {
 ///   `StreamId::CLIENT`.
 /// - Attempt another request and assert it fails with `OperationError::Connection` wrapping
 ///   `ConnectionError::GoAway(Reason::NO_ERROR)`.
-#[ntex::test]
+#[t::asyn]
 async fn client_send_after_goaway() {
     let (client, srv) = simple_client();
     let (_snd, _rcv) = client
@@ -612,39 +612,39 @@ async fn client_send_after_goaway() {
 #[derive(Debug)]
 struct NotReady;
 
-impl ntex::service::Service<(), Message> for NotReady {
+impl ntex_service::Service<(), Message> for NotReady {
     type Res = ();
     type Error = &'static str;
 
-    async fn ready(&self, _: ntex::service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+    async fn ready(&self, _: ntex_service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         Err("not ready")
     }
 
-    async fn call(&self, _: Message, _: ntex::service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+    async fn call(&self, _: Message, _: ntex_service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         Ok(())
     }
 }
 
 struct NotReadyControl;
 
-impl ntex::service::Service<(), Control<&'static str>> for NotReadyControl {
+impl ntex_service::Service<(), Control<&'static str>> for NotReadyControl {
     type Res = ControlAck;
     type Error = &'static str;
 
-    async fn ready(&self, _: ntex::service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
+    async fn ready(&self, _: ntex_service::Ctx<'_, Self, ()>) -> Result<(), Self::Error> {
         Err("control not ready")
     }
 
     async fn call(
         &self,
         msg: Control<&'static str>,
-        _: ntex::service::Ctx<'_, Self, ()>,
+        _: ntex_service::Ctx<'_, Self, ()>,
     ) -> Result<ControlAck, Self::Error> {
         Ok(msg.ack())
     }
 }
 
-impl ntex::service::ServiceFactory<(), Control<&'static str>> for NotReadyControl {
+impl ntex_service::ServiceFactory<(), Control<&'static str>> for NotReadyControl {
     type Res = ControlAck;
     type Error = &'static str;
     type Service = NotReadyControl;
@@ -658,7 +658,7 @@ impl ntex::service::ServiceFactory<(), Control<&'static str>> for NotReadyContro
 #[derive(Debug)]
 struct NotReadyFactory;
 
-impl ntex::service::ServiceFactory<(), Message> for NotReadyFactory {
+impl ntex_service::ServiceFactory<(), Message> for NotReadyFactory {
     type Res = ();
     type Error = &'static str;
     type Service = NotReady;
@@ -677,14 +677,14 @@ impl ntex::service::ServiceFactory<(), Message> for NotReadyFactory {
 ///   publish error.
 /// - Send the connection preface and settings, then assert the server finishes with
 ///   `ServerError::Service("not ready")`.
-#[ntex::test]
+#[t::asyn]
 async fn publish_service_not_ready() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
 
     let (tx, rx) = oneshot::channel();
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let res = server::Server::new(NotReadyFactory)
             .control(async move |msg: Control<&'static str>| {
                 let Control::Disconnect(CtlReason::Error(err)) = msg else {
@@ -720,14 +720,14 @@ async fn publish_service_not_ready() {
 ///   `Reason::ENHANCE_YOUR_CALM`.
 /// - Send the preface and settings, then assert the received `GoAway` uses that reason.
 /// - Wait for the server result and assert it is successful.
-#[ntex::test]
+#[t::asyn]
 async fn publish_service_not_ready_ack() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
 
     let (tx, rx) = oneshot::channel();
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let res = server::Server::new(NotReadyFactory)
             .control(async move |msg: Control<&'static str>| {
                 let Control::Disconnect(CtlReason::Error(err)) = msg else {
@@ -774,7 +774,7 @@ async fn publish_service_not_ready_ack() {
 /// - Repeat `GoAway` and confirm a ping still succeeds.
 /// - Send a stream-zero reset and assert `Reason::PROTOCOL_ERROR` rather than the configured
 ///   override, no further control event, and server shutdown.
-#[ntex::test]
+#[t::asyn]
 async fn error_after_goaway() {
     let peer = start(SharedCfg::new("SRV").build(), Some(Reason::ENHANCE_YOUR_CALM)).await;
     peer.send(request(1, "/open", false)).await;
@@ -810,14 +810,14 @@ async fn error_after_goaway() {
 /// - Start a server using `NotReadyFactory` and `NotReadyControl`.
 /// - Send the connection preface and settings, then assert the server returns
 ///   `ServerError::Service("control not ready")`.
-#[ntex::test]
+#[t::asyn]
 async fn publish_and_control_not_ready() {
     let (cli, srv) = IoTest::create();
     cli.remote_buffer_cap(1024 * 1024);
     srv.remote_buffer_cap(1024 * 1024);
 
     let (tx, rx) = oneshot::channel();
-    ntex::rt::spawn(async move {
+    ntex_rt::spawn(async move {
         let res = server::Server::new(NotReadyFactory)
             .control(NotReadyControl)
             .run(Io::new(srv, SharedCfg::default()))

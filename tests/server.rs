@@ -1,12 +1,12 @@
 use std::{cell::Cell, io, rc::Rc};
 
-use ntex::http::{HeaderMap, Method};
-use ntex::io::{Io, IoBoxed, testing::IoTest};
-use ntex::service::{Ctx, Pipeline, Service, ServiceFactory, cfg::SharedCfg};
-use ntex::time::{Millis, Seconds};
 use ntex_h2::client::SimpleClient;
 use ntex_h2::server::{Server, ServerError, handle_one, handle_one2};
 use ntex_h2::{Control, ControlAck, Message, MessageKind, OperationError, ServiceConfig, frame};
+use ntex_http::{HeaderMap, Method};
+use ntex_io::{Io, IoBoxed, testing::IoTest};
+use ntex_service::{Ctx, Pipeline, Service, ServiceFactory, cfg::SharedCfg};
+use ntex_util::time::{Millis, Seconds};
 
 const PREFACE: &[u8; 24] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -54,7 +54,7 @@ fn server_error_display_and_conversion() {
 /// - Close a peer before running the server and assert `ServerError::Disconnected`.
 /// - Keep a peer open without sending a preface, configure a one-second handshake timeout, and
 ///   assert `ServerError::HandshakeTimeout`.
-#[ntex::test]
+#[t::asyn]
 async fn server_handshake_failures() {
     let (io, peer) = IoTest::create();
     peer.remote_buffer_cap(1024 * 1024);
@@ -117,7 +117,7 @@ impl ServiceFactory<(), Message> for FailingPublishFactory {
 /// HOW:
 /// - Send a valid connection preface and run a server using `FailingPublishFactory`.
 /// - Assert the result is `ServerError::PublishService` whose source displays "publish init".
-#[ntex::test]
+#[t::asyn]
 async fn server_publish_service_init_error() {
     let (io, peer) = IoTest::create();
     peer.remote_buffer_cap(1024 * 1024);
@@ -180,7 +180,7 @@ impl ServiceFactory<(), Control<()>> for ControlFactory {
 /// HOW:
 /// - Send a valid connection preface and configure `ControlFactory` to fail during creation.
 /// - Assert the result is `ServerError::ControlService` whose source displays "control init".
-#[ntex::test]
+#[t::asyn]
 async fn server_control_service_init_error() {
     let (io, peer) = IoTest::create();
     peer.remote_buffer_cap(1024 * 1024);
@@ -205,7 +205,7 @@ async fn server_control_service_init_error() {
 ///   counters.
 /// - After sending both prefaces, assert two services were created and neither was shut down.
 /// - Close both peers and assert both control services were shut down.
-#[ntex::test]
+#[t::asyn]
 async fn server_control_service_per_connection() {
     let counters = Rc::new(ControlCounters::default());
     let server = Rc::new(
@@ -219,12 +219,12 @@ async fn server_control_service_per_connection() {
         peer.remote_buffer_cap(1024 * 1024);
         peer.write(PREFACE);
         let server = server.clone();
-        ntex::rt::spawn(async move {
+        ntex_rt::spawn(async move {
             let _ = server.run(Io::new(io, SharedCfg::default())).await;
         });
         peers.push(peer);
     }
-    ntex::time::sleep(Millis(100)).await;
+    ntex_util::time::sleep(Millis(100)).await;
     assert_eq!(counters.created.get(), 2);
     assert_eq!(counters.shutdown.get(), 0);
 
@@ -232,7 +232,7 @@ async fn server_control_service_per_connection() {
     for peer in peers {
         peer.close().await;
     }
-    ntex::time::sleep(Millis(100)).await;
+    ntex_util::time::sleep(Millis(100)).await;
     assert_eq!(counters.shutdown.get(), 2);
 }
 
@@ -243,7 +243,7 @@ async fn server_control_service_per_connection() {
 ///   failed".
 /// - Send a client request and wait for the server result with a one-second timeout.
 /// - Assert the returned error is `ServerError::Service("control failed")`.
-#[ntex::test]
+#[t::asyn]
 async fn server_control_error_is_returned() {
     let (client_io, server_io) = IoTest::create();
     client_io.remote_buffer_cap(1024 * 1024);
@@ -251,8 +251,8 @@ async fn server_control_error_is_returned() {
 
     let server = Server::new(async |_msg: Message| Err::<(), ()>(()))
         .control(async |_msg: Control<()>| Err::<ControlAck, _>("control failed"));
-    let (tx, rx) = ntex::channel::oneshot::channel();
-    ntex::rt::spawn(async move {
+    let (tx, rx) = ntex_util::channel::oneshot::channel();
+    ntex_rt::spawn(async move {
         let result = server.run(Io::new(server_io, SharedCfg::default())).await;
         let _ = tx.send(result);
     });
@@ -264,7 +264,7 @@ async fn server_control_error_is_returned() {
     );
     let _ = client.send(Method::GET, "/".into(), HeaderMap::new(), true).await;
 
-    let err = ntex::time::timeout(Millis(1_000), rx)
+    let err = ntex_util::time::timeout(Millis(1_000), rx)
         .await
         .expect("server did not stop")
         .unwrap()
@@ -281,15 +281,15 @@ async fn server_control_error_is_returned() {
 /// - Send a client request and wait for the server result with a one-second timeout.
 /// - Assert the server returns `Ok(())`, the response stream receives
 ///   `OperationError::Disconnected` and the client connection is closed.
-#[ntex::test]
+#[t::asyn]
 async fn server_without_control_service() {
     for use_server in [true, false] {
         let (client_io, server_io) = IoTest::create();
         client_io.remote_buffer_cap(1024 * 1024);
         server_io.remote_buffer_cap(1024 * 1024);
 
-        let (tx, rx) = ntex::channel::oneshot::channel();
-        ntex::rt::spawn(async move {
+        let (tx, rx) = ntex_util::channel::oneshot::channel();
+        ntex_rt::spawn(async move {
             let io = Io::new(server_io, SharedCfg::default());
             let result = if use_server {
                 Server::new(async |_msg: Message| Err::<(), ()>(())).run(io).await
@@ -310,7 +310,7 @@ async fn server_without_control_service() {
             .await
             .unwrap();
 
-        ntex::time::timeout(Millis(1_000), rx)
+        ntex_util::time::timeout(Millis(1_000), rx)
             .await
             .expect("server did not stop")
             .unwrap()
@@ -334,7 +334,7 @@ async fn server_without_control_service() {
 ///   pipelines.
 /// - Call `handle_one` with boxed I/O and assert it returns `ServerError::Frame` containing
 ///   `FrameError::InvalidPreface`.
-#[ntex::test]
+#[t::asyn]
 async fn handle_one_rejects_invalid_preface() {
     let (io, peer) = IoTest::create();
     peer.remote_buffer_cap(1024 * 1024);

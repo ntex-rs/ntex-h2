@@ -1,16 +1,18 @@
 use std::io;
 
-use ntex::{SharedCfg, error::Error, time::Millis, time::sleep};
+use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, ServiceConfig, StreamEof, server};
 use ntex_http::{HeaderMap, StatusCode, header};
+use ntex_service::cfg::SharedCfg;
+use ntex_util::time::{Millis, sleep};
 
-#[ntex::main]
+#[t::example]
 async fn main() -> std::io::Result<()> {
     let _ = env_logger::try_init();
 
     let cfg = SharedCfg::new("SRV").add(ServiceConfig::new().set_max_concurrent_streams(10));
 
-    ntex::server::build()
+    ntex_server::net::build()
         .bind("http", "127.0.0.1:5928", cfg, async move |_| {
             server::Server::new(async move |msg: Message| {
                 let Message { stream, kind } = msg;

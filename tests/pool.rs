@@ -7,16 +7,16 @@ use std::{
     task::{Context, Poll, Wake, Waker},
 };
 
-use ntex::http::{HeaderMap, Method};
-use ntex::io::{Io, IoBoxed, testing::IoTest};
-use ntex::service::cfg::SharedCfg;
-use ntex::time::{Millis, sleep, timeout};
-use ntex::util::{BytePages, Bytes, BytesMut};
+use ntex_bytes::{BytePages, Bytes, BytesMut};
 use ntex_codec::{Decoder, Encoder};
 use ntex_h2::client::{Client, ClientError, SimpleClient};
 use ntex_h2::frame::{self, Frame, Reason};
 use ntex_h2::{Codec, ConnectionError};
+use ntex_http::{HeaderMap, Method};
+use ntex_io::{Io, IoBoxed, testing::IoTest};
 use ntex_net::connect::ConnectError;
+use ntex_service::cfg::SharedCfg;
+use ntex_util::time::{Millis, sleep, timeout};
 
 type Peers = Rc<RefCell<Vec<IoTest>>>;
 
@@ -92,7 +92,7 @@ fn client_error_conversions() {
         ClientError::Protocol(ConnectionError::MissingSettings)
     ));
 
-    let err = ClientError::from(ntex::channel::Canceled);
+    let err = ClientError::from(ntex_util::channel::Canceled);
     assert!(matches!(err, ClientError::Disconnected(_)));
 
     let _ = ntex_h2::client::Connector::<&'static str, _>::default();
@@ -107,7 +107,7 @@ fn client_error_conversions() {
 /// - Acquire another client and assert its ID differs, only it remains active, and two total
 ///   connections have been created.
 /// - Wait for the replaced client to close gracefully.
-#[ntex::test]
+#[t::asyn]
 async fn disconnecting_connection_is_replaced() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(None));
@@ -141,7 +141,7 @@ async fn disconnecting_connection_is_replaced() {
     });
 
     // the replaced connection is closed gracefully
-    ntex::time::timeout(Millis(1_000), async {
+    ntex_util::time::timeout(Millis(1_000), async {
         while !client1.is_closed() {
             sleep(Millis(10)).await;
         }
@@ -157,7 +157,7 @@ async fn disconnecting_connection_is_replaced() {
 /// - Configure a pool limit of two connections and peer limits of four streams each.
 /// - Acquire clients and keep seven requests open; assert exactly two connections were created
 ///   and seven streams are active across them.
-#[ntex::test]
+#[t::asyn]
 async fn busy_connections_are_shared() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(4)));
@@ -192,7 +192,7 @@ async fn busy_connections_are_shared() {
 ///   selects only that connection without creating another.
 /// - Check reservation counts and assert dropping reservations restores the second connection
 ///   to zero active streams.
-#[ntex::test]
+#[t::asyn]
 async fn zero_capacity_connection_is_skipped() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(3)));
@@ -233,7 +233,7 @@ async fn zero_capacity_connection_is_skipped() {
 ///   stream limit to zero.
 /// - Acquire again and assert a different client ID, two active and total connections, and a
 ///   ready replacement with a one-stream limit.
-#[ntex::test]
+#[t::asyn]
 async fn zero_capacity_connection_opens_another() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
@@ -263,7 +263,7 @@ async fn zero_capacity_connection_opens_another() {
 ///   without opening another connection.
 /// - Reserve its capacity and assert the pool becomes unready, then drop the reservation and
 ///   assert readiness returns.
-#[ntex::test]
+#[t::asyn]
 async fn zero_capacity_connection_waits_for_settings() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
@@ -307,7 +307,7 @@ async fn zero_capacity_connection_waits_for_settings() {
 ///   receives the original client.
 /// - Reserve the second waiter's capacity and assert acquisition does not wake the third;
 ///   release it and assert the third wakes and reuses the sole connection.
-#[ntex::test]
+#[t::asyn]
 async fn cancelled_waiter_passes_notification() {
     for ready in [false, true] {
         for notified in [false, true] {
@@ -388,7 +388,7 @@ async fn cancelled_waiter_passes_notification() {
 /// - Release the reservation and assert the acquisition waiter has not yet woken.
 /// - Complete the readiness waiter, assert acquisition wakes, and verify it returns the
 ///   original client.
-#[ntex::test]
+#[t::asyn]
 async fn ready_waiter_passes_notification_on_completion() {
     let peers = Peers::default();
     let (p, s) = (peers.clone(), settings(Some(1)));
@@ -434,7 +434,7 @@ async fn ready_waiter_passes_notification_on_completion() {
 ///   remains unset.
 /// - Acquire again and assert the first client is reused without an override but a different
 ///   client is chosen with the override.
-#[ntex::test]
+#[t::asyn]
 async fn pool_max_streams() {
     for (limit, same) in [(None, true), (Some(2), false)] {
         let peers = Peers::default();
@@ -477,7 +477,7 @@ async fn pool_max_streams() {
 ///   `Reason::STREAM_CLOSED`.
 /// - Without skipping, assert the client closes and sends `GoAway` with
 ///   `Reason::PROTOCOL_ERROR`.
-#[ntex::test]
+#[t::asyn]
 async fn skip_unknown_streams() {
     for skip in [false, true] {
         let peers = Peers::default();

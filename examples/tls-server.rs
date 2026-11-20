@@ -1,12 +1,13 @@
 use std::io;
 
-use ntex::{Service, SharedCfg, error::Error};
+use ntex_error::Error;
 use ntex_h2::{Control, Message, MessageKind, OperationError, server};
 use ntex_http::{HeaderMap, StatusCode, header};
+use ntex_service::{Service, cfg::SharedCfg};
 use ntex_tls::openssl::SslAcceptor;
 use openssl::ssl::{self, AlpnError, SslFiletype, SslMethod};
 
-#[ntex::main]
+#[t::example]
 async fn main() -> std::io::Result<()> {
     let _ = env_logger::try_init();
 
@@ -28,7 +29,7 @@ async fn main() -> std::io::Result<()> {
     });
     let acceptor = builder.build();
 
-    ntex::server::build()
+    ntex_server::net::build()
         .bind("http", "127.0.0.1:5928", SharedCfg::default(), async move |_| {
             SslAcceptor::new(acceptor.clone())
                 .map_err(|e| server::ServerError::Service(io::Error::other(e)))
