@@ -111,7 +111,7 @@ impl Peer {
     }
 }
 
-/// Starts a server, the peer is handshaked already.
+/// Starts a server, the peer is handshaken already.
 ///
 /// The control service reports events, `over` replaces the GOAWAY reason
 /// for errors.
@@ -258,7 +258,7 @@ async fn headers_for_closed_stream() {
 /// the matching reason.
 ///
 /// HOW:
-/// - Start a fresh handshaked server for a connection-window overflow, a stream-zero reset, an
+/// - Start a fresh handshaken server for a connection-window overflow, a stream-zero reset, an
 ///   idle-stream window update, a duplicate settings acknowledgment, and a self-dependent
 ///   priority for an idle stream.
 /// - Confirm a ping succeeds before each invalid frame, then send the frame.
@@ -462,7 +462,7 @@ async fn control_remote_events() {
 /// timeout.
 ///
 /// HOW:
-/// - Configure a one-second frame-read rate timeout and confirm the handshaked peer answers a
+/// - Configure a one-second frame-read rate timeout and confirm the handshaken peer answers a
 ///   ping.
 /// - Flush a partial frame header and assert `GoAway` has `Reason::NO_ERROR` and the control
 ///   event contains `ReadTimeout`.

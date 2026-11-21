@@ -3040,7 +3040,7 @@ mod tests {
         let res = get_reset(io.recv(&codec).await.unwrap().unwrap());
         assert_eq!(res.reason(), Reason::NO_ERROR);
 
-        // server should keep reseted streams for some time,
+        // server should keep reset streams for some time,
         // data for such streams is ignored
         let pl = frame::Data::new(id, Bytes::from_static(b"data"));
         io.send(pl.clone().into(), &codec).await.unwrap();

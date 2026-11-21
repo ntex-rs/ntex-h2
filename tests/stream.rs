@@ -372,7 +372,7 @@ async fn send_pages_are_split() {
 /// stream state.
 ///
 /// HOW:
-/// - Open a request and check matching send/receive IDs and tags, local nonfailed state, and
+/// - Open a request and check matching send/receive IDs and tags, local non-failed state, and
 ///   initial send capacity.
 /// - Send response headers and final body data, then poll the receive stream for headers, EOF
 ///   data, and termination.

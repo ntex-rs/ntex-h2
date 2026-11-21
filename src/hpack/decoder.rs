@@ -1,6 +1,6 @@
-use std::{cmp, collections::VecDeque, io::Cursor, str::Utf8Error};
+use std::{cmp, collections::VecDeque, str::Utf8Error};
 
-use ntex_bytes::{Buf, ByteString, Bytes, BytesMut};
+use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{Method, StatusCode, compat, header};
 
 use super::{Header, huffman};
@@ -163,10 +163,13 @@ struct Table {
     max_size: usize,
 }
 
-struct StringMarker {
-    offset: usize,
-    len: usize,
-    string: Option<Bytes>,
+/// Read position within the header block being decoded.
+struct Input<'a> {
+    src: &'a Bytes,
+    data: &'a [u8],
+    pos: usize,
+    /// End of the last fully decoded representation
+    committed: usize,
 }
 
 // ===== impl Decoder =====
@@ -210,17 +213,38 @@ impl Decoder {
     }
 
     /// Decodes one HPACK header block and invokes `f` for each header.
-    pub fn decode<F>(&mut self, src: &mut Cursor<&mut Bytes>, mut f: F) -> Result<(), DecoderError>
+    ///
+    /// Decoded representations are removed from `src`. On error `src` starts
+    /// with the representation that failed, so decoding can be resumed once
+    /// more data is available.
+    pub fn decode<F>(&mut self, src: &mut Bytes, f: F) -> Result<(), DecoderError>
+    where
+        F: FnMut(Header),
+    {
+        if let Some(size) = self.max_size_update.take() {
+            self.last_max_update = size;
+        }
+
+        let mut input = Input::new(src);
+        let res = self.decode_block(&mut input, f);
+        let (committed, len) = (input.committed, input.data.len());
+
+        if committed == len {
+            // Advancing alone would keep the allocation alive.
+            src.clear();
+        } else if committed != 0 {
+            src.advance_to(committed);
+        }
+        res
+    }
+
+    fn decode_block<F>(&mut self, src: &mut Input<'_>, mut f: F) -> Result<(), DecoderError>
     where
         F: FnMut(Header),
     {
         let mut can_resize = true;
 
-        if let Some(size) = self.max_size_update.take() {
-            self.last_max_update = size;
-        }
-
-        while let Some(ty) = peek_u8(src) {
+        while let Some(ty) = src.peek() {
             // At this point we are always at the beginning of the next block
             // within the HPACK data. The type of the block can always be
             // determined from the first byte.
@@ -229,7 +253,7 @@ impl Decoder {
                     // tracing::trace!(rem = src.remaining(), kind = %"Indexed");
                     can_resize = false;
                     let entry = self.decode_indexed(src)?;
-                    consume(src);
+                    src.commit();
                     f(entry);
                 }
                 Representation::LiteralWithIndexing => {
@@ -239,7 +263,7 @@ impl Decoder {
 
                     // Insert the header into the table
                     self.table.insert(entry.clone());
-                    consume(src);
+                    src.commit();
 
                     f(entry);
                 }
@@ -247,14 +271,14 @@ impl Decoder {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
-                    consume(src);
+                    src.commit();
                     f(entry);
                 }
                 Representation::LiteralNeverIndexed => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
                     can_resize = false;
                     let entry = self.decode_literal(src, false)?;
-                    consume(src);
+                    src.commit();
 
                     // TODO: Track that this should never be indexed
 
@@ -268,7 +292,7 @@ impl Decoder {
 
                     // Handle the dynamic table size update
                     self.process_size_update(src)?;
-                    consume(src);
+                    src.commit();
                 }
             }
         }
@@ -276,7 +300,7 @@ impl Decoder {
         Ok(())
     }
 
-    fn process_size_update(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<(), DecoderError> {
+    fn process_size_update(&mut self, buf: &mut Input<'_>) -> Result<(), DecoderError> {
         let new_size = decode_int(buf, 5)?;
 
         if new_size > self.last_max_update {
@@ -294,16 +318,12 @@ impl Decoder {
         Ok(())
     }
 
-    fn decode_indexed(&self, buf: &mut Cursor<&mut Bytes>) -> Result<Header, DecoderError> {
+    fn decode_indexed(&self, buf: &mut Input<'_>) -> Result<Header, DecoderError> {
         let index = decode_int(buf, 7)?;
         self.table.get(index)
     }
 
-    fn decode_literal(
-        &mut self,
-        buf: &mut Cursor<&mut Bytes>,
-        index: bool,
-    ) -> Result<Header, DecoderError> {
+    fn decode_literal(&mut self, buf: &mut Input<'_>, index: bool) -> Result<Header, DecoderError> {
         let prefix = if index { 6 } else { 4 };
 
         // Extract the table index for the name, or 0 if not indexed
@@ -311,13 +331,9 @@ impl Decoder {
 
         // First, read the header name
         if table_idx == 0 {
-            let old_pos = buf.position();
-            let name_marker = self.try_decode_string(buf)?;
-            let value_marker = self.try_decode_string(buf)?;
-            buf.set_position(old_pos);
             // Read the name as a literal
-            let name = name_marker.consume(buf);
-            let value = value_marker.consume(buf);
+            let name = self.decode_string(buf)?;
+            let value = self.decode_string(buf)?;
             Header::new(&name, value)
         } else {
             // validate the index before reading the value
@@ -328,13 +344,11 @@ impl Decoder {
         }
     }
 
-    fn try_decode_string(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<StringMarker, DecoderError> {
+    fn decode_string(&mut self, buf: &mut Input<'_>) -> Result<Bytes, DecoderError> {
         const HUFF_FLAG: u8 = 0b1000_0000;
 
-        let old_pos = buf.position();
-
         // The first bit in the first byte contains the huffman encoded flag.
-        let huff = match peek_u8(buf) {
+        let huff = match buf.peek() {
             Some(hdr) => (hdr & HUFF_FLAG) == HUFF_FLAG,
             None => return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream)),
         };
@@ -347,34 +361,14 @@ impl Decoder {
             return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
         }
 
-        let offset = (buf.position() - old_pos) as usize;
+        let start = buf.pos;
+        buf.pos += len;
         if huff {
-            let ret = {
-                let raw = &buf.chunk()[..len];
-                huffman::decode(raw, &mut self.buffer).map(|buf| StringMarker {
-                    offset,
-                    len,
-                    string: Some(buf),
-                })
-            };
-
-            buf.advance(len);
-            ret
+            huffman::decode(&buf.data[start..buf.pos], &mut self.buffer)
         } else {
-            buf.advance(len);
-            Ok(StringMarker {
-                offset,
-                len,
-                string: None,
-            })
+            // Short values are copied inline and do not retain the source
+            Ok(buf.src.slice(start..buf.pos))
         }
-    }
-
-    fn decode_string(&mut self, buf: &mut Cursor<&mut Bytes>) -> Result<Bytes, DecoderError> {
-        let old_pos = buf.position();
-        let marker = self.try_decode_string(buf)?;
-        buf.set_position(old_pos);
-        Ok(marker.consume(buf))
     }
 }
 
@@ -414,14 +408,14 @@ impl Representation {
 }
 
 #[inline]
-fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderError> {
+fn decode_int(buf: &mut Input<'_>, prefix_size: u8) -> Result<usize, DecoderError> {
     if !(1..=8).contains(&prefix_size) {
         return Err(DecoderError::InvalidIntegerPrefix);
     }
 
-    if !buf.has_remaining() {
+    let Some(b) = buf.read_u8() else {
         return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
-    }
+    };
 
     let mask = if prefix_size == 8 {
         0xFF
@@ -429,7 +423,7 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
         (1u8 << prefix_size).wrapping_sub(1)
     };
 
-    let ret = (buf.get_u8() & mask) as usize;
+    let ret = (b & mask) as usize;
 
     if ret < mask as usize {
         // Value fits in the prefix bits
@@ -443,7 +437,7 @@ fn decode_int<B: Buf>(buf: &mut B, prefix_size: u8) -> Result<usize, DecoderErro
 /// prefix bits.
 #[cold]
 #[inline(never)]
-fn decode_int_multi<B: Buf>(buf: &mut B, mut ret: usize) -> Result<usize, DecoderError> {
+fn decode_int_multi(buf: &mut Input<'_>, mut ret: usize) -> Result<usize, DecoderError> {
     // The octet limit is chosen such that the maximum allowed *value* can
     // never overflow an unsigned 32-bit integer. The maximum value of any
     // integer that can be encoded with 5 octets is ~2^28
@@ -459,9 +453,7 @@ fn decode_int_multi<B: Buf>(buf: &mut B, mut ret: usize) -> Result<usize, Decode
     // bit to indicate if it is the last byte.
     let mut shift = 0;
 
-    while buf.has_remaining() {
-        let b = buf.get_u8();
-
+    while let Some(b) = buf.read_u8() {
         bytes += 1;
         ret += ((b & VARINT_MASK) as usize) << shift;
         shift += 7;
@@ -479,43 +471,40 @@ fn decode_int_multi<B: Buf>(buf: &mut B, mut ret: usize) -> Result<usize, Decode
     Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow))
 }
 
-fn peek_u8<B: Buf>(buf: &B) -> Option<u8> {
-    if buf.has_remaining() { Some(buf.chunk()[0]) } else { None }
-}
+// ===== impl Input =====
 
-fn take(buf: &mut Cursor<&mut Bytes>, n: usize) -> Bytes {
-    let pos = buf.position() as usize;
-    let bytes = buf.get_mut();
-    bytes.advance(pos);
-    let head = bytes.split_to(n);
-    buf.set_position(0);
-    head
-}
-
-impl StringMarker {
-    fn consume(self, buf: &mut Cursor<&mut Bytes>) -> Bytes {
-        buf.advance(self.offset);
-        match self.string {
-            Some(string) => {
-                buf.advance(self.len);
-                string
-            }
-            None => take(buf, self.len),
+impl<'a> Input<'a> {
+    fn new(src: &'a Bytes) -> Self {
+        Input {
+            src,
+            data: src.as_ref(),
+            pos: 0,
+            committed: 0,
         }
     }
-}
 
-fn consume(buf: &mut Cursor<&mut Bytes>) {
-    // Commit decoded bytes so an incomplete representation can be retried.
-    let pos = buf.position() as usize;
-    let bytes = buf.get_mut();
-    if pos == bytes.len() {
-        // Advancing alone would keep the allocation alive.
-        bytes.clear();
-    } else {
-        bytes.advance(pos);
+    #[inline]
+    fn peek(&self) -> Option<u8> {
+        self.data.get(self.pos).copied()
     }
-    buf.set_position(0);
+
+    #[inline]
+    fn read_u8(&mut self) -> Option<u8> {
+        let b = self.peek()?;
+        self.pos += 1;
+        Some(b)
+    }
+
+    #[inline]
+    fn remaining(&self) -> usize {
+        self.data.len() - self.pos
+    }
+
+    /// Marks the input read so far as decoded.
+    #[inline]
+    fn commit(&mut self) {
+        self.committed = self.pos;
+    }
 }
 
 // ===== impl Table =====
@@ -886,81 +875,68 @@ pub(super) fn get_static(idx: usize) -> Header {
 mod test {
     use super::*;
 
-    /// STATEMENT: `peek_u8` observes the next byte without consuming it and returns `None` at
-    /// EOF.
+    /// STATEMENT: `decode` removes decoded representations from `src`, keeps an incomplete one,
+    /// and releases a fully decoded buffer.
     ///
     /// HOW:
-    /// - Peek at a one-byte `Cursor`, then read the same byte with `get_u8`.
-    /// - Confirm that peeking after the read returns `None`.
+    /// - Decode an indexed `:method` followed by a truncated literal and check `NeedMore`, the
+    ///   single emitted header, and that `src` holds exactly the truncated literal.
+    /// - Decode the complete literal from a heap-allocated buffer and check that `src` ends
+    ///   empty and inline.
     #[test]
-    fn test_peek_u8() {
-        let b = 0xff;
-        let mut buf = Cursor::new(vec![b]);
-        assert_eq!(peek_u8(&buf), Some(b));
-        assert_eq!(buf.get_u8(), b);
-        assert_eq!(peek_u8(&buf), None);
+    fn test_decode_commits_representations() {
+        let mut data = vec![0x82, 0x00, 3];
+        data.extend(b"foo");
+        data.push(100);
+        data.extend([b'v'; 100]);
+
+        let mut de = Decoder::default();
+        let mut res = vec![];
+        let mut src = Bytes::copy_from_slice(&data[..50]);
+        let err = de.decode(&mut src, |h| res.push(h)).unwrap_err();
+        assert_eq!(err, DecoderError::NeedMore(NeedMore::StringUnderflow));
+        assert_eq!(res, vec![Header::Method(Method::GET)]);
+        assert_eq!(src, &data[1..50]);
+
+        let mut src = Bytes::copy_from_slice(&data[1..]);
+        assert!(!src.is_inline());
+        de.decode(&mut src, |h| res.push(h)).unwrap();
+        assert_eq!(res.len(), 2);
+        assert!(src.is_empty());
+        assert!(src.is_inline(), "decoded buffer must not retain the allocation");
     }
 
-    /// STATEMENT: `consume` discards the cursor prefix, resets its position, and releases empty
-    /// storage.
+    /// STATEMENT: Raw literal values share the source buffer, values that fit inline are copied
+    /// and do not retain it.
     ///
     /// HOW:
-    /// - Consume empty, inline, and larger buffers at the start, midpoint, and end.
-    /// - Check the remaining bytes, zero cursor position, and unchanged original clone.
-    /// - Confirm fully consumed buffers use inline storage.
+    /// - Decode two non-indexed literals with raw 4-byte and 64-byte values.
+    /// - Check that only the 64-byte value points into the source allocation.
     #[test]
-    fn test_consume() {
-        for data in [b"".as_slice(), b"inline", &[b'x'; 128]] {
-            for pos in [0, data.len() / 2, data.len()] {
-                let mut src = Bytes::copy_from_slice(data);
-                let original = src.clone();
-                let mut cursor = Cursor::new(&mut src);
-                cursor.set_position(pos as u64);
-                consume(&mut cursor);
-
-                assert_eq!(cursor.position(), 0);
-                assert_eq!(cursor.chunk(), &data[pos..]);
-                assert_eq!(original, data);
-                if pos == data.len() {
-                    assert!(src.is_inline(), "empty buffer must not retain the allocation");
-                }
-            }
+    fn test_decode_raw_values() {
+        let mut data = vec![];
+        for len in [4, 64] {
+            data.extend([0x00, 3]);
+            data.extend(b"foo");
+            data.push(len as u8);
+            data.extend(vec![b'v'; len]);
         }
-    }
+        let src = Bytes::copy_from_slice(&data);
+        let range = src.as_ref().as_ptr_range();
 
-    /// STATEMENT: `take` extracts a value after the cursor prefix without retaining unnecessary
-    /// storage.
-    ///
-    /// HOW:
-    /// - Extract values of several lengths after a 32-byte prefix, with and without a tail.
-    /// - Check extracted bytes, remaining tail, zero cursor position, and unchanged original
-    ///   clone.
-    /// - Confirm short values with a tail and fully consumed source buffers use inline storage.
-    #[test]
-    fn test_take() {
-        for len in [0, 4, 24, 64] {
-            for tail in [0, 8] {
-                let mut data = vec![b'p'; 32];
-                data.extend(vec![b'v'; len]);
-                data.extend(vec![b't'; tail]);
-                let mut src = Bytes::copy_from_slice(&data);
-                let original = src.clone();
-                let mut cursor = Cursor::new(&mut src);
-                cursor.set_position(32);
-                let value = take(&mut cursor, len);
+        let mut res = vec![];
+        Decoder::default()
+            .decode(&mut src.clone(), |h| res.push(h))
+            .unwrap();
 
-                assert_eq!(value, &data[32..32 + len]);
-                assert_eq!(cursor.position(), 0);
-                assert_eq!(cursor.chunk(), &data[32 + len..]);
-                assert_eq!(original, data);
-                if len <= 4 && tail > 0 {
-                    assert!(value.is_inline(), "short value must not retain the prefix");
-                }
-                if tail == 0 {
-                    assert!(src.is_inline(), "empty buffer must not retain the allocation");
-                }
-            }
-        }
+        let values: Vec<_> = res
+            .iter()
+            .map(|h| match h {
+                Header::Field { value, .. } => (value.len(), range.contains(&value.as_bytes().as_ptr())),
+                h => panic!("unexpected header {h:?}"),
+            })
+            .collect();
+        assert_eq!(values, vec![(4, false), (64, true)]);
     }
 
     /// STATEMENT: Decoding a string from empty input requests more bytes.
@@ -971,8 +947,8 @@ mod test {
     #[test]
     fn test_decode_string_empty() {
         let mut de = Decoder::new(0);
-        let mut buf = Bytes::new();
-        let err = de.decode_string(&mut Cursor::new(&mut buf)).unwrap_err();
+        let buf = Bytes::new();
+        let err = de.decode_string(&mut Input::new(&buf)).unwrap_err();
         assert_eq!(err, DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream));
     }
 
@@ -986,7 +962,7 @@ mod test {
     fn test_decode_empty() {
         let mut de = Decoder::new(0);
         let mut buf = Bytes::new();
-        let empty = de.decode(&mut Cursor::new(&mut buf), |_| {}).unwrap();
+        let empty = de.decode(&mut buf, |_| {}).unwrap();
         assert_eq!(empty, ());
     }
 
@@ -1016,7 +992,7 @@ mod test {
         drop(src);
 
         let mut res = vec![];
-        de.decode(&mut Cursor::new(&mut buf), |h| res.push(h)).unwrap();
+        de.decode(&mut buf, |h| res.push(h)).unwrap();
         assert_eq!(res.len(), 2);
         assert_eq!(de.table.entries.len(), 2);
 
@@ -1050,7 +1026,7 @@ mod test {
         let mut buf = buf.freeze();
 
         let mut res = vec![];
-        de.decode(&mut Cursor::new(&mut buf), |h| {
+        de.decode(&mut buf, |h| {
             res.push(h);
         })
         .unwrap();
@@ -1080,7 +1056,7 @@ mod test {
         let mut buf = Bytes::from_static(b"\x40\x03foo\x03bar\x0f\x2f\x03baz");
 
         let mut res = vec![];
-        de.decode(&mut Cursor::new(&mut buf), |h| res.push(h)).unwrap();
+        de.decode(&mut buf, |h| res.push(h)).unwrap();
 
         let foo = Bytes::from_static(b"foo");
         assert_eq!(
@@ -1108,7 +1084,7 @@ mod test {
         let mut de = Decoder::default();
         let mut buf = Bytes::from_static(b"\x0f\x2f");
 
-        let res = de.decode(&mut Cursor::new(&mut buf), |_| {});
+        let res = de.decode(&mut buf, |_| {});
         assert!(matches!(res, Err(DecoderError::InvalidTableIndex)), "{res:?}");
         assert!(matches!(
             de.table.get_with_value(0, Bytes::new()),
@@ -1161,7 +1137,7 @@ mod test {
                     let mut de = Decoder::default();
                     let mut src = Bytes::copy_from_slice(&data[..split]);
                     let mut headers = Vec::new();
-                    let result = de.decode(&mut Cursor::new(&mut src), |h| headers.push(h));
+                    let result = de.decode(&mut src, |h| headers.push(h));
                     assert!(
                         matches!(result, Ok(()) | Err(DecoderError::NeedMore(_))),
                         "split={split}, huff_name={huff_name}, huff_value={huff_value}: {result:?}"
@@ -1170,8 +1146,7 @@ mod test {
                     let mut src = BytesMut::from(src);
                     src.extend_from_slice(&data[split..]);
                     let mut src = src.freeze();
-                    de.decode(&mut Cursor::new(&mut src), |h| headers.push(h))
-                        .unwrap();
+                    de.decode(&mut src, |h| headers.push(h)).unwrap();
                     assert_eq!(headers, expected, "split={split}");
                     assert!(src.is_empty());
                     assert!(src.is_inline());
@@ -1203,7 +1178,7 @@ mod test {
 
         let mut res = vec![];
         let e = de
-            .decode(&mut Cursor::new(&mut buf), |h| {
+            .decode(&mut buf, |h| {
                 res.push(h);
             })
             .unwrap_err();
@@ -1214,7 +1189,7 @@ mod test {
         let mut buf = BytesMut::from(buf);
         buf.extend(&value[1..]);
         let mut buf = buf.freeze();
-        de.decode(&mut Cursor::new(&mut buf), |h| {
+        de.decode(&mut buf, |h| {
             res.push(h);
         })
         .unwrap();

@@ -1,5 +1,3 @@
-use std::io::Cursor;
-
 use ntex_bytes::{ByteString, BytesMut};
 use ntex_http::{HeaderName, HeaderValue};
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
@@ -164,7 +162,7 @@ impl FuzzHpack {
             // Decode the chunk!
             let mut buf = buf.freeze();
             decoder
-                .decode(&mut Cursor::new(&mut buf), |h| {
+                .decode(&mut buf, |h| {
                     let e = expect.remove(0);
                     assert_eq!(h, e);
                 })

@@ -959,9 +959,7 @@ mod test {
 
         let mut decoder = crate::hpack::Decoder::new(64);
         let mut out = vec![];
-        decoder
-            .decode(&mut std::io::Cursor::new(&mut res), |h| out.push(h))
-            .unwrap();
+        decoder.decode(&mut res, |h| out.push(h)).unwrap();
 
         let fields: Vec<_> = out
             .iter()
