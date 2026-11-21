@@ -6,17 +6,19 @@ use self::table::ENCODE_TABLE;
 use crate::hpack::DecoderError;
 
 /// Bits looked up at once. Every printable ASCII character except
-/// `#$<>@[\]^{}~` and the backtick has a code of at most this length.
-const PEEK_BITS: u32 = 11;
+/// `$<@[\]^{}~` and the backtick has a code of at most this length.
+const PEEK_BITS: u32 = 12;
 /// Longest code in the HPACK Huffman table (EOS).
 const MAX_BITS: usize = 30;
 const EOS: u16 = 256;
 
 /// Short codes indexed by the next `PEEK_BITS` input bits.
 ///
-/// Each entry is `symbol << 4 | code length`; zero means the code is longer
-/// than `PEEK_BITS`.
-static PEEK_TABLE: [u16; 1 << PEEK_BITS] = build_peek_table();
+/// Bits 0..8 of an entry hold the symbol of the first code and bits 16..20
+/// its length; zero length means the code is longer than `PEEK_BITS`. If the
+/// next code also fits in the index, bits 8..16 hold its symbol and bits
+/// 20..24 its length, otherwise they are zero.
+static PEEK_TABLE: [u32; 1 << PEEK_BITS] = build_peek_table();
 
 /// Symbols ordered by `(code length, symbol)`. The HPACK code is canonical,
 /// so codes of each length are consecutive in this order.
@@ -32,8 +34,11 @@ struct Canonical {
     offset: [u16; MAX_BITS + 1],
 }
 
-const fn build_peek_table() -> [u16; 1 << PEEK_BITS] {
-    let mut table = [0; 1 << PEEK_BITS];
+const fn build_peek_table() -> [u32; 1 << PEEK_BITS] {
+    const MASK: usize = (1 << PEEK_BITS) - 1;
+
+    // First code only
+    let mut single = [0; 1 << PEEK_BITS];
     let mut sym = 0;
     while sym < ENCODE_TABLE.len() {
         let (len, code) = ENCODE_TABLE[sym];
@@ -42,11 +47,26 @@ const fn build_peek_table() -> [u16; 1 << PEEK_BITS] {
             let start = (code as usize) << shift;
             let mut i = 0;
             while i < 1 << shift {
-                table[start + i] = ((sym as u16) << 4) | len as u16;
+                single[start + i] = sym as u32 | (len as u32) << 16;
                 i += 1;
             }
         }
         sym += 1;
+    }
+
+    // Add the next code if it fits in the bits left after the first one
+    let mut table = single;
+    let mut idx = 0;
+    while idx < 1 << PEEK_BITS {
+        let len = single[idx] >> 16;
+        if len != 0 {
+            let next = single[(idx << len) & MASK];
+            let next_len = next >> 16;
+            if next_len != 0 && len + next_len <= PEEK_BITS {
+                table[idx] |= (next & 0xff) << 8 | next_len << 20;
+            }
+        }
+        idx += 1;
     }
     table
 }
@@ -96,36 +116,63 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<Bytes, DecoderErr
 
 /// Decodes `src` into `out`.
 fn decode_into(src: &[u8], out: &mut SpareWriter<'_>) -> Result<(), DecoderError> {
-    // Pending input bits, most significant first
+    // Pending input bits, most significant first. The bits below them may
+    // already hold the start of the next input byte.
     let mut acc: u64 = 0;
     let mut bits: u32 = 0;
-    let mut input = src.iter();
+    let mut pos = 0;
 
     loop {
-        while bits <= 56 {
-            let Some(&b) = input.next() else { break };
-            acc |= u64::from(b) << (56 - bits);
-            bits += 8;
+        if let Some(word) = src[pos..].first_chunk::<8>() {
+            // Keep the whole bytes that fit, 56 to 63 bits. The bits of the
+            // next byte that also land in `acc` are loaded again at the same
+            // place by the next refill.
+            acc |= u64::from_be_bytes(*word) >> bits;
+            let n = (63 - bits) / 8;
+            pos += n as usize;
+            bits += 8 * n;
+        } else {
+            while bits <= 56 && pos < src.len() {
+                acc |= u64::from(src[pos]) << (56 - bits);
+                pos += 1;
+                bits += 8;
+            }
+        }
+        let last = pos == src.len();
+
+        // Before the end of the input, a short code always fits in `bits`
+        while bits >= PEEK_BITS || (last && bits != 0) {
+            let entry = PEEK_TABLE[(acc >> (64 - PEEK_BITS)) as usize];
+            let len = (entry >> 16) & 0xf;
+            let pair_len = len + (entry >> 20);
+
+            if pair_len > len && pair_len <= bits {
+                out.extend_from_slice(&(entry as u16).to_le_bytes());
+                acc <<= pair_len;
+                bits -= pair_len;
+            } else if len != 0 && len <= bits {
+                out.push(entry as u8);
+                acc <<= len;
+                bits -= len;
+            } else if len == 0 {
+                // `None` means the code may continue in the next input bytes
+                match decode_long(acc, bits) {
+                    Some((EOS, _)) => return Err(DecoderError::InvalidHuffmanCode),
+                    Some((sym, len)) => {
+                        out.push(sym as u8);
+                        acc <<= len;
+                        bits -= len;
+                    }
+                    None => break,
+                }
+            } else {
+                break;
+            }
         }
 
-        if bits == 0 {
+        if last {
             break;
         }
-
-        let entry = PEEK_TABLE[(acc >> (64 - PEEK_BITS)) as usize];
-        let (sym, len) = match u32::from(entry & 0xf) {
-            0 => match decode_long(acc, bits) {
-                Some((EOS, _)) => return Err(DecoderError::InvalidHuffmanCode),
-                Some(code) => code,
-                None => break,
-            },
-            len if len <= bits => (entry >> 4, len),
-            _ => break,
-        };
-
-        acc <<= len;
-        bits -= len;
-        out.push(sym as u8);
     }
 
     // Remaining bits are padding: at most 7 bits of the EOS prefix (all ones)
@@ -239,6 +286,74 @@ mod test {
             let mut dst = BytesMut::new();
             encode(&s, &mut dst);
             assert_eq!(&decode(&dst).unwrap()[..], &s[..]);
+        }
+    }
+
+    /// STATEMENT: The table decoder agrees with a bit-by-bit decoder on valid, truncated, and
+    /// corrupted input, wherever codes and padding fall relative to refills.
+    ///
+    /// HOW:
+    /// - Encode pseudo-random strings of 0 to 47 bytes that mix printable characters with
+    ///   arbitrary bytes, so short, paired, and long codes cross refill boundaries.
+    /// - Decode each encoding, every prefix of it, and every single-bit flip of it.
+    /// - Assert each result, success or `InvalidHuffmanCode`, matches a reference decoder that
+    ///   matches codes from `ENCODE_TABLE` one bit at a time.
+    #[test]
+    fn decode_matches_bitwise_decoder() {
+        let codes: std::collections::HashMap<_, _> = ENCODE_TABLE
+            .iter()
+            .enumerate()
+            .map(|(sym, &code)| (code, sym))
+            .collect();
+        let reference = |src: &[u8]| {
+            let mut out = Vec::new();
+            let (mut len, mut code) = (0, 0);
+            for i in 0..src.len() * 8 {
+                code = code << 1 | u64::from(src[i / 8] >> (7 - i % 8) & 1);
+                len += 1;
+                if let Some(&sym) = codes.get(&(len, code)) {
+                    if sym == usize::from(EOS) {
+                        return None;
+                    }
+                    out.push(sym as u8);
+                    (len, code) = (0, 0);
+                }
+            }
+            (len <= 7 && code == (1 << len) - 1).then_some(out)
+        };
+        let check = |src: &[u8]| {
+            let got = decode(src).ok().map(|b| b.to_vec());
+            assert_eq!(got, reference(src), "input {src:x?}");
+        };
+
+        let mut seed = 0x9e37_79b9_u32;
+        for len in 0..48 {
+            for _ in 0..8 {
+                let s: Vec<u8> = (0..len)
+                    .map(|_| {
+                        seed ^= seed << 13;
+                        seed ^= seed >> 17;
+                        seed ^= seed << 5;
+                        if seed.is_multiple_of(4) {
+                            seed as u8
+                        } else {
+                            b' ' + (seed >> 8) as u8 % 95
+                        }
+                    })
+                    .collect();
+                let mut enc = BytesMut::new();
+                encode(&s, &mut enc);
+                assert_eq!(decode(&enc).unwrap(), s);
+
+                for cut in 0..enc.len() {
+                    check(&enc[..cut]);
+                }
+                for bit in 0..enc.len() * 8 {
+                    let mut flipped = enc.to_vec();
+                    flipped[bit / 8] ^= 0x80 >> (bit % 8);
+                    check(&flipped);
+                }
+            }
         }
     }
 

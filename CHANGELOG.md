@@ -7,6 +7,9 @@
   header strings that fit inline are copied and do not keep the frame buffer
   alive
 
+* Decode Huffman-encoded header strings 1.4-1.9x faster: up to two symbols per
+  table lookup and 8 input bytes per refill
+
 ## [4.6.1] - 2026-11-19
 
 * `StreamRef::send_trailers()` and `client::SendStream::send_trailers()` accept
