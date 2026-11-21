@@ -46,9 +46,11 @@ pub enum Name<'a> {
     Status,
 }
 
+#[inline]
 pub(super) fn len(name: &HeaderName, value: &HeaderValue) -> usize {
-    let n: &str = name.as_ref();
-    32 + n.len() + value.len()
+    // `as_shared().len()` avoids building a slice, which costs a second vtable call
+    // for external storage
+    32 + name.as_str().len() + value.as_shared().len()
 }
 
 impl Header<Option<HeaderName>> {
@@ -132,7 +134,15 @@ impl Header {
     #[inline]
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
-        self.as_ref().len()
+        match self {
+            Header::Field { name, value } => len(name, value),
+            Header::Authority(v) => 32 + 10 + v.as_bytes().len(),
+            Header::Method(v) => 32 + 7 + v.as_str().len(),
+            Header::Scheme(v) => 32 + 7 + v.as_bytes().len(),
+            Header::Path(v) => 32 + 5 + v.as_bytes().len(),
+            Header::Protocol(v) => 32 + 9 + v.as_bytes().len(),
+            Header::Status(_) => 32 + 7 + 3,
+        }
     }
 
     /// Returns the header name.
@@ -199,11 +209,11 @@ impl<'a> HeaderRef<'a> {
     pub(crate) fn len(self) -> usize {
         match self {
             HeaderRef::Field { name, value } => len(name, value),
-            HeaderRef::Authority(v) => 32 + 10 + v.len(),
-            HeaderRef::Method(v) => 32 + 7 + v.as_ref().len(),
-            HeaderRef::Scheme(v) => 32 + 7 + v.len(),
-            HeaderRef::Path(v) => 32 + 5 + v.len(),
-            HeaderRef::Protocol(v) => 32 + 9 + v.len(),
+            HeaderRef::Authority(v) => 32 + 10 + v.as_bytes().len(),
+            HeaderRef::Method(v) => 32 + 7 + v.as_str().len(),
+            HeaderRef::Scheme(v) => 32 + 7 + v.as_bytes().len(),
+            HeaderRef::Path(v) => 32 + 5 + v.as_bytes().len(),
+            HeaderRef::Protocol(v) => 32 + 9 + v.as_bytes().len(),
             HeaderRef::Status(_) => 32 + 7 + 3,
         }
     }
