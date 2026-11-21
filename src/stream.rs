@@ -306,7 +306,7 @@ impl StreamState {
         }
     }
 
-    /// data received, update recevice window size
+    /// data received, update receive window size
     fn received_data_added(&self, size: u32) {
         let cap = self.recv_size.get();
         self.recv_size.set(cap + size);
@@ -314,7 +314,7 @@ impl StreamState {
 
         #[cfg(feature = "trace")]
         log::trace!(
-            "{}: {:?} received size incresed from {cap} to {} ({size})",
+            "{}: {:?} received size increased from {cap} to {} ({size})",
             self.tag(),
             self.id,
             cap + size
@@ -324,7 +324,7 @@ impl StreamState {
         self.con.data_received(size);
     }
 
-    /// check and update recevice window size
+    /// check and update receive window size
     fn received_data_consumed(&self, consumed: u32) {
         let cap = self.recv_size.get();
         let size = cap - consumed;
@@ -1003,7 +1003,7 @@ impl StreamRef {
                             self.write_ready().await?;
                         }
 
-                        // calaculate available send window size
+                        // calculate available send window size
                         self.release_claim();
                         let win = self.available_send_capacity() as usize;
                         if win > 0 {

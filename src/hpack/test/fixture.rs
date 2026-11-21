@@ -5,7 +5,6 @@ use ntex_bytes::BytesMut;
 use serde_json::Value;
 
 use std::fs::File;
-use std::io::Cursor;
 use std::io::prelude::*;
 use std::path::Path;
 use std::str;
@@ -75,7 +74,7 @@ fn test_story(story: &Value) {
             buf.extend_from_slice(&case.wire);
             let mut buf = buf.freeze();
             decoder
-                .decode(&mut Cursor::new(&mut buf), |e| {
+                .decode(&mut buf, |e| {
                     let (name, value) = expect.remove(0);
                     assert_eq!(name, key_str(&e));
                     assert_eq!(value, value_str(&e));
@@ -112,7 +111,7 @@ fn test_story(story: &Value) {
 
             let mut buf = buf.freeze();
             decoder
-                .decode(&mut Cursor::new(&mut buf), |e| {
+                .decode(&mut buf, |e| {
                     assert_eq!(e, input.remove(0).reify().unwrap());
                 })
                 .unwrap();

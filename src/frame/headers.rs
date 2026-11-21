@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp, fmt, io::Cursor};
+use std::{cell::RefCell, cmp, fmt};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
 use ntex_http::{HeaderMap, Method, StatusCode, header};
@@ -457,13 +457,11 @@ impl HeaderBlock {
             }};
         }
 
-        let mut cursor = Cursor::new(src);
-
         // If the header frame is malformed, we still have to continue decoding
         // the headers. A malformed header frame is a stream level error, but
         // the hpack state is connection level. In order to maintain correct
         // state for other streams, the hpack decoding process must complete.
-        let res = decoder.decode(&mut cursor, |header| {
+        let res = decoder.decode(src, |header| {
             use crate::hpack::Header;
 
             // Once the block is rejected, remaining fields are decoded only

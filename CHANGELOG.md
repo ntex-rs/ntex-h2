@@ -1,5 +1,12 @@
 # Changes
 
+## [4.7.0] - 2026-11-21 Unreleased
+
+* `hpack::Decoder::decode()` takes `&mut Bytes` instead of
+  `&mut Cursor<&mut Bytes>`, header blocks are parsed from a byte slice. Raw
+  header strings that fit inline are copied and do not keep the frame buffer
+  alive
+
 ## [4.6.1] - 2026-11-19
 
 * `StreamRef::send_trailers()` and `client::SendStream::send_trailers()` accept
