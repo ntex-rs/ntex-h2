@@ -180,6 +180,13 @@ impl ServiceConfig {
         self
     }
 
+    /// Returns the maximum number of header fields in a header block.
+    ///
+    /// See [`ServiceConfig::set_max_headers`].
+    pub fn max_headers(&self) -> usize {
+        self.max_headers
+    }
+
     #[must_use]
     /// Sets the maximum decoded header-list size.
     ///

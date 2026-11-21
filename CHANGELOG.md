@@ -1,6 +1,6 @@
 # Changes
 
-## [4.7.0] - 2026-11-21 Unreleased
+## [4.7.0] - 2026-11-22
 
 * `hpack::Decoder::decode()` takes `&mut Bytes` instead of
   `&mut Cursor<&mut Bytes>`, header blocks are parsed from a byte slice. Raw
@@ -9,6 +9,11 @@
 
 * Decode Huffman-encoded header strings 1.4-1.9x faster: up to two symbols per
   table lookup and 8 input bytes per refill
+
+* Add `ServiceConfig::max_headers()`
+
+* Compute HPACK header sizes with fewer branches, the encoder computes a header
+  size only when it may insert the header into the dynamic table
 
 ## [4.6.1] - 2026-11-19
 

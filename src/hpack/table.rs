@@ -129,24 +129,21 @@ impl Table {
             return Index::Indexed(n);
         }
 
-        // Don't index large headers
-        let len = header.len();
-        if len * 4 > self.max_size * 3 {
-            return Index::new(statik);
-        }
-
-        self.index_dynamic(header, len, statik)
+        // The size is only needed when the header is inserted, large headers are
+        // rejected there
+        self.index_dynamic(header, statik)
     }
 
-    fn index_dynamic(
-        &mut self,
-        header: HeaderRef<'_>,
-        len: usize,
-        statik: Option<(usize, bool)>,
-    ) -> Index {
+    /// Returns whether the header is too large to be inserted into the table.
+    #[inline]
+    fn is_large(&self, len: usize) -> bool {
+        len * 4 > self.max_size * 3
+    }
+
+    fn index_dynamic(&mut self, header: HeaderRef<'_>, statik: Option<(usize, bool)>) -> Index {
         debug_assert!(Self::assert_valid_state("one"));
 
-        if len + self.size < self.max_size || !header.is_sensitive() {
+        if !header.is_sensitive() || header.len() + self.size < self.max_size {
             // Only grow internal storage if needed
             self.reserve_one();
         }
@@ -175,13 +172,13 @@ impl Table {
 
                 if their_dist < dist {
                     // Index robinhood
-                    return self.index_vacant(header, len, hash, dist, probe, statik);
+                    return self.index_vacant(header, hash, dist, probe, statik);
                 } else if pos.hash == hash && self.slots[slot_idx].header.name() == header.name() {
                     // Matching name, check values
-                    return self.index_occupied(header, len, hash, probe, statik.map(|(n, _)| n));
+                    return self.index_occupied(header, hash, probe, statik.map(|(n, _)| n));
                 }
             } else {
-                return self.index_vacant(header, len, hash, dist, probe, statik);
+                return self.index_vacant(header, hash, dist, probe, statik);
             }
 
             dist += 1;
@@ -195,10 +192,11 @@ impl Table {
     /// inserted values (for example a changing `date`) are found first.
     /// Eviction removes the oldest entries, so a link to an evicted slot ends
     /// the chain.
+    ///
+    /// `statik` is the static name index, a static full match never gets here.
     fn index_occupied(
         &mut self,
         header: HeaderRef<'_>,
-        len: usize,
         hash: HashValue,
         probe: usize,
         statik: Option<usize>,
@@ -221,6 +219,12 @@ impl Table {
                 }
                 _ => break,
             }
+        }
+
+        // Don't index large headers
+        let len = header.len();
+        if self.is_large(len) {
+            return statik.map_or(Index::NotIndexed, Index::Name);
         }
 
         if header.is_sensitive() {
@@ -249,13 +253,18 @@ impl Table {
     fn index_vacant(
         &mut self,
         header: HeaderRef<'_>,
-        len: usize,
         hash: HashValue,
         mut dist: usize,
         mut probe: usize,
         statik: Option<(usize, bool)>,
     ) -> Index {
         if header.is_sensitive() {
+            return Index::new(statik);
+        }
+
+        // Don't index large headers
+        let len = header.len();
+        if self.is_large(len) {
             return Index::new(statik);
         }
 

@@ -3931,7 +3931,7 @@ mod tests {
         // stream window update does not help
         srv.write(window_update_frame(1, 1000));
         sleep(Millis(50)).await;
-        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(client_data(&srv, &codec), []);
         assert_eq!(stream.stream().available_send_capacity(), 0);
 
         // connection window update releases the rest
@@ -4517,7 +4517,7 @@ mod tests {
         // window is 0
         srv.write(window_update_frame(1, 5));
         sleep(Millis(50)).await;
-        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(client_data(&srv, &codec), []);
         assert_eq!(stream.stream().available_send_capacity(), 0);
 
         // window is 2
@@ -4567,7 +4567,7 @@ mod tests {
         sleep(Millis(50)).await;
         stream.send_payload(Bytes::new(), false).await.unwrap();
         sleep(Millis(50)).await;
-        assert!(client_data(&srv, &codec).is_empty());
+        assert_eq!(client_data(&srv, &codec), []);
         assert_eq!(stream.stream().available_send_capacity(), 10);
 
         // empty payload with eof ends the stream regardless of the window

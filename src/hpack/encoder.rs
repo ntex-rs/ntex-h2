@@ -501,6 +501,29 @@ mod test {
         assert_eq!(0, encoder.table.size());
     }
 
+    /// STATEMENT: A large value for a name already in the dynamic table is encoded without
+    /// indexing and leaves the table unchanged.
+    ///
+    /// HOW:
+    /// - Insert a short `my-hdr` field with `Encoder::new(128, 0)`.
+    /// - Encode a `my-hdr` value larger than three quarters of the table size.
+    /// - Check the literal-name, non-indexed prefix and the unchanged entry count and byte
+    ///   size.
+    #[test]
+    fn test_large_value_for_indexed_name_is_not_indexed() {
+        let mut encoder = Encoder::new(128, 0);
+        encode(&mut encoder, vec![header("my-hdr", "a")]);
+        assert_eq!(1, encoder.table.len());
+        let size = encoder.table.size();
+
+        let value = "v".repeat(80);
+        let res = encode(&mut encoder, vec![header("my-hdr", &value)]);
+
+        assert_eq!(0, res[0]);
+        assert_eq!(1, encoder.table.len());
+        assert_eq!(size, encoder.table.size());
+    }
+
     /// STATEMENT: Sensitive header values use the never-indexed representation for every name
     /// source.
     ///
