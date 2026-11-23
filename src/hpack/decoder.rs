@@ -1,9 +1,14 @@
-use std::{cmp, collections::VecDeque, str::Utf8Error};
+use std::{cmp, collections::VecDeque, ops::Range, str::Utf8Error};
 
 use ntex_bytes::{ByteString, Bytes, BytesMut};
 use ntex_http::{Method, StatusCode, compat, header};
 
 use super::{Header, huffman};
+
+/// Number of recently decoded `:path` values kept per connection.
+const PATH_CACHE_SLOTS: usize = 4;
+/// Longest encoded `:path` string that is cached.
+const PATH_CACHE_MAX_KEY: usize = 128;
 
 /// Stateful HPACK header decoder.
 #[derive(Debug)]
@@ -13,6 +18,7 @@ pub struct Decoder {
     last_max_update: usize,
     table: Table,
     buffer: BytesMut,
+    paths: PathCache,
 }
 
 /// Represents all errors that can be encountered while performing the decoding
@@ -163,6 +169,36 @@ struct Table {
     max_size: usize,
 }
 
+/// Recently decoded `:path` literals, keyed on their encoded octets.
+///
+/// Encoders such as nghttp2 never index `:path`, so every request repeats the
+/// same literal. A hit skips the Huffman decode, the UTF-8 check and the
+/// allocation. A value is stored once its key repeats, so unique paths only
+/// cost a key copy. Slots are replaced in CLOCK order.
+#[derive(Debug, Default)]
+struct PathCache {
+    slots: [PathSlot; PATH_CACHE_SLOTS],
+    hand: usize,
+}
+
+#[derive(Debug, Default)]
+struct PathSlot {
+    /// `key_tag` of the key, rejects most mismatches without comparing keys
+    tag: u64,
+    /// Encoded string, including the Huffman flag and the length prefix
+    key: Vec<u8>,
+    /// Decoded value, set once the key repeats
+    value: Option<ByteString>,
+    referenced: bool,
+}
+
+enum PathLookup {
+    Hit(ByteString),
+    /// The key was seen once, its value is not stored yet
+    Seen(usize),
+    Miss,
+}
+
 /// Read position within the header block being decoded.
 struct Input<'a> {
     src: &'a Bytes,
@@ -182,10 +218,11 @@ impl Decoder {
             last_max_update: size,
             table: Table::new(size),
             buffer: BytesMut::with_capacity(4096),
+            paths: PathCache::default(),
         }
     }
 
-    /// Releases the dynamic table and the decoding buffer.
+    /// Releases the dynamic table, the decoding buffer and the `:path` cache.
     ///
     /// The peer's table state is lost, the decoder must not be used for the
     /// same connection afterwards.
@@ -193,6 +230,7 @@ impl Decoder {
         self.max_size_update = None;
         self.table = Table::new(self.table.max_size);
         self.buffer = BytesMut::new();
+        self.paths = PathCache::default();
     }
 
     #[cfg(test)]
@@ -259,7 +297,7 @@ impl Decoder {
                 Representation::LiteralWithIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithIndexing");
                     can_resize = false;
-                    let entry = self.decode_literal(src, true)?;
+                    let entry = self.decode_literal(src, true, true)?;
 
                     // Insert the header into the table
                     self.table.insert(entry.clone());
@@ -270,14 +308,15 @@ impl Decoder {
                 Representation::LiteralWithoutIndexing => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralWithoutIndexing");
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?;
+                    let entry = self.decode_literal(src, false, true)?;
                     src.commit();
                     f(entry);
                 }
                 Representation::LiteralNeverIndexed => {
                     // tracing::trace!(rem = src.remaining(), kind = %"LiteralNeverIndexed");
                     can_resize = false;
-                    let entry = self.decode_literal(src, false)?;
+                    // Sensitive values are not kept in the `:path` cache
+                    let entry = self.decode_literal(src, false, false)?;
                     src.commit();
 
                     // TODO: Track that this should never be indexed
@@ -323,7 +362,12 @@ impl Decoder {
         self.table.get(index)
     }
 
-    fn decode_literal(&mut self, buf: &mut Input<'_>, index: bool) -> Result<Header, DecoderError> {
+    fn decode_literal(
+        &mut self,
+        buf: &mut Input<'_>,
+        index: bool,
+        cache: bool,
+    ) -> Result<Header, DecoderError> {
         let prefix = if index { 6 } else { 4 };
 
         // Extract the table index for the name, or 0 if not indexed
@@ -335,6 +379,9 @@ impl Decoder {
             let name = self.decode_string(buf)?;
             let value = self.decode_string(buf)?;
             Header::new(&name, value)
+        } else if cache && (table_idx == 4 || table_idx == 5) {
+            // static `:path` name
+            self.decode_path(buf)
         } else {
             // validate the index before reading the value
             self.table.check_index(table_idx)?;
@@ -344,30 +391,51 @@ impl Decoder {
         }
     }
 
-    fn decode_string(&mut self, buf: &mut Input<'_>) -> Result<Bytes, DecoderError> {
-        const HUFF_FLAG: u8 = 0b1000_0000;
+    /// Decodes a `:path` value, reusing a recently decoded one.
+    fn decode_path(&mut self, buf: &mut Input<'_>) -> Result<Header, DecoderError> {
+        let data = buf.data;
+        let start = buf.pos;
+        let (huff, range) = read_string(buf)?;
+        let key = &data[start..buf.pos];
 
-        // The first bit in the first byte contains the huffman encoded flag.
-        let huff = match buf.peek() {
-            Some(hdr) => (hdr & HUFF_FLAG) == HUFF_FLAG,
-            None => return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream)),
+        let cacheable = key.len() <= PATH_CACHE_MAX_KEY;
+        let tag = key_tag(key);
+        let lookup = if cacheable {
+            self.paths.lookup(key, tag)
+        } else {
+            PathLookup::Miss
         };
-
-        // Decode the string length using 7 bit prefix
-        let len = decode_int(buf, 7)?;
-
-        if len > buf.remaining() {
-            log::trace!("decode_string underflow {:?} {:?}", len, buf.remaining());
-            return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
+        if let PathLookup::Hit(value) = lookup {
+            return Ok(Header::Path(value));
         }
 
-        let start = buf.pos;
-        buf.pos += len;
+        // Invalid values fail here and are never cached
+        let value = ByteString::try_from(self.string_value(buf, huff, range)?)?;
+        match lookup {
+            PathLookup::Seen(idx) => self.paths.fill(idx, &value),
+            PathLookup::Miss if cacheable => self.paths.admit(key, tag),
+            _ => (),
+        }
+        Ok(Header::Path(value))
+    }
+
+    fn decode_string(&mut self, buf: &mut Input<'_>) -> Result<Bytes, DecoderError> {
+        let (huff, range) = read_string(buf)?;
+        self.string_value(buf, huff, range)
+    }
+
+    #[inline]
+    fn string_value(
+        &mut self,
+        buf: &Input<'_>,
+        huff: bool,
+        range: Range<usize>,
+    ) -> Result<Bytes, DecoderError> {
         if huff {
-            huffman::decode(&buf.data[start..buf.pos], &mut self.buffer)
+            huffman::decode(&buf.data[range], &mut self.buffer)
         } else {
             // Short values are copied inline and do not retain the source
-            Ok(buf.src.slice(start..buf.pos))
+            Ok(buf.src.slice(range))
         }
     }
 }
@@ -504,6 +572,89 @@ impl<'a> Input<'a> {
     #[inline]
     fn commit(&mut self) {
         self.committed = self.pos;
+    }
+}
+
+/// Reads a string literal and returns whether it is Huffman encoded and
+/// the range of its octets.
+#[inline]
+fn read_string(buf: &mut Input<'_>) -> Result<(bool, Range<usize>), DecoderError> {
+    const HUFF_FLAG: u8 = 0b1000_0000;
+
+    // The first bit in the first byte contains the huffman encoded flag.
+    let huff = match buf.peek() {
+        Some(hdr) => (hdr & HUFF_FLAG) == HUFF_FLAG,
+        None => return Err(DecoderError::NeedMore(NeedMore::UnexpectedEndOfStream)),
+    };
+
+    // Decode the string length using 7 bit prefix
+    let len = decode_int(buf, 7)?;
+
+    if len > buf.remaining() {
+        log::trace!("decode_string underflow {:?} {:?}", len, buf.remaining());
+        return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
+    }
+
+    let start = buf.pos;
+    buf.pos += len;
+    Ok((huff, start..buf.pos))
+}
+
+/// Combines the length and the last 8 octets of a `:path` key, where paths
+/// that share a prefix differ.
+#[inline]
+fn key_tag(key: &[u8]) -> u64 {
+    let mut tail = [0; 8];
+    let n = cmp::min(key.len(), 8);
+    tail[..n].copy_from_slice(&key[key.len() - n..]);
+    u64::from_ne_bytes(tail) ^ (key.len() as u64).rotate_left(56)
+}
+
+// ===== impl PathCache =====
+
+impl PathCache {
+    fn lookup(&mut self, key: &[u8], tag: u64) -> PathLookup {
+        for (idx, slot) in self.slots.iter_mut().enumerate() {
+            if slot.tag == tag && slot.key == key {
+                return match slot.value {
+                    Some(ref value) => {
+                        slot.referenced = true;
+                        PathLookup::Hit(value.clone())
+                    }
+                    None => PathLookup::Seen(idx),
+                };
+            }
+        }
+        PathLookup::Miss
+    }
+
+    /// Stores the decoded value of a repeated key.
+    fn fill(&mut self, idx: usize, value: &ByteString) {
+        let mut value = value.clone();
+        // The cached value must not retain the frame or the decoding buffer
+        value.trimdown();
+
+        let slot = &mut self.slots[idx];
+        slot.value = Some(value);
+        slot.referenced = true;
+    }
+
+    /// Records the first sighting of a key.
+    fn admit(&mut self, key: &[u8], tag: u64) {
+        // Skip referenced slots once, clearing their reference
+        let idx = loop {
+            let idx = self.hand;
+            self.hand = (idx + 1) % PATH_CACHE_SLOTS;
+            if !std::mem::take(&mut self.slots[idx].referenced) {
+                break idx;
+            }
+        };
+
+        let slot = &mut self.slots[idx];
+        slot.tag = tag;
+        slot.key.clear();
+        slot.key.extend_from_slice(key);
+        slot.value = None;
     }
 }
 
@@ -1090,6 +1241,163 @@ mod test {
             de.table.get_with_value(0, Bytes::new()),
             Err(DecoderError::InvalidTableIndex)
         ));
+    }
+
+    /// Encodes a Huffman `:path` literal that names static index 4.
+    fn path_literal(first: u8, path: &[u8]) -> Vec<u8> {
+        let enc = huff_encode(path);
+        let mut buf = vec![first, 0x80 | u8::try_from(enc.len()).unwrap()];
+        buf.extend_from_slice(&enc);
+        buf
+    }
+
+    fn decode_one_path(de: &mut Decoder, block: &[u8]) -> Result<ByteString, DecoderError> {
+        let mut res = vec![];
+        de.decode(&mut Bytes::copy_from_slice(block), |h| res.push(h))?;
+        match res.as_slice() {
+            [Header::Path(v)] => Ok(v.clone()),
+            r => panic!("unexpected headers {r:?}"),
+        }
+    }
+
+    /// Returns the cached keys and their values.
+    fn cached_paths(de: &Decoder) -> Vec<(&[u8], Option<&str>)> {
+        de.paths
+            .slots
+            .iter()
+            .filter(|s| !s.key.is_empty())
+            .map(|s| (s.key.as_slice(), s.value.as_deref()))
+            .collect()
+    }
+
+    /// STATEMENT: A repeated `:path` literal is cached on its second sighting, later hits share
+    /// a detached value, and `release` clears the cache.
+    ///
+    /// HOW:
+    /// - Decode the same 40-byte Huffman `:path` literal without indexing three times.
+    /// - After the first decode, check the slot holds only the encoded key; after the second,
+    ///   that it holds the value in a separate allocation from the decoded header.
+    /// - Check the third result shares the cached value's pointer.
+    /// - Decode it as a literal with indexing, check the same value and a table entry.
+    /// - Call `release` and check the cache is empty.
+    #[test]
+    fn test_decode_path_cache() {
+        const PATH: &str = "/grpc.testing.BenchmarkService/UnaryCall";
+        let block = path_literal(0x04, PATH.as_bytes());
+        let key = &block[1..];
+        let mut de = Decoder::default();
+
+        assert_eq!(decode_one_path(&mut de, &block).unwrap(), PATH);
+        assert_eq!(cached_paths(&de), vec![(key, None)]);
+
+        let second = decode_one_path(&mut de, &block).unwrap();
+        assert_eq!(second, PATH);
+        assert_eq!(cached_paths(&de), vec![(key, Some(PATH))]);
+        let cached = de.paths.slots[0].value.clone().unwrap();
+        assert_ne!(cached.as_ptr(), second.as_ptr(), "cached value must be detached");
+
+        let third = decode_one_path(&mut de, &block).unwrap();
+        assert_eq!(third, PATH);
+        assert_eq!(third.as_ptr(), cached.as_ptr());
+
+        let mut indexed = block.clone();
+        indexed[0] = 0x44;
+        assert_eq!(decode_one_path(&mut de, &indexed).unwrap(), PATH);
+        assert_eq!(de.table.get(62).unwrap(), Header::Path(ByteString::from(PATH)));
+
+        de.release();
+        assert_eq!(cached_paths(&de), Vec::<(&[u8], Option<&str>)>::new());
+    }
+
+    /// STATEMENT: The `:path` cache replaces slots that were not hit since the last sweep, so
+    /// a hot path survives a stream of unique paths.
+    ///
+    /// HOW:
+    /// - Decode a hot path twice so it is cached, then four unique paths once each.
+    /// - Check the hot path is still cached and the oldest unique path was replaced.
+    /// - Decode eight more unique paths without hitting the hot path and check it was
+    ///   replaced.
+    #[test]
+    fn test_decode_path_cache_replacement() {
+        let hot = path_literal(0x04, b"/hot.Service/Call");
+        let unique: Vec<_> = (0..12)
+            .map(|i| path_literal(0x04, format!("/unique.Service/Call{i}").as_bytes()))
+            .collect();
+        let mut de = Decoder::default();
+
+        decode_one_path(&mut de, &hot).unwrap();
+        decode_one_path(&mut de, &hot).unwrap();
+        for block in &unique[..4] {
+            decode_one_path(&mut de, block).unwrap();
+        }
+        let keys: Vec<_> = cached_paths(&de).into_iter().map(|(k, _)| k).collect();
+        assert!(keys.contains(&&hot[1..]), "{keys:?}");
+        assert!(!keys.contains(&&unique[0][1..]), "{keys:?}");
+        assert_eq!(cached_paths(&de)[0].1, Some("/hot.Service/Call"));
+
+        for block in &unique[4..] {
+            decode_one_path(&mut de, block).unwrap();
+        }
+        let keys: Vec<_> = cached_paths(&de).into_iter().map(|(k, _)| k).collect();
+        assert!(!keys.contains(&&hot[1..]), "{keys:?}");
+    }
+
+    /// STATEMENT: Never-indexed, oversized and invalid `:path` literals are not cached.
+    ///
+    /// HOW:
+    /// - Decode a never-indexed Huffman `:path` literal twice and a raw 130-byte `:path`
+    ///   literal twice, checking the values and an empty cache.
+    /// - Decode a raw `:path` literal with invalid UTF-8 twice, checking `InvalidUtf8` and an
+    ///   empty cache.
+    #[test]
+    fn test_decode_path_cache_bypass() {
+        let mut de = Decoder::default();
+
+        let never = path_literal(0x14, b"/secret.Service/Call");
+        for _ in 0..2 {
+            assert_eq!(decode_one_path(&mut de, &never).unwrap(), "/secret.Service/Call");
+        }
+
+        let long = format!("/{}", "a".repeat(129));
+        let mut block = vec![0x04, 0x7f, 3];
+        block.extend_from_slice(long.as_bytes());
+        for _ in 0..2 {
+            assert_eq!(decode_one_path(&mut de, &block).unwrap(), long.as_str());
+        }
+        assert_eq!(cached_paths(&de), Vec::<(&[u8], Option<&str>)>::new());
+
+        for _ in 0..2 {
+            let res = decode_one_path(&mut de, b"\x04\x02\xff\xfe");
+            assert_eq!(res.unwrap_err(), DecoderError::InvalidUtf8);
+        }
+        assert_eq!(cached_paths(&de), Vec::<(&[u8], Option<&str>)>::new());
+    }
+
+    /// STATEMENT: `:path` keys with equal tags are told apart by their octets.
+    ///
+    /// HOW:
+    /// - Build two raw `:path` literals of equal length that end in the same 8 octets and check
+    ///   that their `key_tag` values are equal.
+    /// - Decode the first twice so its value is cached, then decode the second twice and check
+    ///   each result is the second path.
+    #[test]
+    fn test_decode_path_cache_tag_collision() {
+        let raw = |path: &str| {
+            let mut block = vec![0x04, u8::try_from(path.len()).unwrap()];
+            block.extend_from_slice(path.as_bytes());
+            block
+        };
+        let first = raw("/a.Service/Method");
+        let second = raw("/b.Service/Method");
+        assert_eq!(key_tag(&first[1..]), key_tag(&second[1..]));
+        let mut de = Decoder::default();
+
+        for _ in 0..2 {
+            assert_eq!(decode_one_path(&mut de, &first).unwrap(), "/a.Service/Method");
+        }
+        for _ in 0..2 {
+            assert_eq!(decode_one_path(&mut de, &second).unwrap(), "/b.Service/Method");
+        }
     }
 
     fn huff_encode(src: &[u8]) -> BytesMut {

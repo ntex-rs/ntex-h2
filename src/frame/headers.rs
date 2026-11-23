@@ -1,7 +1,7 @@
 use std::{cell::RefCell, cmp, fmt};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
-use ntex_http::{HeaderMap, Method, StatusCode, header};
+use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, header};
 
 use crate::hpack;
 
@@ -61,7 +61,10 @@ const PRIORITY: u8 = 0x20;
 const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
 /// Max number of spare header maps kept per thread.
-const HDRS_MAP_POOL_SIZE: usize = 64;
+///
+/// Matches the default max concurrent streams, clients may send the headers of
+/// all concurrent requests before the first one completes.
+const HDRS_MAP_POOL_SIZE: usize = 256;
 
 /// A header map with a larger capacity is not reused.
 const HDRS_MAP_MAX_CAPACITY: usize = 64;
@@ -428,6 +431,15 @@ thread_local! {
     static HDRS_BUF: RefCell<BytesMut> = RefCell::new(BytesMut::with_capacity(HDRS_BUF_SIZE));
 }
 
+/// Returns whether the field is connection specific, RFC 9113 §8.2.2.
+fn is_connection_header(name: &HeaderName) -> bool {
+    name == header::CONNECTION
+        || name == header::TRANSFER_ENCODING
+        || name == header::UPGRADE
+        // Decoded names are lower case, an exact match avoids a case-insensitive compare
+        || matches!(name.as_str(), "keep-alive" | "proxy-connection")
+}
+
 impl HeaderBlock {
     fn load(
         &mut self,
@@ -479,12 +491,7 @@ impl HeaderBlock {
                     // Connection level header fields are not supported and must
                     // result in a protocol error.
 
-                    if name == header::CONNECTION
-                        || name == header::TRANSFER_ENCODING
-                        || name == header::UPGRADE
-                        || name == "keep-alive"
-                        || name == "proxy-connection"
-                    {
+                    if is_connection_header(&name) {
                         log::trace!("load_hpack; connection level header");
                         malformed = true;
                     } else if name == header::TE && !value.as_bytes().eq_ignore_ascii_case(b"trailers") {

@@ -1,5 +1,16 @@
 # Changes
 
+## [4.7.1] - 2026-11-23
+
+* Keep up to 256 released header maps per thread for reuse, matching the
+  default max concurrent streams (was 64)
+
+* Inline the HPACK header size computation when decoding header blocks
+
+* Cache recently decoded `:path` literals per connection, so repeated
+  non-indexed paths (nghttp2, h2load) skip Huffman decoding and UTF-8
+  validation
+
 ## [4.7.0] - 2026-11-22
 
 * `hpack::Decoder::decode()` takes `&mut Bytes` instead of
