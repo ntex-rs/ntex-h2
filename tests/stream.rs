@@ -1,5 +1,5 @@
 //! Stream state and validation over an in-memory transport.
-use std::{cell::RefCell, future::poll_fn, panic, pin::Pin};
+use std::{cell::RefCell, future::poll_fn, panic, pin::Pin, rc::Rc};
 
 use ntex::http::header::{self, HeaderValue};
 use ntex::http::{HeaderMap, Method, StatusCode};
@@ -580,6 +580,69 @@ async fn server_response_borrowed_headers() {
         kind => panic!("unexpected message: {kind:?}"),
     }
 }
+
+/// STATEMENT: Responses and trailers sent from shared maps arrive intact on every stream of a
+/// connection, including when their encoded blocks are reused.
+///
+/// HOW:
+/// - Serve three sequential requests with `send_response_shared` of one `content-type` map and
+///   `send_trailers_shared` of one `grpc-status` map.
+/// - Assert each response has status 200 and `application/grpc`, and each stream ends with
+///   `grpc-status: 0` trailers.
+#[ntex::test]
+async fn server_response_shared_headers() {
+    let (cli, srv) = IoTest::create();
+    cli.remote_buffer_cap(1024 * 1024);
+    srv.remote_buffer_cap(1024 * 1024);
+
+    ntex::rt::spawn(async move {
+        let mut resp = HeaderMap::new();
+        resp.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/grpc"));
+        let mut trailers = HeaderMap::new();
+        trailers.insert(
+            header::HeaderName::from_static("grpc-status"),
+            HeaderValue::from_static("0"),
+        );
+        let (resp, trailers) = (Rc::new(resp), Rc::new(trailers));
+
+        let _ = server::Server::new(move |msg: Message| {
+            let (resp, trailers) = (resp.clone(), trailers.clone());
+            async move {
+                if matches!(msg.kind, MessageKind::Headers { .. }) {
+                    let stream = msg.stream();
+                    stream.send_response_shared(StatusCode::OK, &resp, false).unwrap();
+                    stream.send_trailers_shared(&trailers).unwrap();
+                }
+                Ok::<_, ()>(())
+            }
+        })
+        .run(Io::new(srv, SharedCfg::default()))
+        .await;
+    });
+
+    let client = SimpleClient::new(Io::new(cli, SharedCfg::default()), false, "localhost".into());
+    for n in 0..3 {
+        let (_snd, rcv) = request(&client, Method::GET, true).await;
+        match next(&rcv).await {
+            MessageKind::Headers {
+                pseudo,
+                headers,
+                eof: false,
+            } => {
+                assert_eq!(pseudo.status, Some(StatusCode::OK), "{n}");
+                assert_eq!(headers.get(header::CONTENT_TYPE).unwrap(), "application/grpc");
+            }
+            kind => panic!("unexpected message {n}: {kind:?}"),
+        }
+        match next(&rcv).await {
+            MessageKind::Eof(StreamEof::Trailers(hdrs)) => {
+                assert_eq!(hdrs.get("grpc-status").unwrap(), "0", "{n}");
+            }
+            kind => panic!("unexpected message {n}: {kind:?}"),
+        }
+    }
+}
+
 /// STATEMENT: Acknowledging local settings applies the configured initial window to existing
 /// streams.
 ///

@@ -575,7 +575,7 @@ mod tests {
     use ntex_http::{HeaderMap, Method, StatusCode};
     use ntex_io::{Handle, Io, IoContext, IoStream};
     use ntex_service::cfg::SharedCfg;
-    use ntex_util::{channel::pool, time::Seconds};
+    use ntex_util::{channel::pool, task::LocalWaker, time::Seconds};
 
     use super::*;
     use crate::{MessageKind, ServiceConfig, StreamEof, frame};
@@ -832,21 +832,30 @@ mod tests {
     ///
     /// HOW:
     /// - Open three streams and use a handler that never completes the first
-    ///   `Disconnect` message but completes every later one.
+    ///   `Disconnect` message but completes every later one. The stalled handler
+    ///   parks on a waker kept by the test, so the runtime does not cancel its
+    ///   task as unwakeable.
     /// - Fail the connection through `handle_connection_error` and yield.
-    /// - Assert all three notifications were delivered and the two non-stalled
-    ///   handlers completed and dropped their `StreamRef`.
+    /// - Assert all three notifications were delivered, the two non-stalled
+    ///   handlers completed and dropped their `StreamRef`, and the stalled
+    ///   handler still holds its `StreamRef`.
     #[ntex::test]
     async fn connection_error_notifies_streams_concurrently() {
         let delivered = Rc::new(Cell::new(0));
         let completed = Rc::new(Cell::new(0));
+        let stalled = Rc::new(LocalWaker::new());
         let delivered2 = delivered.clone();
         let completed2 = completed.clone();
+        let stalled2 = stalled.clone();
         let (inner, _io, _ctx) = setup(Pipeline::new((), async move |msg: Message| {
             assert!(matches!(msg.kind, MessageKind::Disconnect(_)));
             delivered2.set(delivered2.get() + 1);
             if delivered2.get() == 1 {
-                future::pending::<()>().await;
+                poll_fn(|cx| {
+                    stalled2.register(cx.waker());
+                    Poll::<()>::Pending
+                })
+                .await;
             }
             drop(msg);
             completed2.set(completed2.get() + 1);

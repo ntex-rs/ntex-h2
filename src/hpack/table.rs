@@ -14,6 +14,8 @@ pub(super) struct Table {
     // Size is in bytes
     size: usize,
     max_size: usize,
+    // Changed by every insertion and resize
+    version: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,6 +79,7 @@ impl Table {
                 inserted: 0,
                 size: 0,
                 max_size,
+                version: 0,
             }
         } else {
             let capacity = cmp::max(to_raw_capacity(capacity).next_power_of_two(), 8);
@@ -88,6 +91,7 @@ impl Table {
                 inserted: 0,
                 size: 0,
                 max_size,
+                version: 0,
             }
         }
     }
@@ -98,6 +102,11 @@ impl Table {
 
     pub(super) fn max_size(&self) -> usize {
         self.max_size
+    }
+
+    /// Returns the table version, encoded indices stay valid while it is unchanged.
+    pub(super) fn version(&self) -> usize {
+        self.version
     }
 
     /// Returns the table index of an indexed header, `None` for `NotIndexed`.
@@ -324,6 +333,7 @@ impl Table {
 
     fn insert(&mut self, header: Header, hash: HashValue, next: Option<usize>) {
         self.inserted = self.inserted.wrapping_add(1);
+        self.version = self.version.wrapping_add(1);
 
         // compact the entry, it does not retain a larger source buffer
         self.slots.push_front(Slot {
@@ -335,6 +345,7 @@ impl Table {
 
     pub(super) fn resize(&mut self, size: usize) {
         self.max_size = size;
+        self.version = self.version.wrapping_add(1);
 
         if size == 0 {
             self.size = 0;

@@ -1,4 +1,4 @@
-use std::{cell::RefCell, cmp, fmt};
+use std::{cell::RefCell, cmp, fmt, rc::Rc};
 
 use ntex_bytes::{BytePages, ByteString, Bytes, BytesMut};
 use ntex_http::{HeaderMap, HeaderName, Method, StatusCode, header};
@@ -543,8 +543,32 @@ impl HeaderBlock {
     }
 
     fn encode(self, encoder: &mut hpack::Encoder, head: Head, dst: &mut BytePages, max_size: usize) {
-        encode_block(&self.pseudo, &self.fields, encoder, head, dst, max_size);
+        encode_block(
+            &self.pseudo,
+            Fields::Ref(&self.fields),
+            encoder,
+            head,
+            dst,
+            max_size,
+        );
         release_header_map(self.fields);
+    }
+}
+
+/// Header fields encoded without taking ownership.
+#[derive(Copy, Clone, Debug)]
+pub(crate) enum Fields<'a> {
+    Ref(&'a HeaderMap),
+    /// A shared map, its encoded block is cached by the encoder.
+    Shared(&'a Rc<HeaderMap>),
+}
+
+impl<'a> Fields<'a> {
+    pub(crate) fn map(self) -> &'a HeaderMap {
+        match self {
+            Fields::Ref(map) => map,
+            Fields::Shared(map) => map,
+        }
     }
 }
 
@@ -552,7 +576,7 @@ impl HeaderBlock {
 pub(crate) fn encode_headers_ref(
     stream_id: StreamId,
     pseudo: &PseudoHeaders,
-    fields: &HeaderMap,
+    fields: Fields<'_>,
     eof: bool,
     encoder: &mut hpack::Encoder,
     dst: &mut BytePages,
@@ -570,15 +594,13 @@ pub(crate) fn encode_headers_ref(
 /// exceeds `max_size`.
 fn encode_block(
     pseudo: &PseudoHeaders,
-    fields: &HeaderMap,
+    fields: Fields<'_>,
     encoder: &mut hpack::Encoder,
     head: Head,
     dst: &mut BytePages,
     max_size: usize,
 ) {
     HDRS_BUF.with(|buf| {
-        use crate::hpack::header::HeaderRef;
-
         let mut b = buf.borrow_mut();
         let hpack = &mut b;
         hpack.clear();
@@ -589,26 +611,21 @@ fn encode_block(
 
         // encode hpack
         encoder.encode_size_updates(hpack);
-        if let Some(ref v) = pseudo.method {
-            encoder.encode_ref(HeaderRef::Method(v), hpack);
-        }
-        if let Some(ref v) = pseudo.scheme {
-            encoder.encode_ref(HeaderRef::Scheme(v), hpack);
-        }
-        if let Some(ref v) = pseudo.authority {
-            encoder.encode_ref(HeaderRef::Authority(v), hpack);
-        }
-        if let Some(ref v) = pseudo.path {
-            encoder.encode_ref(HeaderRef::Path(v), hpack);
-        }
-        if let Some(ref v) = pseudo.protocol {
-            encoder.encode_ref(HeaderRef::Protocol(v.as_bytestring()), hpack);
-        }
-        if let Some(ref v) = pseudo.status {
-            encoder.encode_ref(HeaderRef::Status(v), hpack);
-        }
-        for (name, value) in fields {
-            encoder.encode_ref(HeaderRef::Field { name, value }, hpack);
+        match fields {
+            Fields::Shared(map) => {
+                // the cache key has only `:status`
+                debug_assert!(
+                    pseudo.method.is_none()
+                        && pseudo.scheme.is_none()
+                        && pseudo.authority.is_none()
+                        && pseudo.path.is_none()
+                        && pseudo.protocol.is_none()
+                );
+                encoder.encode_shared(map, pseudo.status, hpack, |encoder, dst| {
+                    encode_fields(pseudo, map, encoder, dst);
+                });
+            }
+            Fields::Ref(map) => encode_fields(pseudo, map, encoder, hpack),
         }
 
         let block_len = hpack.len() - HEADER_LEN;
@@ -641,6 +658,38 @@ fn encode_block(
             **hpack = BytesMut::with_capacity(HDRS_BUF_SIZE);
         }
     });
+}
+
+/// Encodes the pseudo headers and the fields of a header block.
+fn encode_fields(
+    pseudo: &PseudoHeaders,
+    fields: &HeaderMap,
+    encoder: &mut hpack::Encoder,
+    dst: &mut BytesMut,
+) {
+    use crate::hpack::header::HeaderRef;
+
+    if let Some(ref v) = pseudo.method {
+        encoder.encode_ref(HeaderRef::Method(v), dst);
+    }
+    if let Some(ref v) = pseudo.scheme {
+        encoder.encode_ref(HeaderRef::Scheme(v), dst);
+    }
+    if let Some(ref v) = pseudo.authority {
+        encoder.encode_ref(HeaderRef::Authority(v), dst);
+    }
+    if let Some(ref v) = pseudo.path {
+        encoder.encode_ref(HeaderRef::Path(v), dst);
+    }
+    if let Some(ref v) = pseudo.protocol {
+        encoder.encode_ref(HeaderRef::Protocol(v.as_bytestring()), dst);
+    }
+    if let Some(ref v) = pseudo.status {
+        encoder.encode_ref(HeaderRef::Status(v), dst);
+    }
+    for (name, value) in fields {
+        encoder.encode_ref(HeaderRef::Field { name, value }, dst);
+    }
 }
 
 #[cfg(test)]
@@ -774,7 +823,7 @@ mod tests {
                 encode_headers_ref(
                     StreamId::from(3),
                     &pseudo,
-                    &fields,
+                    Fields::Ref(&fields),
                     eof,
                     &mut enc2,
                     &mut borrowed,
@@ -800,6 +849,68 @@ mod tests {
             // HEADERS frame flags
             assert_eq!(borrowed[4] & END_STREAM == END_STREAM, eof);
             assert_eq!(fields.len(), 2);
+        }
+    }
+
+    /// STATEMENT: Shared header encoding produces the same frames as borrowed encoding, also
+    /// when its block is copied from the cache or a table size update is pending.
+    ///
+    /// HOW:
+    /// - Encode short and large response headers, with both end-stream settings, four times
+    ///   through `Fields::Ref` and `Fields::Shared` with separate encoders.
+    /// - Queue a table size update on both encoders before the third encoding.
+    /// - Compare the bytes of every encoding, large outputs span `Kind::Continuation` frames.
+    #[test]
+    fn encode_headers_shared_matches_ref() {
+        for (value_len, eof) in [(5, false), (5, true), (40_000, false), (40_000, true)] {
+            let mut fields = HeaderMap::new();
+            fields.insert(
+                HeaderName::from_static("x-large"),
+                HeaderValue::from_str(&"a".repeat(value_len)).unwrap(),
+            );
+            fields.append(header::DATE, HeaderValue::from_static("now"));
+            let shared = Rc::new(fields.clone());
+            let pseudo = PseudoHeaders::response(StatusCode::OK);
+
+            let mut enc1 = hpack::Encoder::default();
+            let mut enc2 = hpack::Encoder::default();
+            for n in 0..4 {
+                if n == 2 {
+                    enc1.update_max_size(2048);
+                    enc2.update_max_size(2048);
+                }
+                let mut by_ref = BytePages::default();
+                let mut by_rc = BytePages::default();
+                let id = StreamId::from(3);
+                encode_headers_ref(
+                    id,
+                    &pseudo,
+                    Fields::Ref(&fields),
+                    eof,
+                    &mut enc1,
+                    &mut by_ref,
+                    16_384,
+                );
+                encode_headers_ref(
+                    id,
+                    &pseudo,
+                    Fields::Shared(&shared),
+                    eof,
+                    &mut enc2,
+                    &mut by_rc,
+                    16_384,
+                );
+
+                let (mut a, mut b) = (Vec::new(), Vec::new());
+                while let Some(page) = by_ref.take() {
+                    a.extend_from_slice(&page.freeze());
+                }
+                while let Some(page) = by_rc.take() {
+                    b.extend_from_slice(&page.freeze());
+                }
+                assert_eq!(a, b, "value_len={value_len} eof={eof} n={n}");
+                assert!(value_len < 16_384 || b[16_384 + 9 + 3] == Kind::Continuation as u8);
+            }
         }
     }
 

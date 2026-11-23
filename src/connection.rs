@@ -281,7 +281,7 @@ impl Connection {
         &self,
         id: frame::StreamId,
         pseudo: &frame::PseudoHeaders,
-        fields: &HeaderMap,
+        fields: frame::Fields<'_>,
         eof: bool,
     ) {
         let _ = self

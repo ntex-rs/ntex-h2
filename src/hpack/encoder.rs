@@ -1,5 +1,7 @@
+use std::rc::Rc;
+
 use ntex_bytes::{BufMut, BytesMut};
-use ntex_http::header::HeaderName;
+use ntex_http::{HeaderMap, StatusCode, header::HeaderName};
 
 use super::{Header, header::HeaderRef, huffman, table::Index, table::Table};
 
@@ -8,6 +10,30 @@ use super::{Header, header::HeaderRef, huffman, table::Index, table::Table};
 pub struct Encoder {
     table: Table,
     size_update: Option<SizeUpdate>,
+    blocks: BlockCache,
+}
+
+/// Largest header block kept by the block cache, an indexed field takes one or
+/// two bytes.
+const CACHED_BLOCK_MAX: usize = 32;
+
+/// Recently encoded header blocks of shared header maps.
+#[derive(Debug, Default)]
+struct BlockCache {
+    slots: [Option<CachedBlock>; 2],
+    // The slot replaced by the next insertion
+    next: usize,
+}
+
+#[derive(Debug)]
+struct CachedBlock {
+    // Keeps the map alive and unchanged, a live `Rc` cannot be mutated and
+    // its address cannot be reused
+    fields: Rc<HeaderMap>,
+    status: Option<StatusCode>,
+    version: usize,
+    len: u8,
+    block: [u8; CACHED_BLOCK_MAX],
 }
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq)]
@@ -22,6 +48,7 @@ impl Encoder {
         Encoder {
             table: Table::new(max_size, capacity),
             size_update: None,
+            blocks: BlockCache::default(),
         }
     }
 
@@ -32,6 +59,7 @@ impl Encoder {
     pub(crate) fn release(&mut self) {
         self.size_update = None;
         self.table = Table::new(self.table.max_size(), 0);
+        self.blocks = BlockCache::default();
     }
 
     #[cfg(test)]
@@ -141,6 +169,34 @@ impl Encoder {
         }
     }
 
+    /// Encodes the header block of a shared header map into `dst`.
+    ///
+    /// `encode` encodes the block, the block may also contain pseudo headers,
+    /// only `:status` is allowed. A block that does not change the dynamic
+    /// table is cached, it is copied while the table and `fields` are the same.
+    pub(crate) fn encode_shared<F>(
+        &mut self,
+        fields: &Rc<HeaderMap>,
+        status: Option<StatusCode>,
+        dst: &mut BytesMut,
+        encode: F,
+    ) where
+        F: FnOnce(&mut Self, &mut BytesMut),
+    {
+        let version = self.table.version();
+        if let Some(block) = self.blocks.get(fields, status, version) {
+            dst.extend_from_slice(block);
+            return;
+        }
+
+        let start = dst.len();
+        encode(self, dst);
+        // a block that changed the table could never match, keep the slot
+        if self.table.version() == version {
+            self.blocks.insert(fields, status, version, &dst[start..]);
+        }
+    }
+
     /// Encodes a borrowed header into `dst`.
     #[inline]
     pub(crate) fn encode_ref(&mut self, header: HeaderRef<'_>, dst: &mut BytesMut) {
@@ -152,6 +208,49 @@ impl Encoder {
         let index = self.table.index(header);
         encode_header(index, header, dst);
         index
+    }
+}
+
+impl BlockCache {
+    fn get(
+        &mut self,
+        fields: &Rc<HeaderMap>,
+        status: Option<StatusCode>,
+        version: usize,
+    ) -> Option<&[u8]> {
+        let idx = self.slots.iter().position(|slot| {
+            slot.as_ref().is_some_and(|slot| {
+                slot.version == version && slot.status == status && Rc::ptr_eq(&slot.fields, fields)
+            })
+        })?;
+        self.next = idx ^ 1;
+        self.slots[idx]
+            .as_ref()
+            .map(|slot| &slot.block[..slot.len as usize])
+    }
+
+    fn insert(
+        &mut self,
+        fields: &Rc<HeaderMap>,
+        status: Option<StatusCode>,
+        version: usize,
+        block: &[u8],
+    ) {
+        if block.len() > CACHED_BLOCK_MAX {
+            return;
+        }
+        // `next` is never the most recently used slot, so a live block is kept
+        let idx = self.next;
+        let mut cached = CachedBlock {
+            fields: fields.clone(),
+            status,
+            version,
+            len: block.len() as u8,
+            block: [0; CACHED_BLOCK_MAX],
+        };
+        cached.block[..block.len()].copy_from_slice(block);
+        self.slots[idx] = Some(cached);
+        self.next = idx ^ 1;
     }
 }
 
@@ -320,6 +419,8 @@ fn position(buf: &BytesMut) -> usize {
 #[cfg(test)]
 #[allow(clippy::decimal_bitwise_operands)]
 mod test {
+    use std::cell::Cell;
+
     use ntex_bytes::{ByteString, Bytes};
     use ntex_http::*;
 
@@ -992,6 +1093,135 @@ mod test {
             })
             .collect();
         assert_eq!(fields, vec![("x-big", long.as_str()), ("x-big", "small")]);
+    }
+
+    /// STATEMENT: The block of a shared map is copied while the dynamic table is unchanged, and
+    /// encoded again after an insertion or a size update.
+    ///
+    /// HOW:
+    /// - Encode a `:status 200` and `content-type: application/grpc` block from one `Rc`, the
+    ///   first encoding inserts the field and is not cached, the second is cached.
+    /// - Check the third copy matches the cached bytes without calling the encode closure.
+    /// - Insert another header, check the block is encoded again with `content-type` moved to
+    ///   index 63, then copied.
+    /// - Queue a size update, check the block is encoded again after the update, then copied.
+    #[test]
+    fn test_shared_block_reused_until_table_changes() {
+        let mut encoder = Encoder::default();
+        let calls = Cell::new(0);
+        let grpc = Rc::new(header_map(&[("content-type", "application/grpc")]));
+        let ok = Some(StatusCode::OK);
+
+        shared(&mut encoder, &grpc, ok, &calls);
+        assert_eq!(*shared(&mut encoder, &grpc, ok, &calls), [0x80 | 8, 0x80 | 62]);
+        assert_eq!(calls.get(), 2);
+        assert_eq!(*shared(&mut encoder, &grpc, ok, &calls), [0x80 | 8, 0x80 | 62]);
+        assert_eq!(calls.get(), 2);
+
+        encode(&mut encoder, vec![header("foo", "bar")]);
+        assert_eq!(*shared(&mut encoder, &grpc, ok, &calls), [0x80 | 8, 0x80 | 63]);
+        assert_eq!(calls.get(), 3);
+        assert_eq!(*shared(&mut encoder, &grpc, ok, &calls), [0x80 | 8, 0x80 | 63]);
+        assert_eq!(calls.get(), 3);
+
+        encoder.update_max_size(2048);
+        let res = shared(&mut encoder, &grpc, ok, &calls);
+        assert_eq!(res[0] & 0b1110_0000, 0b0010_0000, "size update");
+        assert!(res.ends_with(&[0x80 | 8, 0x80 | 63]) && res.len() > 2);
+        assert_eq!(calls.get(), 4);
+        assert_eq!(*shared(&mut encoder, &grpc, ok, &calls), [0x80 | 8, 0x80 | 63]);
+        assert_eq!(calls.get(), 4);
+    }
+
+    /// STATEMENT: Cached blocks are keyed by the `Rc` and the status, two are kept and a hit
+    /// protects a block from replacement.
+    ///
+    /// HOW:
+    /// - Cache the `grpc-status: 0` block of map `a`, then encode an equal map `b` from another
+    ///   `Rc` and check it is encoded, not copied.
+    /// - Hit `a`, encode `a` with `:status 200` and check it replaces `b`, not `a`.
+    /// - Check `a` without status and with `:status 200` are copied, and `b` is encoded again.
+    #[test]
+    fn test_shared_block_key() {
+        let mut encoder = Encoder::default();
+        let calls = Cell::new(0);
+        let a = Rc::new(header_map(&[("grpc-status", "0")]));
+        let b = Rc::new((*a).clone());
+        let ok = Some(StatusCode::OK);
+
+        shared(&mut encoder, &a, None, &calls);
+        shared(&mut encoder, &a, None, &calls);
+        assert_eq!(calls.get(), 2);
+        shared(&mut encoder, &b, None, &calls);
+        assert_eq!(calls.get(), 3);
+
+        shared(&mut encoder, &a, None, &calls);
+        assert_eq!(calls.get(), 3);
+        shared(&mut encoder, &a, ok, &calls);
+        assert_eq!(calls.get(), 4);
+
+        assert_eq!(*shared(&mut encoder, &a, None, &calls), [0x80 | 62]);
+        assert_eq!(*shared(&mut encoder, &a, ok, &calls), [0x80 | 8, 0x80 | 62]);
+        assert_eq!(calls.get(), 4);
+        assert_eq!(*shared(&mut encoder, &b, None, &calls), [0x80 | 62]);
+        assert_eq!(calls.get(), 5);
+    }
+
+    /// STATEMENT: A block larger than `CACHED_BLOCK_MAX` is encoded every time.
+    ///
+    /// HOW:
+    /// - Encode a map with a sensitive 64-byte value, it is never indexed so the table does not
+    ///   change.
+    /// - Check the block exceeds `CACHED_BLOCK_MAX` and each of three encodings calls the encode
+    ///   closure with the same output.
+    #[test]
+    fn test_large_shared_block_is_not_cached() {
+        let mut encoder = Encoder::default();
+        let calls = Cell::new(0);
+        let mut value = HeaderValue::from_str(&"s".repeat(64)).unwrap();
+        value.set_sensitive(true);
+        let mut map = HeaderMap::new();
+        map.insert(HeaderName::from_static("x-token"), value);
+        let map = Rc::new(map);
+
+        let first = shared(&mut encoder, &map, None, &calls);
+        assert!(first.len() > CACHED_BLOCK_MAX);
+        for n in 2..=3 {
+            assert_eq!(shared(&mut encoder, &map, None, &calls), first);
+            assert_eq!(calls.get(), n);
+        }
+    }
+
+    /// Encodes a shared block like `encode_block`, counting encodings in `calls`.
+    fn shared(
+        e: &mut Encoder,
+        fields: &Rc<HeaderMap>,
+        status: Option<StatusCode>,
+        calls: &Cell<usize>,
+    ) -> BytesMut {
+        let mut dst = BytesMut::with_capacity(1024);
+        e.encode_size_updates(&mut dst);
+        e.encode_shared(fields, status, &mut dst, |e, dst| {
+            calls.set(calls.get() + 1);
+            if let Some(ref status) = status {
+                e.encode_ref(HeaderRef::Status(status), dst);
+            }
+            for (name, value) in &**fields {
+                e.encode_ref(HeaderRef::Field { name, value }, dst);
+            }
+        });
+        dst
+    }
+
+    fn header_map(fields: &[(&str, &str)]) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in fields {
+            map.append(
+                HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                HeaderValue::from_str(value).unwrap(),
+            );
+        }
+        map
     }
 
     fn encode(e: &mut Encoder, hdrs: Vec<Header<Option<HeaderName>>>) -> BytesMut {

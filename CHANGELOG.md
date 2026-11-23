@@ -11,6 +11,10 @@
   non-indexed paths (nghttp2, h2load) skip Huffman decoding and UTF-8
   validation
 
+* Add `StreamRef::send_response_shared()` and `StreamRef::send_trailers_shared()`,
+  the encoded header block of a shared `Rc<HeaderMap>` is reused while the
+  HPACK dynamic table is unchanged
+
 ## [4.7.0] - 2026-11-22
 
 * `hpack::Decoder::decode()` takes `&mut Bytes` instead of
