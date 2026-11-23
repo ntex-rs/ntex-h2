@@ -46,7 +46,9 @@ pub enum Name<'a> {
     Status,
 }
 
-#[inline]
+// Called for every decoded header, LLVM does not inline it with `#[inline]`
+#[allow(clippy::inline_always)]
+#[inline(always)]
 pub(super) fn len(name: &HeaderName, value: &HeaderValue) -> usize {
     // `as_shared().len()` avoids building a slice, which costs a second vtable call
     // for external storage
@@ -131,8 +133,9 @@ impl Header {
     }
 
     /// Returns the HPACK table size of this header.
-    #[inline]
-    #[allow(clippy::len_without_is_empty)]
+    // Called for every decoded header, LLVM does not inline it with `#[inline]`
+    #[inline(always)]
+    #[allow(clippy::len_without_is_empty, clippy::inline_always)]
     pub fn len(&self) -> usize {
         match self {
             Header::Field { name, value } => len(name, value),
