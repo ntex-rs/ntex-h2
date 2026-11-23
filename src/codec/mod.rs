@@ -194,7 +194,7 @@ impl Codec {
         &self,
         id: frame::StreamId,
         pseudo: &frame::PseudoHeaders,
-        fields: &ntex_http::HeaderMap,
+        fields: frame::Fields<'_>,
         eof: bool,
         buf: &mut BytePages,
     ) {

@@ -11,7 +11,7 @@ use ntex_util::{future::Either, task::LocalWaker};
 
 use crate::error::{OperationError, StreamError};
 use crate::frame::{
-    Data, Head, Headers, Kind, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
+    Data, Fields, Head, Headers, Kind, PseudoHeaders, Reason, Reset, StreamId, WindowSize, WindowUpdate,
 };
 use crate::{connection::Connection, frame, message::Message, timer, window::Window};
 
@@ -901,13 +901,37 @@ impl StreamRef {
     where
         H: Borrow<HeaderMap>,
     {
+        self.send_response_fields(status, Fields::Ref(headers.borrow()), eof)
+    }
+
+    /// Sends response headers from a shared header map.
+    ///
+    /// Same as [`send_response`](Self::send_response). The connection keeps
+    /// the encoded header block of the last shared maps, sending the same
+    /// `Rc` with the same status copies the block instead of encoding the
+    /// fields again, until the HPACK table changes. Responses that repeat the
+    /// same headers can keep the map in a thread local.
+    pub fn send_response_shared(
+        &self,
+        status: StatusCode,
+        headers: &Rc<HeaderMap>,
+        eof: bool,
+    ) -> Result<(), Error<OperationError>> {
+        self.send_response_fields(status, Fields::Shared(headers), eof)
+    }
+
+    fn send_response_fields(
+        &self,
+        status: StatusCode,
+        headers: Fields<'_>,
+        eof: bool,
+    ) -> Result<(), Error<OperationError>> {
         self.0.check_error()?;
 
         match self.0.send.get() {
             HalfState::Idle => {
-                let headers = headers.borrow();
                 let pseudo = PseudoHeaders::response(status);
-                self.0.con.check_header_list_size(&pseudo, headers)?;
+                self.0.con.check_header_list_size(&pseudo, headers.map())?;
 
                 if eof {
                     self.0.state_send_close(None);
@@ -1067,10 +1091,22 @@ impl StreamRef {
     where
         H: Borrow<HeaderMap>,
     {
+        self.send_trailers_fields(Fields::Ref(map.borrow()))
+    }
+
+    /// Sends trailers from a shared header map and closes the local side of
+    /// the stream.
+    ///
+    /// Same as [`send_trailers`](Self::send_trailers), the encoded block is
+    /// reused like in [`send_response_shared`](Self::send_response_shared).
+    pub fn send_trailers_shared(&self, map: &Rc<HeaderMap>) -> Result<(), Error<OperationError>> {
+        self.send_trailers_fields(Fields::Shared(map))
+    }
+
+    fn send_trailers_fields(&self, map: Fields<'_>) -> Result<(), Error<OperationError>> {
         if self.0.send.get() == HalfState::Payload {
-            let map = map.borrow();
             let pseudo = PseudoHeaders::default();
-            self.0.con.check_header_list_size(&pseudo, map)?;
+            self.0.con.check_header_list_size(&pseudo, map.map())?;
             self.0.con.encode_headers_ref(self.0.id, &pseudo, map, true);
             self.0.state_send_close(None);
         }
